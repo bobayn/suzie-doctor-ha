@@ -1,0 +1,41 @@
+version: 1
+
+polling:
+  fast_2m:
+    interval_seconds: 120
+    metrics:
+      - cpu_temperature
+      - cpu_usage_percent
+      - load_average
+      - ram_usage_percent
+      - swap_zram_usage_percent
+      - throttling_flags
+      - undervoltage_flags
+
+  normal_5m:
+    interval_seconds: 300
+    metrics:
+      - storage_used_percent
+      - storage_free_bytes
+      - recorder_heartbeat
+      - uptime
+      - filesystem_readonly
+
+  event_driven:
+    metrics:
+      - io_errors
+      - filesystem_errors
+      - storage_detach_or_remount
+      - crash_signatures
+
+observe_behavior:
+  increase_poll_frequency: false
+  decision_inputs:
+    - absolute_threshold
+    - duration
+    - installation_baseline
+
+baseline:
+  adaptive: true
+  adaptation: slow
+  never_treat_current_state_as_healthy_only_because_it_is_initial: true
