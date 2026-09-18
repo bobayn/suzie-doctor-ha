@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.18-dev`
+- App: `0.2.19-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.3-dev`
 
@@ -41,7 +41,7 @@ Implemented diagnostic primitives:
 
 - `mqtt_probe` — duplicate MQTT client-ID evidence from Mosquitto logs;
 - `verify_recorder_write` — functional state-write + Recorder-history verification;
-- `read_host_metrics(filesystem_readonly)` — conservative current-boot HAOS host-journal evidence;
+- `read_host_metrics(filesystem_readonly)` — conservative current-boot HAOS host-journal evidence that ignores normal immutable EROFS root/bind-mount noise and requires strong remount/forced-readonly evidence or a mutable data-path write failure;
 - `config_entry_state`;
 - `reload_config_entry`;
 - `wait`;
