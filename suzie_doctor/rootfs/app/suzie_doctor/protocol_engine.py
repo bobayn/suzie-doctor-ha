@@ -465,6 +465,61 @@ class ProtocolEngine:
             return False, "confirmation_required"
         return True, "allowed"
 
+    async def diagnose_card(
+        self,
+        card: dict[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        card = self._validate_card(dict(card))
+        env: dict[str, Any] = dict(context or {})
+        response: dict[str, Any] = {
+            "disease_id": card["disease_id"],
+            "protocol_id": card["protocol"]["id"],
+            "protocol_version": card["protocol"]["version"],
+            "protocol_status": card["protocol"]["status"],
+            "automation_class": card["automation_class"],
+        }
+        try:
+            await self._prepare_named_preconditions(card, env)
+            if not self._eval_conditions(
+                card.get("preconditions"), env, default=True
+            ):
+                response["result"] = "PRECONDITION_FAILED"
+                response["diagnosis_confirmed"] = False
+                return response
+
+            response["diagnostics"] = await self._run_diagnostics(
+                card, env
+            )
+            confirmed = self._eval_conditions(
+                card.get("confirm"), env, default=False
+            )
+            if confirmed and self._eval_conditions(
+                card.get("exclude"), env, default=False
+            ):
+                response["result"] = "EXCLUDED"
+                response["diagnosis_confirmed"] = False
+                return response
+
+            response["diagnosis_confirmed"] = confirmed
+            response["result"] = (
+                "CONFIRMED" if confirmed else "NOT_CONFIRMED"
+            )
+            return response
+        except UnsupportedPrimitive as exc:
+            response["result"] = "UNSUPPORTED_PRIMITIVE"
+            response["error"] = str(exc)
+            return response
+        except ProtocolError as exc:
+            response["result"] = "PROTOCOL_ERROR"
+            response["error"] = str(exc)
+            return response
+        except Exception as exc:
+            response["result"] = "FAILED"
+            response["error"] = f"{type(exc).__name__}: {exc}"
+            return response
+
     async def execute_card(
         self,
         card: dict[str, Any],
