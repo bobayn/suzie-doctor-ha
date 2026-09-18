@@ -456,6 +456,47 @@ class ProtocolEngine:
                 except Exception:
                     env["broker_logs_readable"] = False
 
+    @staticmethod
+    def classify_filesystem_readonly_logs(logs: str) -> bool:
+        """Classify host logs without treating normal HAOS immutable EROFS as failure."""
+        benign_patterns = (
+            r"etc-hosts\.mount:.*?/etc/hosts.*?read-only file system",
+            r"etc-hostname\.mount:.*?/etc/hostname.*?read-only file system",
+            r"vfs:\s+mounted root \(erofs filesystem\) readonly",
+            r"mkfs\.erofs availability",
+            r"loading plugin.*?\berofs\b",
+        )
+        strong_patterns = (
+            r"\bremount(?:ing|ed)?\b.{0,120}\bfilesystem\b.{0,120}\bread[- ]only\b",
+            r"\b(?:ext[234]-fs|xfs|btrfs|f2fs)\b.{0,200}\b(?:forced|forcing|remount(?:ing|ed)?)\b.{0,120}\bread[- ]only\b",
+            r"\bfilesystem\b.{0,120}\b(?:forced|forcing)\b.{0,80}\bread[- ]only\b",
+        )
+        mutable_paths = (
+            "/data",
+            "/mnt/data",
+            "/homeassistant",
+            "/config",
+        )
+
+        for line in logs.splitlines()[-5000:]:
+            lowered = line.lower()
+            if any(
+                re.search(pattern, lowered, re.IGNORECASE) is not None
+                for pattern in benign_patterns
+            ):
+                continue
+            if any(
+                re.search(pattern, lowered, re.IGNORECASE) is not None
+                for pattern in strong_patterns
+            ):
+                return True
+            if (
+                "read-only file system" in lowered
+                and any(path in lowered for path in mutable_paths)
+            ):
+                return True
+        return False
+
     async def _run_primitive(
         self, name: str, args: dict[str, Any], env: dict[str, Any]
     ) -> Any:
@@ -475,50 +516,7 @@ class ProtocolEngine:
             if not logs:
                 return None
 
-            # HAOS deliberately boots an immutable EROFS root. During normal
-            # startup systemd can log EROFS failures while preparing transient
-            # bind mounts for /etc/hosts and /etc/hostname. Those messages mean
-            # "this immutable path is read-only", not "the mutable data/storage
-            # filesystem has failed read-only". A storage disease needs a strong
-            # remount/forced-readonly signal or a write failure on a mutable
-            # Home Assistant data path.
-            benign_patterns = (
-                r"etc-hosts\.mount:.*?/etc/hosts.*?read-only file system",
-                r"etc-hostname\.mount:.*?/etc/hostname.*?read-only file system",
-                r"vfs:\s+mounted root \(erofs filesystem\) readonly",
-                r"mkfs\.erofs availability",
-                r"loading plugin.*?\berofs\b",
-            )
-            strong_patterns = (
-                r"\bremount(?:ing|ed)?\b.{0,120}\bfilesystem\b.{0,120}\bread[- ]only\b",
-                r"\b(?:ext[234]-fs|xfs|btrfs|f2fs)\b.{0,200}\b(?:forced|forcing|remount(?:ing|ed)?)\b.{0,120}\bread[- ]only\b",
-                r"\bfilesystem\b.{0,120}\b(?:forced|forcing)\b.{0,80}\bread[- ]only\b",
-            )
-            mutable_paths = (
-                "/data",
-                "/mnt/data",
-                "/homeassistant",
-                "/config",
-            )
-
-            for line in logs.splitlines()[-5000:]:
-                lowered = line.lower()
-                if any(
-                    re.search(pattern, lowered, re.IGNORECASE) is not None
-                    for pattern in benign_patterns
-                ):
-                    continue
-                if any(
-                    re.search(pattern, lowered, re.IGNORECASE) is not None
-                    for pattern in strong_patterns
-                ):
-                    return True
-                if (
-                    "read-only file system" in lowered
-                    and any(path in lowered for path in mutable_paths)
-                ):
-                    return True
-            return False
+            return self.classify_filesystem_readonly_logs(logs)
 
         if name == "mqtt_probe":
             mode = str(resolved.get("mode") or "")
