@@ -1,0 +1,48 @@
+schema_version: 1
+disease_id: "DISEASE-RECORDER-EXTERNAL-DB-UNREACHABLE-001"
+title: "Recorder external database unreachable"
+component: "recorder"
+protocol:
+  id: "PROTOCOL-RECORDER-DB-PREFLIGHT-001"
+  version: "0.1.0"
+  status: "WATCH"
+source_evidence:
+  - source_id: "RCP-RECORDER-DB-STARTUP-PREFLIGHT-001"
+    evidence_status: "CONFIRMED"
+triggers:
+  any:
+    - type: "config_entry_state"
+      match: "recorder_pending"
+    - type: "log_pattern"
+      match: "recorder connection"
+preconditions: []
+diagnostics:
+  - id: "recorder_freshness"
+    primitive: "verify_recorder_write"
+    args: {}
+    save_as: "recorder_fresh"
+confirm:
+  all:
+    - expr: "recorder_fresh == false"
+exclude: []
+dont_do:
+  - "Do not repair each dependent integration before proving Recorder root cause."
+checkpoint:
+  required: false
+  primitive: null
+  args: {}
+treatment:
+  - step: 1
+    primitive: "notify_user"
+    args:
+      message: "Recorder DB reachability disease confirmed; treatment primitive is pending implementation."
+    max_attempts: 1
+verify:
+  rerun_diagnostics: true
+  success_when: "no_original_symptoms"
+fallback: []
+rollback: []
+cooldown_seconds: 3600
+recurrence_rule: "daily_audit_boundary"
+on_failure: "ESCALATION_REQUIRED"
+automation_class: "DIAGNOSTIC_ONLY"
