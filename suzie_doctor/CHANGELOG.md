@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.19-dev
+- Fixed HAOS false-positive `DISEASE-STORAGE-READONLY-001` caused by normal immutable EROFS startup lines for `/etc/hosts` and `/etc/hostname`.
+- `read_host_metrics(filesystem_readonly)` now requires strong filesystem remount/forced-readonly evidence, or a `Read-only file system` failure on mutable Home Assistant data paths.
+- Live verification on HAOS 18.3 / Core 2026.9.3: Recorder write probe healthy, backup fresh, storage ~16.8% used, storage disease NOT_CONFIRMED, prior false-positive incident RESOLVED.
+- Bridge remains `0.2.4-dev`; no Home Assistant Core restart was required.
+
 ## 0.2.18-dev
 - Protocol Pack `0.1.3-dev`: added fail-closed scan/applicability policy without changing primitive set v3.
 - Wired WATCH-card diagnosis into production daily and targeted audits; WATCH still cannot execute treatment.
