@@ -5,6 +5,10 @@ title: "Human-readable disease title"
 component: "recorder"
 severity: "PROBLEM"  # PROBLEM | DEGRADED | CRITICAL
 
+scan:
+  modes: ["daily"]  # daily | targeted | triggered
+  applicability: {}
+
 protocol:
   id: "PROTOCOL-EXAMPLE-001"
   version: "1.0.0"
