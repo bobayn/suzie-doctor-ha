@@ -38,6 +38,15 @@ class SupervisorClient:
     async def host_info(self) -> dict[str, Any]:
         return await self._request("GET", "/host/info") or {}
 
+    async def host_logs_current(self, lines: int = 5000) -> str:
+        safe_lines = max(100, min(10000, int(lines)))
+        data = await self._request(
+            "GET",
+            "/host/logs/boots/0",
+            params={"lines": safe_lines, "no_colors": ""},
+        )
+        return data if isinstance(data, str) else ""
+
     async def hardware_info(self) -> dict[str, Any]:
         return await self._request("GET", "/hardware/info") or {}
 
