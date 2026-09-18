@@ -1,0 +1,5 @@
+pack_id: "suzie-doctor-mvp"
+pack_version: "0.1.0-dev"
+card_schema_version: 1
+primitive_set_version: 1
+status: "DEVELOPMENT"
