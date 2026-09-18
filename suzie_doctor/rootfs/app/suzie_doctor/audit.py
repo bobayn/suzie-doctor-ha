@@ -83,7 +83,6 @@ class Auditor:
             "performance": ("host_cpu_percent", 90.0),
             "memory": ("host_memory_percent", 90.0),
             "storage": ("storage_used_percent", 90.0),
-            "developer_storage": ("storage_used_percent", 90.0),
         }
         if targeted_category in target_health_checks:
             metric, threshold = target_health_checks[targeted_category]
@@ -99,7 +98,7 @@ class Auditor:
                     incident_id = self.db.upsert_incident(
                         problem_key=problem_key,
                         incident_type="health_guard",
-                        severity="DEGRADED" if targeted_category in {"thermal", "storage", "developer_storage"} else "PROBLEM",
+                        severity="DEGRADED" if targeted_category in {"thermal", "storage"} else "PROBLEM",
                         title=f"Health Guard: {targeted_category}",
                         detail=f"{metric}={value}; threshold={threshold}",
                         simulated=simulated,
