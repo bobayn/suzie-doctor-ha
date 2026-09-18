@@ -3,6 +3,9 @@ disease_id: "DISEASE-STORAGE-READONLY-001"
 title: "Filesystem became read-only"
 component: "storage"
 severity: "CRITICAL"
+scan:
+  modes: ["daily", "targeted"]
+  applicability: {}
 protocol:
   id: "PROTOCOL-STORAGE-READONLY-001"
   version: "0.1.0"
