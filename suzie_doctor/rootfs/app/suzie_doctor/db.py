@@ -194,6 +194,24 @@ class Database:
         self.conn.commit()
         return True
 
+    def discard_problem(self, problem_key: str, note: str = "Reclassified as non-incident") -> bool:
+        row = self.conn.execute(
+            "SELECT id FROM incidents WHERE problem_key=? AND resolved_at IS NULL", (problem_key,)
+        ).fetchone()
+        if not row:
+            return False
+        now = utcnow()
+        self.conn.execute(
+            "UPDATE incidents SET status='DISCARDED', resolved_at=?, updated_at=?, detail=? WHERE id=?",
+            (now, now, note, row["id"]),
+        )
+        self.conn.execute(
+            "INSERT INTO incident_events(incident_id,occurred_at,event_type,payload_json) VALUES(?,?,?,?)",
+            (row["id"], now, "DISCARDED", json.dumps({"note": note}, ensure_ascii=False)),
+        )
+        self.conn.commit()
+        return True
+
     def add_observation(self, key: str, category: str, payload: dict[str, Any]) -> int:
         now = utcnow()
         row = self.conn.execute("SELECT count FROM observations WHERE observation_key=?", (key,)).fetchone()
@@ -233,8 +251,8 @@ class Database:
     def dashboard(self) -> dict[str, Any]:
         open_count = int(self.conn.execute("SELECT COUNT(*) c FROM incidents WHERE resolved_at IS NULL").fetchone()["c"])
         since24 = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
-        fixed24 = int(self.conn.execute("SELECT COUNT(*) c FROM incidents WHERE resolved_at >= ?", (since24,)).fetchone()["c"])
-        found24 = int(self.conn.execute("SELECT COUNT(*) c FROM incidents WHERE opened_at >= ?", (since24,)).fetchone()["c"])
+        fixed24 = int(self.conn.execute("SELECT COUNT(*) c FROM incidents WHERE resolved_at >= ? AND status != 'DISCARDED'", (since24,)).fetchone()["c"])
+        found24 = int(self.conn.execute("SELECT COUNT(*) c FROM incidents WHERE opened_at >= ? AND status != 'DISCARDED'", (since24,)).fetchone()["c"])
         last_audit = self.conn.execute(
             "SELECT audit_type,started_at,finished_at,result,found_count FROM audit_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
@@ -247,7 +265,7 @@ class Database:
 
     def incidents(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT * FROM incidents ORDER BY opened_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM incidents WHERE status != 'DISCARDED' ORDER BY opened_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
 
