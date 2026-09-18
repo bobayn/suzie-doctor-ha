@@ -161,20 +161,69 @@ class Auditor:
                     domain = str(entry.get("domain") or "unknown")
                     key = f"config_entry:{entry_id}"
                     current_problem_keys.add(key)
+                    entry_simulated = bool(entry.get("_doctor_simulated_state"))
                     self.db.upsert_incident(
                         problem_key=key,
                         incident_type="config_entry",
                         severity="DEGRADED" if state in {"setup_error", "migration_error"} else "PROBLEM",
                         title=f"Интеграция {domain}: {state}",
                         detail=f"Config entry {entry_id} находится в состоянии {state}.",
+                        simulated=entry_simulated,
                     )
-                    finding = {"problem_key": key, "kind": "config_entry", "entry_id": entry_id, "domain": domain, "state": state}
+                    finding = {
+                        "problem_key": key,
+                        "kind": "config_entry",
+                        "entry_id": entry_id,
+                        "domain": domain,
+                        "state": state,
+                        "simulated": entry_simulated,
+                    }
                     findings.append(finding)
 
                     if allow_generic_recovery and state == "setup_retry":
                         reloaded = await self.ha.bridge_reload_entry(entry_id)
                         finding["generic_reload_attempted"] = True
                         finding["generic_reload_accepted"] = reloaded
+
+                        if reloaded:
+                            await asyncio.sleep(1.0)
+                            verify_snapshot, verify_error = await _safe(self.ha.bridge_snapshot)
+                            if verify_error:
+                                finding["repeat_diagnosis_error"] = verify_error
+                                finding["treatment_result"] = "FAILED"
+                            else:
+                                verify_entries = (
+                                    verify_snapshot.get("config_entries", [])
+                                    if isinstance(verify_snapshot, dict)
+                                    else []
+                                )
+                                verify_entry = next(
+                                    (
+                                        item
+                                        for item in verify_entries
+                                        if isinstance(item, dict)
+                                        and str(item.get("entry_id") or "") == entry_id
+                                    ),
+                                    None,
+                                )
+                                verify_state = (
+                                    str(verify_entry.get("state") or "")
+                                    if isinstance(verify_entry, dict)
+                                    else ""
+                                )
+                                finding["repeat_diagnosis_state"] = verify_state or None
+                                if verify_state and verify_state not in PROBLEM_ENTRY_STATES:
+                                    resolved = self.db.resolve_problem(
+                                        key,
+                                        f"Generic reload succeeded; repeat diagnosis state={verify_state}.",
+                                    )
+                                    finding["treatment_result"] = "SUCCESS"
+                                    finding["incident_resolved"] = resolved
+                                    current_problem_keys.discard(key)
+                                else:
+                                    finding["treatment_result"] = "FAILED"
+                        else:
+                            finding["treatment_result"] = "FAILED"
 
         if isinstance(bridge, dict):
             for old_key in self.db.open_problem_keys(("repair:", "config_entry:")):
