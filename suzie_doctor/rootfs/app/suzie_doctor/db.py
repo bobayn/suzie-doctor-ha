@@ -290,6 +290,25 @@ class Database:
         row = self.conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
         return None if row is None else dict(row)
 
+    def add_incident_event(self, incident_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO incident_events(incident_id,occurred_at,event_type,payload_json) VALUES(?,?,?,?)",
+            (
+                incident_id,
+                utcnow(),
+                event_type,
+                json.dumps(payload or {}, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+
+    def incident_event_count(self, incident_id: str, event_type: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM incident_events WHERE incident_id=? AND event_type=?",
+            (incident_id, event_type),
+        ).fetchone()
+        return 0 if row is None else int(row["c"])
+
     def resolve_problem(self, problem_key: str, note: str = "Symptoms absent on repeat diagnostic") -> bool:
         row = self.conn.execute(
             "SELECT id FROM incidents WHERE problem_key=? AND resolved_at IS NULL", (problem_key,)
