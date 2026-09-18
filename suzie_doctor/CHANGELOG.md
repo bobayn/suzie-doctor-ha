@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.2.17-dev
+- Added conservative HAOS current-boot filesystem read-only diagnostic probe.
+- Protocol Pack `0.1.2-dev` / primitive set v3: all three starter WATCH cards now have implemented diagnostic primitives.
+- Live WATCH-card pass verified MQTT duplicate-ID absent, Recorder write healthy, and filesystem read-only absent.
+- Added disease severity metadata to starter cards in preparation for automatic disease incidents.
+
+## 0.2.16-dev
+- Added functional Recorder write/history probe using Home Assistant REST APIs.
+- Added Mosquitto duplicate client-ID probe from Supervisor App logs.
+- Added read-only Protocol Pack diagnostic self-test; WATCH cards never execute treatment.
+- Protocol Pack `0.1.1-dev` / primitive set v2.
+
+## 0.2.15-dev
+- Added deterministic MVP Protocol Engine.
+- Added Protocol Pack inventory/validation.
+- Added local protocol-run persistence and privacy-bounded telemetry queue.
+- Verified simulated disease protocol end-to-end: diagnose -> confirm -> treatment -> repeat diagnosis -> SUCCESS -> telemetry.
+
+## 0.2.14-dev
+- Verified targeted storage audit uses only host/core-stats/backups.
+- Added unfinished-incident persistence test across Doctor App restart; live test PASS.
+- Clarified the legacy Core-restart bootstrap option is ignored.
+
+## 0.2.13-dev
+- Made Health Guard targeted audits actually targeted.
+- Added Health Guard incident recovery when a confirmed metric returns to normal.
+
+## 0.2.12-dev
+- Limited real generic reload recovery to one attempt per incident episode.
+- Recurrence after a daily boundary now requires disease diagnosis instead of repeating generic recovery.
+- Added controlled FAILED-treatment test.
+
+## 0.2.11-dev
+- Implemented recurrence semantics:
+  - before next daily audit: same incident episode;
+  - after daily audit boundary: new linked recurrence episode.
+- Added isolated recurrence self-test using in-memory SQLite.
+
+## 0.2.10-dev
+- Added verified safe generic recovery for `setup_error`.
+- Corrected documentation: bridge bootstrap never restarts Home Assistant Core.
+
+## 0.2.9-dev
+- First controlled end-to-end treatment test:
+  `setup_retry -> incident -> reload -> repeat diagnosis -> loaded -> SUCCESS`.
+- Added immediate repeat diagnosis after generic recovery.
+- Developer simulations no longer pollute normal incident/value statistics.
+
+## 0.2.8-dev
+- Fixed Home Assistant Repair classification using active/dismissed/severity semantics.
+- Reclassified old false-positive Repair incidents as `DISCARDED`.
+
+## 0.2.7-dev
+- Fixed Supervisor discovery registration by using POST discovery and locally retained UUID.
+
+## 0.2.6-dev
+- Hard rule: Doctor bootstrap never restarts Home Assistant Core.
+
 ## 0.2.0-dev
 - First installable developer build.
 - App repository layout.
