@@ -29,6 +29,7 @@ class ProtocolEngine:
         "config_entry_state",
         "mqtt_probe",
         "notify_user",
+        "read_host_metrics",
         "reload_config_entry",
         "verify_recorder_write",
         "wait",
@@ -299,6 +300,30 @@ class ProtocolEngine:
         if name not in self.SUPPORTED_PRIMITIVES:
             raise UnsupportedPrimitive(name)
         resolved = self._resolve_value(args or {}, env)
+
+        if name == "read_host_metrics":
+            metric = str(resolved.get("metric") or "")
+            if metric != "filesystem_readonly":
+                raise ProtocolError(
+                    f"Unsupported read_host_metrics metric: {metric!r}"
+                )
+            logs = await self.supervisor.host_logs_current(
+                int(resolved.get("lines", 5000))
+            )
+            if not logs:
+                return None
+            readonly_patterns = (
+                r"\bread-only file system\b",
+                r"\bremount(?:ing|ed)?\b.{0,120}\bread-only\b",
+                r"\bfilesystem\b.{0,120}\bread-only\b",
+                r"\bforced?\b.{0,80}\bread-only\b",
+            )
+            lowered = logs.lower()
+            return any(
+                re.search(pattern, lowered, re.IGNORECASE | re.DOTALL)
+                is not None
+                for pattern in readonly_patterns
+            )
 
         if name == "mqtt_probe":
             mode = str(resolved.get("mode") or "")
