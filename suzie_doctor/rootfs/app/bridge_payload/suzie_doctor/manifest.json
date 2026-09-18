@@ -1,7 +1,7 @@
 {
   "domain": "suzie_doctor",
   "name": "Suzie Doctor",
-  "version": "0.2.2-dev",
+  "version": "0.2.3-dev",
   "config_flow": true,
   "single_config_entry": true,
   "integration_type": "service",
