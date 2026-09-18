@@ -41,6 +41,52 @@ def _mount_state(payload: Any, name: str) -> str | None:
     return None
 
 
+def _bridge_trigger_events(bridge: Any) -> list[dict[str, str]]:
+    if not isinstance(bridge, dict):
+        return []
+
+    events: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    issues = bridge.get("issues")
+    if isinstance(issues, list):
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            if not bool(issue.get("active", False)):
+                continue
+            if issue.get("dismissed_version"):
+                continue
+            match = str(
+                issue.get("translation_key")
+                or issue.get("issue_id")
+                or ""
+            ).strip()
+            if not match:
+                continue
+            key = ("repair_issue", match)
+            if key not in seen:
+                seen.add(key)
+                events.append({"type": key[0], "match": key[1]})
+
+    entries = bridge.get("config_entries")
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            state = str(entry.get("state") or "").strip()
+            if state not in PROBLEM_ENTRY_STATES:
+                continue
+            domain = str(entry.get("domain") or "unknown").strip() or "unknown"
+            match = f"{domain}:{state}"
+            key = ("config_entry_state", match)
+            if key not in seen:
+                seen.add(key)
+                events.append({"type": key[0], "match": key[1]})
+
+    return events
+
+
 def _iso_age_hours(value: str | None) -> float | None:
     if not value:
         return None
@@ -116,6 +162,7 @@ class Auditor:
         mode: str,
         target_category: str | None,
         simulated: bool,
+        trigger_events: list[dict[str, str]] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
         if simulated:
             return (
@@ -125,25 +172,40 @@ class Auditor:
             )
 
         context, errors = await self._protocol_scan_context(mode, target_category)
+        trigger_events = [
+            {"type": str(item.get("type") or ""), "match": str(item.get("match") or "")}
+            for item in (trigger_events or [])
+            if isinstance(item, dict)
+            and str(item.get("type") or "")
+            and str(item.get("match") or "")
+        ]
+        context["trigger_events"] = list(trigger_events)
         try:
             scan = await self.protocol_engine.scan_cards(mode=mode, context=context)
         except Exception as exc:
             errors["protocol_pack"] = f"{type(exc).__name__}: {exc}"
             return ({"mode": mode, "failed": True, "items": []}, [], errors)
 
-        trigger_events: list[dict[str, str]] = []
         if mode == "daily":
-            trigger_events = [
-                {
-                    "type": "disease_confirmed",
-                    "match": str(item.get("disease_id") or ""),
-                }
-                for item in scan.get("items", [])
-                if isinstance(item, dict)
-                and item.get("result") == "CONFIRMED"
-                and item.get("diagnosis_confirmed")
-                and item.get("disease_id")
-            ]
+            seen_triggers = {
+                (item["type"], item["match"])
+                for item in trigger_events
+            }
+            for item in scan.get("items", []):
+                if (
+                    isinstance(item, dict)
+                    and item.get("result") == "CONFIRMED"
+                    and item.get("diagnosis_confirmed")
+                    and item.get("disease_id")
+                ):
+                    event = {
+                        "type": "disease_confirmed",
+                        "match": str(item.get("disease_id") or ""),
+                    }
+                    key = (event["type"], event["match"])
+                    if key not in seen_triggers:
+                        seen_triggers.add(key)
+                        trigger_events.append(event)
             triggered_context = dict(context)
             triggered_context["trigger_events"] = trigger_events
             try:
@@ -698,6 +760,7 @@ class Auditor:
                 mode=scan_mode,
                 target_category=targeted_category,
                 simulated=simulated,
+                trigger_events=_bridge_trigger_events(bridge),
             )
             findings.extend(disease_findings)
             errors.update(disease_errors)

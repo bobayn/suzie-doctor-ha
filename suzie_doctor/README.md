@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.23-dev`
+- App: `0.2.24-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 
@@ -27,6 +27,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - Protocol Pack loading/validation and Developer Mode self-tests;
 - fail-closed scan/applicability matching;
 - exact structured trigger matching for triggered-only cards, with confirmed disease events feeding the next root-cause stage;
+- active HA Repairs and problem config-entry states are normalized into structured trigger events; inactive/dismissed/healthy records are ignored;
 - WATCH-card disease diagnosis wired into daily and targeted audits without treatment;
 - disease incidents persist `disease_id` and resolve only after a conclusive negative repeat diagnosis.
 

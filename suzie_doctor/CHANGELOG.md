@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.24-dev
+- Added production structured trigger events from the existing Home Assistant Bridge snapshot: active non-dismissed Repairs and config entries in problem states.
+- Repair triggers match the exact translation key (or issue id fallback); config-entry triggers match domain:state.
+- Historical inactive Repairs, dismissed Repairs and healthy loaded config entries are excluded from trigger context.
+- Extended POST /api/dev/test/triggers to cover the bridge event normalization path; no live changes are performed.
+- Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.23-dev
 - Added Developer endpoint/UI test POST /api/dev/test/mount-recovery.
 - The test runs the production Auditor mount-recovery path against fake Supervisor/HA providers and a temporary SQLite database; live Supervisor, mounts and Doctor /data are not touched.
