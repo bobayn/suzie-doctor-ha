@@ -1,0 +1,9 @@
+{
+  "config": {
+    "step": {
+      "user": {"title": "Suzie Doctor", "description": "Включить локальный bridge Suzie Doctor внутри Home Assistant."},
+      "hassio_confirm": {"title": "Suzie Doctor обнаружен", "description": "Приложение Suzie Doctor установило локальный bridge. Подтвердите, чтобы включить глубокую диагностику Home Assistant."}
+    },
+    "abort": {"already_configured": "Suzie Doctor уже настроен."}
+  }
+}
