@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.28-dev
+- Added Developer release gate POST /api/dev/test/release-gate and UI button.
+- Gate aggregates filesystem-readonly, trigger-matching, mount-recovery and recurrence suites, validates Protocol Pack version/primitive compatibility, and requires no active background errors.
+- The gate intentionally does not replace the separate real daily audit live verification.
+- Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.27-dev
 - Expanded self-observability with background_status state/recovery timestamps while retaining background_errors as the active-error subset.
 - Supervisor core_stats/host_info collection failures and HA bridge availability checks are now recorded instead of silently degrading metric coverage.

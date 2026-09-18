@@ -942,6 +942,111 @@ async def api_dev_trigger_matching_test(request: web.Request) -> web.Response:
     )
 
 
+async def api_dev_release_gate(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    async def _response_json(
+        handler: Any,
+    ) -> dict[str, Any]:
+        response = await handler(request)
+        try:
+            payload = json.loads(response.text)
+        except Exception:
+            return {
+                "result": "FAIL",
+                "reason": "selftest_response_not_json",
+            }
+        return payload if isinstance(payload, dict) else {
+            "result": "FAIL",
+            "reason": "selftest_response_not_mapping",
+        }
+
+    readonly = await _response_json(api_dev_filesystem_readonly_regression_test)
+    triggers = await _response_json(api_dev_trigger_matching_test)
+    mounts = await _response_json(api_dev_mount_recovery_test)
+    recurrence = await _response_json(api_dev_recurrence_test)
+
+    pack_inventory: dict[str, Any]
+    try:
+        pack_inventory = rt.protocol_engine.inventory()
+    except Exception as exc:
+        pack_inventory = {
+            "pack": {},
+            "cards": [],
+            "inventory_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    pack_meta = pack_inventory.get("pack") or {}
+    cards = pack_inventory.get("cards") or []
+    unsupported = [
+        {
+            "disease_id": item.get("disease_id"),
+            "unsupported_primitives": item.get("unsupported_primitives"),
+        }
+        for item in cards
+        if isinstance(item, dict) and item.get("unsupported_primitives")
+    ]
+    version_consistent = (
+        str(pack_meta.get("pack_version") or "") == PROTOCOL_PACK_VERSION
+    )
+    active_background_errors = {
+        key: value
+        for key, value in rt.background_status.items()
+        if value.get("state") == "error"
+    }
+
+    checks = {
+        "filesystem_readonly": readonly.get("result") == "PASS",
+        "trigger_matching": triggers.get("result") == "PASS",
+        "mount_recovery": mounts.get("result") == "PASS",
+        "recurrence": recurrence.get("result") == "PASS",
+        "pack_version_consistent": version_consistent,
+        "supported_primitives_only": not unsupported,
+        "background_errors_clear": not active_background_errors,
+    }
+    passed = all(checks.values())
+
+    return web.json_response(
+        {
+            "result": "PASS" if passed else "FAIL",
+            "checks": checks,
+            "versions": {
+                "app": APP_VERSION,
+                "bridge": BRIDGE_VERSION,
+                "protocol_pack": PROTOCOL_PACK_VERSION,
+                "loaded_pack": pack_meta.get("pack_version"),
+            },
+            "suites": {
+                "filesystem_readonly": {
+                    "result": readonly.get("result"),
+                    "cases": len(readonly.get("cases") or []),
+                },
+                "trigger_matching": {
+                    "result": triggers.get("result"),
+                    "cases": len(triggers.get("cases") or []),
+                },
+                "mount_recovery": {
+                    "result": mounts.get("result"),
+                    "cases": len(mounts.get("cases") or []),
+                },
+                "recurrence": {
+                    "result": recurrence.get("result"),
+                },
+            },
+            "unsupported_primitives": unsupported,
+            "active_background_errors": active_background_errors,
+            "live_mounts_touched": False,
+            "live_database_touched_by_pure_suites": False,
+            "note": (
+                "Developer release gate aggregates safe regression suites; "
+                "real daily audit remains a separate live verification step."
+            ),
+        }
+    )
+
+
 async def api_dev_protocol_selftest(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -1233,7 +1338,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button> <button class="btn" onclick="devMountTest()">Тест mount</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button> <button class="btn" onclick="devMountTest()">Тест mount</button> <button class="btn" onclick="devReleaseGate()">Release gate</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -1254,6 +1359,7 @@ async function devReadonlyTest(){document.getElementById('devResult').textConten
 
 async function devTriggerTest(){document.getElementById('devResult').textContent=' тест triggers…';const r=await fetch(api('/api/dev/test/triggers'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' triggers '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
 async function devMountTest(){document.getElementById('devResult').textContent=' тест mount…';const r=await fetch(api('/api/dev/test/mount-recovery'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' mount '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
+async function devReleaseGate(){document.getElementById('devResult').textContent=' release gate…';const r=await fetch(api('/api/dev/test/release-gate'),{method:'POST'});const d=await r.json();const failed=Object.entries(d.checks||{}).filter(x=>!x[1]).map(x=>x[0]);document.getElementById('devResult').textContent=' gate '+d.result+(failed.length?' · fail='+failed.join(','):'');await refresh()}
 
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
@@ -1321,6 +1427,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_trigger_matching_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/mount-recovery"):
         return await api_dev_mount_recovery_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/release-gate"):
+        return await api_dev_release_gate(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
         return await api_dev_persistence_prepare(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/check"):
@@ -1351,6 +1459,7 @@ def create_app() -> web.Application:
     )
     app.router.add_post("/api/dev/test/triggers", api_dev_trigger_matching_test)
     app.router.add_post("/api/dev/test/mount-recovery", api_dev_mount_recovery_test)
+    app.router.add_post("/api/dev/test/release-gate", api_dev_release_gate)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
