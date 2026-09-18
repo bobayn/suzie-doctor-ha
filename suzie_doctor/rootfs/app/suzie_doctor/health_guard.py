@@ -21,6 +21,7 @@ class HealthGuard:
         collect_normal: Callable[[], Awaitable[dict[str, Any]]],
         on_samples: Callable[[list[MetricSample]], Awaitable[None]],
         on_anomaly: Callable[[str, str, dict[str, Any]], Awaitable[None]],
+        on_recovery: Callable[[str, str, dict[str, Any]], Awaitable[None]],
         fast_interval: int = 120,
         normal_interval: int = 300,
     ) -> None:
@@ -28,9 +29,11 @@ class HealthGuard:
         self.collect_normal = collect_normal
         self.on_samples = on_samples
         self.on_anomaly = on_anomaly
+        self.on_recovery = on_recovery
         self.fast_interval = fast_interval
         self.normal_interval = normal_interval
         self._streaks: dict[str, int] = {}
+        self._active: set[str] = set()
 
     async def _evaluate(self, values: dict[str, Any]) -> None:
         checks = {
@@ -45,10 +48,23 @@ class HealthGuard:
                 continue
             if float(value) >= threshold:
                 self._streaks[metric] = self._streaks.get(metric, 0) + 1
-                if self._streaks[metric] >= 3:
-                    await self.on_anomaly(category, title, {"metric": metric, "value": value, "threshold": threshold})
+                if self._streaks[metric] >= 3 and metric not in self._active:
+                    self._active.add(metric)
+                    await self.on_anomaly(
+                        category,
+                        title,
+                        {"metric": metric, "value": value, "threshold": threshold},
+                    )
             else:
+                was_active = metric in self._active
                 self._streaks.pop(metric, None)
+                self._active.discard(metric)
+                if was_active:
+                    await self.on_recovery(
+                        category,
+                        title,
+                        {"metric": metric, "value": value, "threshold": threshold},
+                    )
 
     async def _loop(self, collector: Callable[[], Awaitable[dict[str, Any]]], interval: int, source: str) -> None:
         while True:
