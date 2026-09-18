@@ -260,7 +260,7 @@ async def api_dev_audit(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-async def _dev_config_entry_recovery_test(rt: Runtime, state: str) -> dict[str, Any]:
+async def _dev_config_entry_recovery_test(rt: Runtime, state: str, reads: int = 1) -> dict[str, Any]:
     if state not in {"setup_retry", "setup_error"}:
         return {"result": "TEST_REJECTED", "reason": "unsupported_simulated_state"}
 
@@ -280,7 +280,7 @@ async def _dev_config_entry_recovery_test(rt: Runtime, state: str) -> dict[str, 
         return {"result": "TEST_NOT_READY", "reason": "suzie_doctor_config_entry_not_loaded"}
 
     entry_id = str(target.get("entry_id") or "")
-    rt.ha.simulate_entry_state_once(entry_id, state)
+    rt.ha.simulate_entry_state_reads(entry_id, state, reads)
     result = await rt.run_audit(
         f"developer_simulated_{state}",
         f"controlled_{state}_treatment_test",
@@ -308,6 +308,28 @@ async def api_dev_setup_error_test(request: web.Request) -> web.Response:
         raise web.HTTPForbidden()
     result = await _dev_config_entry_recovery_test(rt, "setup_error")
     return web.json_response(result, status=409 if result.get("result") == "TEST_NOT_READY" else 200)
+
+
+async def api_dev_failed_recovery_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    # Keep the simulated symptom visible through the repeat diagnosis.
+    # The actual integration reload is still real and safe, but Doctor must
+    # classify the observed treatment outcome as FAILED.
+    result = await _dev_config_entry_recovery_test(rt, "setup_retry", reads=2)
+    finding = (result.get("findings") or [{}])[0]
+    cleanup_resolved = False
+    if isinstance(finding, dict) and finding.get("simulated"):
+        problem_key = str(finding.get("problem_key") or "")
+        if problem_key:
+            cleanup_resolved = rt.db.resolve_problem(
+                problem_key,
+                "Developer failed-treatment simulation cleanup.",
+            )
+    result["simulated_cleanup_resolved"] = cleanup_resolved
+    return web.json_response(result)
 
 
 async def api_dev_recurrence_test(request: web.Request) -> web.Response:
@@ -399,7 +421,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -413,6 +435,7 @@ async function loadIncidents(){const d=await fetch(api('/api/incidents')).then(r
 async function devAudit(){document.getElementById('devResult').textContent=' выполняется…';const r=await fetch(api('/api/dev/audit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'developer_full',reason:'ui'})});const d=await r.json();document.getElementById('devResult').textContent=` ${d.result}`;await refresh()}
 async function devTreatmentTest(path){document.getElementById('devResult').textContent=' тест лечения…';const r=await fetch(api('/api/dev/test/'+path),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` ${d.result} · ${f.treatment_result||'NO_RESULT'} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 async function devRecurrenceTest(){document.getElementById('devResult').textContent=' тест recurrence…';const r=await fetch(api('/api/dev/test/recurrence'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` recurrence ${d.result}`;await refresh()}
+async function devFailedTreatmentTest(){document.getElementById('devResult').textContent=' тест FAILED…';const r=await fetch(api('/api/dev/test/failed-recovery'),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` FAILED test: ${f.treatment_result||d.result} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
 
@@ -455,6 +478,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_setup_error_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/recurrence"):
         return await api_dev_recurrence_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/failed-recovery"):
+        return await api_dev_failed_recovery_test(request)
     return await ui_index(request)
 
 
@@ -470,6 +495,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/setup-retry", api_dev_setup_retry_test)
     app.router.add_post("/api/dev/test/setup-error", api_dev_setup_error_test)
     app.router.add_post("/api/dev/test/recurrence", api_dev_recurrence_test)
+    app.router.add_post("/api/dev/test/failed-recovery", api_dev_failed_recovery_test)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
