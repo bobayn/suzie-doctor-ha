@@ -310,6 +310,74 @@ async def api_dev_setup_error_test(request: web.Request) -> web.Response:
     return web.json_response(result, status=409 if result.get("result") == "TEST_NOT_READY" else 200)
 
 
+async def api_dev_recurrence_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    # Exercise the production recurrence code against an isolated in-memory DB.
+    test_db = Database(":memory:")
+    test_db.initialize()
+    key = "developer:recurrence:selftest"
+
+    first_id = test_db.upsert_incident(
+        problem_key=key,
+        incident_type="developer_test",
+        severity="PROBLEM",
+        title="Recurrence self-test",
+        detail="first episode",
+        simulated=True,
+    )
+    test_db.resolve_problem(key, "developer self-test first recovery")
+
+    same_episode_id = test_db.upsert_incident(
+        problem_key=key,
+        incident_type="developer_test",
+        severity="PROBLEM",
+        title="Recurrence self-test",
+        detail="returned before daily boundary",
+        simulated=True,
+    )
+    same_episode_ok = same_episode_id == first_id
+
+    test_db.resolve_problem(key, "developer self-test second recovery")
+    daily_id = test_db.begin_audit("daily", "developer_recurrence_boundary")
+    test_db.finish_audit(daily_id, "HEALTHY", 0, {"simulated": True})
+
+    recurrence_id = test_db.upsert_incident(
+        problem_key=key,
+        incident_type="developer_test",
+        severity="PROBLEM",
+        title="Recurrence self-test",
+        detail="returned after daily boundary",
+        simulated=True,
+    )
+    recurrence = test_db.incident_by_id(recurrence_id) or {}
+    recurrence_ok = (
+        recurrence_id != first_id
+        and recurrence.get("recurrence_of") == first_id
+        and int(recurrence.get("recurrence_count") or 0) == 1
+    )
+
+    return web.json_response(
+        {
+            "result": "PASS" if same_episode_ok and recurrence_ok else "FAIL",
+            "same_episode": {
+                "first_id": first_id,
+                "returned_id": same_episode_id,
+                "same_id": same_episode_ok,
+            },
+            "after_daily_boundary": {
+                "new_id": recurrence_id,
+                "recurrence_of": recurrence.get("recurrence_of"),
+                "recurrence_count": recurrence.get("recurrence_count"),
+                "new_episode": recurrence_ok,
+            },
+            "live_database_touched": False,
+        }
+    )
+
+
 async def ui_index(request: web.Request) -> web.Response:
     ingress_base = request.headers.get("X-Ingress-Path", "").rstrip("/")
     html = UI_HTML.replace("__INGRESS_BASE__", json.dumps(ingress_base))
@@ -331,7 +399,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -344,6 +412,7 @@ const h=d.health||{};const items=[['Температура CPU',h.cpu_temperatur
 async function loadIncidents(){const d=await fetch(api('/api/incidents')).then(r=>r.json());document.getElementById('incidentList').innerHTML=d.incidents.length?d.incidents.map(i=>`<div class="row"><b>${i.title}</b> <span class="pill">${i.status}</span><div class="muted">${i.severity} · ${i.opened_at}</div><div>${i.detail||''}</div></div>`).join(''):'<p class="muted">Инцидентов нет.</p>';document.getElementById('auditList').innerHTML=d.audits.map(a=>`<div class="row"><b>${a.audit_type}</b> · ${a.result||'RUNNING'}<div class="muted">${a.started_at} · найдено ${a.found_count}</div></div>`).join('')}
 async function devAudit(){document.getElementById('devResult').textContent=' выполняется…';const r=await fetch(api('/api/dev/audit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'developer_full',reason:'ui'})});const d=await r.json();document.getElementById('devResult').textContent=` ${d.result}`;await refresh()}
 async function devTreatmentTest(path){document.getElementById('devResult').textContent=' тест лечения…';const r=await fetch(api('/api/dev/test/'+path),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` ${d.result} · ${f.treatment_result||'NO_RESULT'} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
+async function devRecurrenceTest(){document.getElementById('devResult').textContent=' тест recurrence…';const r=await fetch(api('/api/dev/test/recurrence'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` recurrence ${d.result}`;await refresh()}
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
 
@@ -384,6 +453,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_setup_retry_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/setup-error"):
         return await api_dev_setup_error_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/recurrence"):
+        return await api_dev_recurrence_test(request)
     return await ui_index(request)
 
 
@@ -398,6 +469,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/audit", api_dev_audit)
     app.router.add_post("/api/dev/test/setup-retry", api_dev_setup_retry_test)
     app.router.add_post("/api/dev/test/setup-error", api_dev_setup_error_test)
+    app.router.add_post("/api/dev/test/recurrence", api_dev_recurrence_test)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
