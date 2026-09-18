@@ -1,0 +1,65 @@
+schema_version: 1
+
+disease_id: "DISEASE-EXAMPLE-001"
+title: "Human-readable disease title"
+component: "recorder"
+
+protocol:
+  id: "PROTOCOL-EXAMPLE-001"
+  version: "1.0.0"
+  status: "ACTIVE"  # ACTIVE | WATCH | SUSPENDED | RETIRED
+
+source_evidence:
+  - source_id: "INC-..."
+    evidence_status: "CONFIRMED"  # CONFIRMED | PROBABLE | PARTIAL | UNRESOLVED
+
+triggers:
+  any:
+    - type: "repair_issue"
+      match: "example_issue"
+    - type: "log_pattern"
+      match: "example pattern"
+
+preconditions: []
+
+diagnostics:
+  - id: "probe_1"
+    primitive: "read_ha_state"
+    args: {}
+    save_as: "probe_1_result"
+
+confirm:
+  all:
+    - expr: "probe_1_result == true"
+
+exclude: []
+
+dont_do: []
+
+checkpoint:
+  required: false
+  primitive: null
+  args: {}
+
+treatment:
+  - step: 1
+    primitive: "reload_config_entry"
+    args: {}
+    max_attempts: 1
+  - step: 2
+    primitive: "wait"
+    args:
+      seconds: 30
+
+verify:
+  rerun_diagnostics: true
+  success_when: "no_original_symptoms"
+
+fallback: []
+rollback: []
+
+cooldown_seconds: 3600
+recurrence_rule: "daily_audit_boundary"
+on_failure: "ESCALATION_REQUIRED"
+
+automation_class: "AUTO_SAFE"  # AUTO_SAFE | CONFIRM_REQUIRED | DIAGNOSTIC_ONLY
