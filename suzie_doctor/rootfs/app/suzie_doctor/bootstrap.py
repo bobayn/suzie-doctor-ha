@@ -51,19 +51,30 @@ def write_state(data: dict[str, Any]) -> None:
     STATE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-async def ensure_discovery(supervisor: SupervisorClient) -> bool:
+async def ensure_discovery(supervisor: SupervisorClient, state: dict[str, Any]) -> tuple[bool, str | None]:
+    # Apps may POST /discovery, but listing discovery is reserved for Home Assistant.
+    # Persist the returned UUID locally so we announce only once per bridge hash.
+    saved_uuid = state.get("discovery_uuid")
+    saved_hash = state.get("discovery_bridge_hash")
+    if saved_uuid and saved_hash == state.get("bridge_hash"):
+        return True, str(saved_uuid)
+
     try:
-        current = await supervisor.list_discovery()
-        items = current.get("discovery", []) if isinstance(current, dict) else []
-        if any(isinstance(item, dict) and item.get("service") == "suzie_doctor" for item in items):
-            return True
-        await supervisor.create_discovery(
+        response = await supervisor.create_discovery(
             "suzie_doctor",
             {"bridge_version": BRIDGE_VERSION, "purpose": "suzie_doctor_bridge"},
         )
-        return True
-    except Exception:
-        return False
+        uuid = response.get("uuid") if isinstance(response, dict) else None
+        if not uuid:
+            return False, None
+        state["discovery_uuid"] = str(uuid)
+        state["discovery_bridge_hash"] = state.get("bridge_hash")
+        write_state(state)
+        return True, str(uuid)
+    except Exception as exc:
+        state["discovery_error"] = f"{type(exc).__name__}: {exc}"
+        write_state(state)
+        return False, None
 
 
 async def bootstrap_bridge(
@@ -112,8 +123,9 @@ async def bootstrap_bridge(
         try:
             await ha.get_config()
             core_ready = True
-            discovery_ready = await ensure_discovery(supervisor)
+            discovery_ready, discovery_uuid = await ensure_discovery(supervisor, state)
             if discovery_ready:
+                result["discovery_uuid"] = discovery_uuid
                 break
         except Exception:
             core_ready = False
@@ -123,5 +135,7 @@ async def bootstrap_bridge(
     result["discovery_registered"] = discovery_ready
     if not discovery_ready:
         result["warning"] = "bridge_files_installed_but_discovery_not_registered"
+        if state.get("discovery_error"):
+            result["discovery_error"] = state["discovery_error"]
     return result
 
