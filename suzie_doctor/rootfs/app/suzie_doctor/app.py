@@ -311,6 +311,23 @@ async def on_cleanup(app: web.Application) -> None:
     await asyncio.gather(*app.get("tasks", []), return_exceptions=True)
 
 
+async def ingress_dispatch(request: web.Request) -> web.Response:
+    """Accept Home Assistant Ingress paths with an arbitrary prefix."""
+    path = request.path.rstrip("/") or "/"
+    if request.method == "GET":
+        if path.endswith("/api/health"):
+            return await api_health(request)
+        if path.endswith("/api/dashboard"):
+            return await api_dashboard(request)
+        if path.endswith("/api/incidents"):
+            return await api_incidents(request)
+        if path.endswith("/api/settings"):
+            return await api_settings(request)
+    if request.method == "POST" and path.endswith("/api/dev/audit"):
+        return await api_dev_audit(request)
+    return await ui_index(request)
+
+
 def create_app() -> web.Application:
     app = web.Application()
     app["runtime"] = Runtime()
@@ -320,6 +337,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/incidents", api_incidents)
     app.router.add_get("/api/settings", api_settings)
     app.router.add_post("/api/dev/audit", api_dev_audit)
+    app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
