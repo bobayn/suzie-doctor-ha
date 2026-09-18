@@ -16,4 +16,4 @@ configuration:
   auto_install_bridge:
     name: Автоматически установить bridge в Home Assistant
   auto_restart_core_once:
-    name: Один раз перезапустить Home Assistant после установки bridge
+    name: Устаревшая опция restart Core — игнорируется
