@@ -27,9 +27,11 @@ class ProtocolEngine:
 
     SUPPORTED_PRIMITIVES = {
         "config_entry_state",
-        "reload_config_entry",
-        "wait",
+        "mqtt_probe",
         "notify_user",
+        "reload_config_entry",
+        "verify_recorder_write",
+        "wait",
     }
 
     def __init__(
@@ -279,12 +281,52 @@ class ProtocolEngine:
             )
         return self._eval_condition_item(block, env)
 
+    async def _prepare_named_preconditions(
+        self, card: dict[str, Any], env: dict[str, Any]
+    ) -> None:
+        for item in card.get("preconditions", []) or []:
+            if item == "broker_logs_readable":
+                try:
+                    logs = await self.supervisor.addon_logs("core_mosquitto")
+                    env["broker_logs_readable"] = bool(logs)
+                    env["_mosquitto_logs"] = logs
+                except Exception:
+                    env["broker_logs_readable"] = False
+
     async def _run_primitive(
         self, name: str, args: dict[str, Any], env: dict[str, Any]
     ) -> Any:
         if name not in self.SUPPORTED_PRIMITIVES:
             raise UnsupportedPrimitive(name)
         resolved = self._resolve_value(args or {}, env)
+
+        if name == "mqtt_probe":
+            mode = str(resolved.get("mode") or "")
+            if mode != "duplicate_client_id":
+                raise ProtocolError(f"Unsupported mqtt_probe mode: {mode!r}")
+            logs = env.get("_mosquitto_logs")
+            if not isinstance(logs, str):
+                logs = await self.supervisor.addon_logs("core_mosquitto")
+            max_lines = max(100, min(5000, int(resolved.get("max_lines", 2000))))
+            lines = logs.splitlines()[-max_lines:]
+            pattern = re.compile(
+                r"Client\s+(.+?)\s+already connected, closing old connection\.",
+                re.IGNORECASE,
+            )
+            matches = []
+            for line in lines:
+                match = pattern.search(line)
+                if match:
+                    matches.append(match.group(1).strip())
+            return {
+                "count": len(matches),
+                "unique_count": len(set(matches)),
+                "client_ids": sorted(set(matches)),
+                "lines_scanned": len(lines),
+            }
+
+        if name == "verify_recorder_write":
+            return await self.ha.recorder_write_probe()
 
         if name == "config_entry_state":
             entry_id = str(resolved.get("entry_id") or "")
@@ -422,6 +464,7 @@ class ProtocolEngine:
         }
 
         try:
+            await self._prepare_named_preconditions(card, env)
             if not self._eval_conditions(
                 card.get("preconditions"), env, default=True
             ):
