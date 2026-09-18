@@ -73,7 +73,15 @@ async def bootstrap_bridge(
     auto_install: bool,
     auto_restart_once: bool,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"enabled": auto_install, "installed": False, "restart_requested": False}
+    # DEV rule: bridge bootstrap must NEVER restart Home Assistant by itself.
+    # auto_restart_once is accepted only for backward-compatible options parsing
+    # and is intentionally ignored.
+    result: dict[str, Any] = {
+        "enabled": auto_install,
+        "installed": False,
+        "restart_requested": False,
+        "automatic_core_restart_disabled": True,
+    }
     if not auto_install:
         return result
 
@@ -83,38 +91,24 @@ async def bootstrap_bridge(
     state = read_state()
     state["bridge_version"] = BRIDGE_VERSION
     state["bridge_hash"] = digest
+    write_state(state)
 
-    if changed and auto_restart_once and state.get("core_restart_for_hash") != digest:
-        state["core_restart_for_hash"] = digest
-        write_state(state)
+    if changed:
+        result["restart_required"] = True
         try:
             await ha.persistent_notification(
                 "Suzie Doctor",
-                "Bridge установлен. Home Assistant Core сейчас один раз перезапустится, после чего Suzie Doctor продолжит настройку.",
-                "suzie_doctor_bridge_install",
+                "Bridge обновлён. Для загрузки новой версии bridge потребуется один обычный перезапуск Home Assistant Core в удобное время. Suzie Doctor сам перезапуск не выполняет.",
+                "suzie_doctor_bridge_restart_required",
             )
         except Exception:
             pass
-        await asyncio.sleep(8)
-        result["restart_requested"] = True
-        try:
-            await supervisor.restart_core()
-            result["restart_request_result"] = "accepted"
-        except asyncio.TimeoutError:
-            # A restart can interrupt the request before an HTTP response is returned.
-            # The persisted hash prevents a restart loop; continue by waiting for Core.
-            result["restart_request_result"] = "timeout_expected"
-        except Exception as exc:
-            # The command may still have been accepted even if the connection closed.
-            # Do not turn this into a fatal bootstrap error; verify by polling Core.
-            result["restart_request_result"] = f"connection_interrupted:{type(exc).__name__}"
-        await asyncio.sleep(5)
     else:
-        write_state(state)
+        result["restart_required"] = False
 
     core_ready = False
     discovery_ready = False
-    for _ in range(36):
+    for _ in range(12):
         try:
             await ha.get_config()
             core_ready = True
@@ -130,3 +124,4 @@ async def bootstrap_bridge(
     if not discovery_ready:
         result["warning"] = "bridge_files_installed_but_discovery_not_registered"
     return result
+
