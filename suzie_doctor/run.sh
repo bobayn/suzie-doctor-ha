@@ -1,3 +1,3 @@
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
-exec /opt/suzie-doctor-venv/bin/python /app/main.py
+exec /usr/bin/python3 /app/main.py
