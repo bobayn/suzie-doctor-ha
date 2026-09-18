@@ -50,35 +50,57 @@ class Runtime:
         self.last_health: dict[str, Any] = {}
         self.bootstrap_status: dict[str, Any] = {"status": "pending"}
         self.last_full_audit: dict[str, Any] | None = None
-        self.background_errors: dict[str, dict[str, Any]] = {}
+        self.background_status: dict[str, dict[str, Any]] = {}
         self._audit_lock = asyncio.Lock()
 
     def record_background_error(self, source: str, exc: BaseException) -> None:
         source = str(source or "unknown")
-        previous = self.background_errors.get(source) or {}
-        count = int(previous.get("count") or 0) + 1
+        previous = self.background_status.get(source) or {}
+        count = int(previous.get("error_count") or 0) + 1
         message = str(exc).replace(chr(10), " ").strip()
         if len(message) > 300:
             message = message[:297] + "..."
         payload = {
-            "count": count,
-            "last_at": datetime.now(UTC).isoformat(),
+            **previous,
+            "state": "error",
+            "error_count": count,
+            "last_error_at": datetime.now(UTC).isoformat(),
             "error_type": type(exc).__name__,
             "error": message,
         }
-        self.background_errors[source] = payload
+        self.background_status[source] = payload
         print(
             f"Suzie Doctor background error | source={source} "
             f"count={count} type={payload['error_type']} error={message}",
             flush=True,
         )
 
+    def record_background_ok(self, source: str) -> None:
+        source = str(source or "unknown")
+        previous = self.background_status.get(source) or {}
+        was_error = previous.get("state") == "error"
+        payload = {
+            **previous,
+            "state": "ok",
+            "last_ok_at": datetime.now(UTC).isoformat(),
+        }
+        if was_error:
+            payload["recovered_at"] = payload["last_ok_at"]
+            print(
+                f"Suzie Doctor background recovered | source={source}",
+                flush=True,
+            )
+        self.background_status[source] = payload
+
     async def collect_fast(self) -> dict[str, Any]:
         local = self.local_metrics.snapshot()
         try:
             core = await self.supervisor.core_stats()
-        except Exception:
+        except Exception as exc:
+            self.record_background_error("collector:core_stats", exc)
             core = {}
+        else:
+            self.record_background_ok("collector:core_stats")
         values = {
             **local,
             "ha_core_cpu_percent": core.get("cpu_percent"),
@@ -90,8 +112,11 @@ class Runtime:
     async def collect_normal(self) -> dict[str, Any]:
         try:
             host = await self.supervisor.host_info()
-        except Exception:
+        except Exception as exc:
+            self.record_background_error("collector:host_info", exc)
             host = {}
+        else:
+            self.record_background_ok("collector:host_info")
         total = host.get("disk_total")
         used = host.get("disk_used")
         pct = None
@@ -138,15 +163,28 @@ class Runtime:
                     f"{title}. Suzie Doctor запускает целевой аудит.",
                     f"suzie_doctor_{category}",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self.record_background_error("notification:health_anomaly", exc)
+            else:
+                self.record_background_ok("notification:health_anomaly")
             asyncio.create_task(
-                self.run_audit(
-                    "targeted",
-                    f"health_guard:{category}",
-                    target_context=dict(self.last_health),
-                )
+                self._run_anomaly_audit(category),
+                name=f"health_anomaly:{category}",
             )
+
+    async def _run_anomaly_audit(self, category: str) -> None:
+        try:
+            await self.run_audit(
+                "targeted",
+                f"health_guard:{category}",
+                target_context=dict(self.last_health),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.record_background_error(f"health_anomaly_audit:{category}", exc)
+        else:
+            self.record_background_ok(f"health_anomaly_audit:{category}")
 
     async def on_recovery(self, category: str, title: str, payload: dict[str, Any]) -> None:
         self.db.resolve_problem(
@@ -157,8 +195,11 @@ class Runtime:
     async def system_busy(self) -> tuple[bool, str | None]:
         try:
             snapshot = await self.ha.bridge_snapshot()
-        except Exception:
+        except Exception as exc:
+            self.record_background_error("system_busy:bridge_snapshot", exc)
             snapshot = None
+        else:
+            self.record_background_ok("system_busy:bridge_snapshot")
         if isinstance(snapshot, dict):
             for entity in snapshot.get("backup_entities", []):
                 state = str(entity.get("state") or "").lower()
@@ -217,8 +258,10 @@ class Runtime:
                 summary,
                 "suzie_doctor_first_audit",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            self.record_background_error("notification:first_run", exc)
+        else:
+            self.record_background_ok("notification:first_run")
 
     async def bridge_watch_loop(self) -> None:
         while True:
@@ -229,7 +272,9 @@ class Runtime:
                         result = await self.run_audit("full", "bridge_attached")
                         if result.get("result") != "BUSY":
                             self.db.set_meta("bridge_attached_audit", datetime.now(UTC).isoformat())
+                    self.record_background_ok("bridge_watch")
                 else:
+                    self.record_background_ok("bridge_watch")
                     await asyncio.sleep(300)
                     continue
             except asyncio.CancelledError:
@@ -244,6 +289,7 @@ class Runtime:
             try:
                 await self.run_audit("hourly", "scheduled")
                 self.db.cleanup(self.options.retention_days)
+                self.record_background_ok("hourly")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -264,6 +310,7 @@ class Runtime:
                     result = await self.run_audit("daily", "scheduled")
                     if result.get("result") != "DELAYED":
                         last_date = today
+                self.record_background_ok("daily")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -287,7 +334,12 @@ async def api_dashboard(request: web.Request) -> web.Response:
             "protocol_pack_version": PROTOCOL_PACK_VERSION,
             "health": rt.last_health,
             "bootstrap": rt.bootstrap_status,
-            "background_errors": rt.background_errors,
+            "background_status": rt.background_status,
+            "background_errors": {
+                key: value
+                for key, value in rt.background_status.items()
+                if value.get("state") == "error"
+            },
             "settings": asdict(rt.options),
         }
     )
@@ -1216,6 +1268,7 @@ async def on_startup(app: web.Application) -> None:
         rt.on_anomaly,
         rt.on_recovery,
         on_error=rt.record_background_error,
+        on_success=rt.record_background_ok,
     )
     app["tasks"] = [
         asyncio.create_task(guard.run(), name="health_guard"),

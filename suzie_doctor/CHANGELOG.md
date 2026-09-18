@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.27-dev
+- Expanded self-observability with background_status state/recovery timestamps while retaining background_errors as the active-error subset.
+- Supervisor core_stats/host_info collection failures and HA bridge availability checks are now recorded instead of silently degrading metric coverage.
+- Health Guard successful iterations clear active error state while retaining bounded error history; notification and anomaly-audit failures are also observable.
+- Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.26-dev
 - Added local background-loop error observability: Health Guard fast/normal collectors, hourly audit, daily audit, and bridge-watch exceptions are no longer silently swallowed.
 - Background failures are written to the Doctor container log and summarized in dashboard.background_errors with count, last timestamp and bounded error text.

@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.26-dev`
+- App: `0.2.27-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 
@@ -15,6 +15,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - Ingress UI and persistent SQLite storage in `/data`;
 - Health Guard, hourly checks, first-run/full/daily audit engine;
 - local background-loop error observability for Health Guard, hourly, daily and bridge-watch tasks;
+- background status tracks recovery/last-ok state and provider-level metric collection failures instead of leaving stale errors permanently active;
 - correct Home Assistant Repair classification;
 - controlled generic recovery for config entries with repeat diagnosis;
 - native Supervisor mount recovery for confirmed `inactive` mounts with one reload attempt per incident episode and repeat diagnosis;
