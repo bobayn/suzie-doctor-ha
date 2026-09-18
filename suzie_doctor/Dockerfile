@@ -1,6 +1,6 @@
 FROM ghcr.io/home-assistant/base:latest
 
-ARG BUILD_VERSION="0.2.5-dev"
+ARG BUILD_VERSION="0.2.6-dev"
 ARG BUILD_ARCH="aarch64"
 
 RUN apk add --no-cache python3 py3-aiohttp py3-yaml
