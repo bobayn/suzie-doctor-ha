@@ -1,0 +1,21 @@
+{
+  "telemetry_schema_version": 1,
+  "anonymous_installation_id": "uuid-or-pseudonymous-id",
+  "occurred_at_utc": "2026-09-18T12:00:00Z",
+  "protocol_id": "PROTOCOL-EXAMPLE-001",
+  "protocol_version": "1.0.0",
+  "disease_id": "DISEASE-EXAMPLE-001",
+  "result": "SUCCESS",
+  "duration_ms": 0,
+  "attempt_count": 1,
+  "restart_level_used": "none",
+  "doctor_app_version": "0.1.0-dev",
+  "doctor_integration_version": "0.1.0-dev",
+  "protocol_pack_version": "0.1.0-dev",
+  "ha_core_version": "unknown",
+  "ha_install_type": "unknown",
+  "architecture": "unknown",
+  "database_family": "unknown",
+  "affected_component_version": "unknown",
+  "simulated": false
+}
