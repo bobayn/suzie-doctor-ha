@@ -5,7 +5,8 @@ component: "recorder"
 severity: "DEGRADED"
 scan:
   modes: ["daily"]
-  applicability: {}
+  applicability:
+    recorder_present: true
 protocol:
   id: "PROTOCOL-RECORDER-WRITE-DIAG-001"
   version: "0.1.0"

@@ -4,11 +4,11 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 ## Current development status
 
-Current tested versions:
+Current build versions:
 
-- App: `0.2.17-dev`
+- App: `0.2.18-dev`
 - Integration bridge: `0.2.4-dev`
-- Protocol Pack: `0.1.2-dev`
+- Protocol Pack: `0.1.3-dev`
 
 The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 
@@ -22,7 +22,10 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - unfinished-incident persistence across a Doctor App restart;
 - deterministic Protocol Engine with no arbitrary shell or `eval`;
 - local `protocol_runs` and privacy-bounded telemetry queue;
-- Protocol Pack loading/validation and Developer Mode self-tests.
+- Protocol Pack loading/validation and Developer Mode self-tests;
+- fail-closed scan/applicability matching;
+- WATCH-card disease diagnosis wired into daily and targeted audits without treatment;
+- disease incidents persist `disease_id` and resolve only after a conclusive negative repeat diagnosis.
 
 ## Bootstrap rule
 
@@ -32,7 +35,7 @@ The legacy `auto_restart_core_once` option is retained only for configuration co
 
 ## Protocol Pack status
 
-The three starter disease cards remain `WATCH`; none is allowed to auto-treat yet.
+The four current disease cards remain `WATCH`; none is allowed to auto-treat yet.
 
 Implemented diagnostic primitives:
 
@@ -44,13 +47,15 @@ Implemented diagnostic primitives:
 - `wait`;
 - `notify_user`.
 
-The live diagnostic pass currently reports:
+Current scan policy:
 
-- MQTT duplicate client ID: not confirmed;
-- Recorder functional write: healthy;
-- filesystem read-only: not confirmed.
+- daily: local Mosquitto duplicate-client-ID, Recorder functional write, and filesystem read-only diagnostics when applicable;
+- targeted storage: filesystem read-only diagnostic only;
+- the external-Recorder-DB card remains triggered-only and applies only to MySQL/MariaDB/PostgreSQL, so SQLite systems are not misclassified;
+- missing/unknown applicability is fail-closed: the card is skipped rather than guessed;
+- diagnostic uncertainty does not close an existing disease incident.
 
-The next product step is not to activate those cards blindly. First add trigger/applicability matching so a disease card is only considered where its technical applicability is proven; then wire Protocol Pack diagnosis into normal daily/targeted Doctor operation.
+The next product step is to add real trigger matching for triggered-only cards, then expand the treatment/fallback/rollback side only for protocols that have enough evidence to move from `WATCH` to `ACTIVE`.
 
 ## Safety properties already enforced
 

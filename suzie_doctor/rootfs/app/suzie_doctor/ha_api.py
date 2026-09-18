@@ -15,6 +15,7 @@ class HomeAssistantClient:
         token = os.environ.get("SUPERVISOR_TOKEN")
         if not token:
             raise RuntimeError("SUPERVISOR_TOKEN is not available")
+        self.token = token
         self.base = "http://supervisor/core/api"
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         self._simulated_entry_states_once: dict[str, tuple[str, int]] = {}
@@ -99,6 +100,49 @@ class HomeAssistantClient:
             return False
         finally:
             await self.delete_state(entity_id)
+
+    async def system_health_info(self) -> dict[str, Any]:
+        """Read the initial Home Assistant system-health snapshot over the official WS API."""
+        timeout = aiohttp.ClientTimeout(total=15)
+        ws_headers = {"Authorization": f"Bearer {self.token}"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=ws_headers) as session:
+            async with session.ws_connect("ws://supervisor/core/websocket", heartbeat=10) as ws:
+                first = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if not isinstance(first, dict) or first.get("type") != "auth_required":
+                    raise RuntimeError("Unexpected Home Assistant WebSocket greeting")
+
+                await ws.send_json({"type": "auth", "access_token": self.token})
+                auth = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if not isinstance(auth, dict) or auth.get("type") != "auth_ok":
+                    raise RuntimeError("Home Assistant WebSocket authentication failed")
+
+                command_id = 1
+                await ws.send_json({"id": command_id, "type": "system_health/info"})
+                for _ in range(12):
+                    message = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                    if not isinstance(message, dict) or message.get("id") != command_id:
+                        continue
+
+                    if message.get("type") == "result":
+                        if not message.get("success", False):
+                            raise RuntimeError(f"system_health/info failed: {message.get('error')}")
+                        result = message.get("result")
+                        if isinstance(result, dict):
+                            if result.get("type") == "initial" and isinstance(result.get("data"), dict):
+                                return result["data"]
+                            if isinstance(result.get("data"), dict):
+                                return result["data"]
+                            return result
+
+                    if message.get("type") == "event":
+                        event = message.get("event")
+                        if isinstance(event, dict):
+                            if event.get("type") == "initial" and isinstance(event.get("data"), dict):
+                                return event["data"]
+                            if isinstance(event.get("data"), dict):
+                                return event["data"]
+
+                raise RuntimeError("No initial system-health payload received")
 
     async def persistent_notification(self, title: str, message: str, notification_id: str) -> None:
         await self.call_service(

@@ -5,7 +5,8 @@ component: "mqtt"
 severity: "PROBLEM"
 scan:
   modes: ["daily"]
-  applicability: {}
+  applicability:
+    supervisor_app: "core_mosquitto"
 protocol:
   id: "PROTOCOL-MQTT-CLIENTID-001"
   version: "0.1.0"

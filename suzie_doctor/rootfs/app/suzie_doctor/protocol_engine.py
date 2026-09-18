@@ -96,6 +96,8 @@ class ProtocolEngine:
                     "protocol_version": card["protocol"]["version"],
                     "status": card["protocol"]["status"],
                     "automation_class": card["automation_class"],
+                    "severity": card.get("severity"),
+                    "scan": card.get("scan"),
                     "source_file": card.get("_source_file"),
                     "primitives": sorted(primitives),
                     "unsupported_primitives": sorted(
@@ -107,6 +109,148 @@ class ProtocolEngine:
             "pack": loaded["pack"],
             "supported_primitives": sorted(self.SUPPORTED_PRIMITIVES),
             "cards": cards,
+        }
+
+    @staticmethod
+    def _normalized_database_family(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if "maria" in text:
+            return "mariadb"
+        if "mysql" in text:
+            return "mysql"
+        if "postgres" in text:
+            return "postgresql"
+        if "sqlite" in text:
+            return "sqlite"
+        return text
+
+    def card_scan_applicability(
+        self,
+        card: dict[str, Any],
+        *,
+        mode: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        """Fail-closed scan gating. Unsupported or unknown conditions never run a card."""
+        context = context or {}
+        scan = card.get("scan")
+        if not isinstance(scan, dict):
+            return False, "scan_missing"
+
+        modes = scan.get("modes")
+        if not isinstance(modes, list) or mode not in {str(item) for item in modes}:
+            return False, f"mode_{mode}_not_enabled"
+
+        status = str((card.get("protocol") or {}).get("status") or "")
+        if status not in {"ACTIVE", "WATCH"}:
+            return False, f"protocol_status_{status.lower() or 'unknown'}"
+
+        applicability = scan.get("applicability") or {}
+        if not isinstance(applicability, dict):
+            return False, "applicability_invalid"
+
+        for key, rule in applicability.items():
+            if key == "database_family":
+                actual = self._normalized_database_family(context.get("database_family"))
+                if isinstance(rule, dict):
+                    allowed = rule.get("any_of")
+                else:
+                    allowed = rule
+                if isinstance(allowed, (list, tuple, set)):
+                    expected = {self._normalized_database_family(item) for item in allowed}
+                else:
+                    expected = {self._normalized_database_family(allowed)}
+                if not actual or actual not in expected:
+                    return False, f"database_family:{actual or 'unknown'}"
+                continue
+
+            if key == "supervisor_app":
+                apps = {str(item) for item in (context.get("supervisor_apps") or [])}
+                if isinstance(rule, dict):
+                    expected_raw = rule.get("any_of")
+                else:
+                    expected_raw = rule
+                if isinstance(expected_raw, (list, tuple, set)):
+                    expected = {str(item) for item in expected_raw}
+                else:
+                    expected = {str(expected_raw)}
+                if not apps.intersection(expected):
+                    return False, "supervisor_app_missing"
+                continue
+
+            if key == "recorder_present":
+                if bool(context.get("recorder_present")) != bool(rule):
+                    return False, "recorder_not_applicable"
+                continue
+
+            if key == "target_categories":
+                if mode != "targeted":
+                    continue
+                allowed = rule if isinstance(rule, (list, tuple, set)) else [rule]
+                if str(context.get("target_category") or "") not in {str(item) for item in allowed}:
+                    return False, "target_category_not_applicable"
+                continue
+
+            return False, f"unsupported_applicability:{key}"
+
+        return True, "applicable"
+
+    async def scan_cards(
+        self,
+        *,
+        mode: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        loaded = self.load_pack()
+        context = dict(context or {})
+        items: list[dict[str, Any]] = []
+
+        for card in loaded["cards"]:
+            applies, applicability_reason = self.card_scan_applicability(
+                card, mode=mode, context=context
+            )
+            item: dict[str, Any] = {
+                "disease_id": card["disease_id"],
+                "title": card["title"],
+                "component": card["component"],
+                "severity": str(card.get("severity") or "PROBLEM"),
+                "protocol_id": card["protocol"]["id"],
+                "protocol_version": card["protocol"]["version"],
+                "protocol_status": card["protocol"]["status"],
+                "source_file": card.get("_source_file"),
+                "applicable": applies,
+                "applicability_reason": applicability_reason,
+            }
+            if not applies:
+                item["result"] = "SKIPPED"
+                item["diagnosis_confirmed"] = False
+                items.append(item)
+                continue
+
+            diagnosis = await self.diagnose_card(card, context=context)
+            item.update(
+                {
+                    "result": diagnosis.get("result"),
+                    "diagnosis_confirmed": bool(diagnosis.get("diagnosis_confirmed")),
+                    "diagnostics": diagnosis.get("diagnostics", []),
+                    "error": diagnosis.get("error"),
+                }
+            )
+            items.append(item)
+
+        error_results = {
+            "PRECONDITION_FAILED",
+            "FAILED",
+            "PROTOCOL_ERROR",
+            "UNSUPPORTED_PRIMITIVE",
+        }
+        return {
+            "mode": mode,
+            "pack": loaded["pack"],
+            "evaluated": sum(1 for item in items if item.get("result") != "SKIPPED"),
+            "confirmed": sum(1 for item in items if item.get("diagnosis_confirmed")),
+            "errors": [item for item in items if item.get("result") in error_results],
+            "items": items,
         }
 
     def _validate_card(
@@ -155,6 +299,24 @@ class ProtocolEngine:
                 f"{source}: unsupported automation_class "
                 f"{raw['automation_class']!r}"
             )
+        severity = raw.get("severity")
+        if severity is not None and severity not in {"PROBLEM", "DEGRADED", "CRITICAL"}:
+            raise ProtocolError(f"{source}: unsupported severity {severity!r}")
+        scan = raw.get("scan")
+        if scan is not None:
+            if not isinstance(scan, dict):
+                raise ProtocolError(f"{source}: scan must be a mapping")
+            modes = scan.get("modes")
+            if not isinstance(modes, list) or not modes:
+                raise ProtocolError(f"{source}: scan.modes must be a non-empty list")
+            unsupported_modes = {str(item) for item in modes} - {"daily", "targeted", "triggered"}
+            if unsupported_modes:
+                raise ProtocolError(
+                    f"{source}: unsupported scan modes {sorted(unsupported_modes)!r}"
+                )
+            applicability = scan.get("applicability", {})
+            if not isinstance(applicability, dict):
+                raise ProtocolError(f"{source}: scan.applicability must be a mapping")
         if not isinstance(raw.get("diagnostics"), list):
             raise ProtocolError(f"{source}: diagnostics must be a list")
         if not isinstance(raw.get("treatment"), list):

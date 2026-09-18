@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -114,6 +114,17 @@ class Database:
 
     def initialize(self) -> None:
         self.conn.executescript(DDL)
+
+        # SQLite CREATE TABLE IF NOT EXISTS does not add columns to an existing
+        # table. Keep migrations explicit and idempotent so App upgrades preserve
+        # /data without requiring a database rebuild.
+        incident_columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(incidents)").fetchall()
+        }
+        if "disease_id" not in incident_columns:
+            self.conn.execute("ALTER TABLE incidents ADD COLUMN disease_id TEXT")
+
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
             (str(SCHEMA_VERSION),),

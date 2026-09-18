@@ -33,7 +33,6 @@ class Runtime:
         self.db.initialize()
         self.supervisor = SupervisorClient()
         self.ha = HomeAssistantClient()
-        self.auditor = Auditor(self.db, self.supervisor, self.ha)
         self.protocol_engine = ProtocolEngine(
             self.db,
             self.supervisor,
@@ -41,6 +40,9 @@ class Runtime:
             app_version=APP_VERSION,
             bridge_version=BRIDGE_VERSION,
             pack_version=PROTOCOL_PACK_VERSION,
+        )
+        self.auditor = Auditor(
+            self.db, self.supervisor, self.ha, self.protocol_engine
         )
         self.local_metrics = LocalMetrics()
         self.started_at = datetime.now(UTC).isoformat()

@@ -6,6 +6,7 @@ severity: "DEGRADED"
 scan:
   modes: ["triggered"]
   applicability:
+    recorder_present: true
     database_family:
       any_of: ["mysql", "mariadb", "postgresql"]
 protocol:

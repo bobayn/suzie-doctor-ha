@@ -5,7 +5,8 @@ component: "storage"
 severity: "CRITICAL"
 scan:
   modes: ["daily", "targeted"]
-  applicability: {}
+  applicability:
+    target_categories: ["storage"]
 protocol:
   id: "PROTOCOL-STORAGE-READONLY-001"
   version: "0.1.0"

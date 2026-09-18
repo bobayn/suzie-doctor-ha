@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from .db import Database
 from .ha_api import HomeAssistantClient
+from .protocol_engine import ProtocolEngine
 from .supervisor import SupervisorClient
 
 PROBLEM_ENTRY_STATES = {"setup_error", "setup_retry", "migration_error", "failed_unload"}
@@ -31,10 +32,161 @@ async def _safe(call: Callable[[], Awaitable[Any]]) -> tuple[Any | None, str | N
 
 
 class Auditor:
-    def __init__(self, db: Database, supervisor: SupervisorClient, ha: HomeAssistantClient) -> None:
+    def __init__(
+        self,
+        db: Database,
+        supervisor: SupervisorClient,
+        ha: HomeAssistantClient,
+        protocol_engine: ProtocolEngine,
+    ) -> None:
         self.db = db
         self.supervisor = supervisor
         self.ha = ha
+        self.protocol_engine = protocol_engine
+
+    async def _protocol_scan_context(
+        self, mode: str, target_category: str | None
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        context: dict[str, Any] = {"target_category": target_category}
+        errors: dict[str, str] = {}
+
+        if mode != "daily":
+            return context, errors
+
+        addons_result, health_result = await asyncio.gather(
+            _safe(self.supervisor.addons),
+            _safe(self.ha.system_health_info),
+        )
+        addons, addons_error = addons_result
+        health, health_error = health_result
+
+        if addons_error:
+            errors["protocol_supervisor_apps"] = addons_error
+        addon_rows = addons.get("addons", []) if isinstance(addons, dict) else []
+        context["supervisor_apps"] = [
+            str(item.get("slug"))
+            for item in addon_rows
+            if isinstance(item, dict) and item.get("slug")
+        ]
+
+        if health_error:
+            errors["protocol_system_health"] = health_error
+        recorder = health.get("recorder") if isinstance(health, dict) else None
+        recorder_info = recorder.get("info") if isinstance(recorder, dict) else None
+        context["recorder_present"] = isinstance(recorder_info, dict)
+        if isinstance(recorder_info, dict):
+            context["database_family"] = str(
+                recorder_info.get("database_engine") or ""
+            ).lower()
+
+        return context, errors
+
+    async def _run_disease_scan(
+        self,
+        *,
+        mode: str,
+        target_category: str | None,
+        simulated: bool,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+        if simulated:
+            return (
+                {"mode": mode, "skipped": "simulated_audit", "items": []},
+                [],
+                {},
+            )
+
+        context, errors = await self._protocol_scan_context(mode, target_category)
+        try:
+            scan = await self.protocol_engine.scan_cards(mode=mode, context=context)
+        except Exception as exc:
+            errors["protocol_pack"] = f"{type(exc).__name__}: {exc}"
+            return ({"mode": mode, "failed": True, "items": []}, [], errors)
+
+        findings: list[dict[str, Any]] = []
+        summary_items: list[dict[str, Any]] = []
+        uncertain_results = {
+            "PRECONDITION_FAILED",
+            "FAILED",
+            "PROTOCOL_ERROR",
+            "UNSUPPORTED_PRIMITIVE",
+        }
+
+        for item in scan.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            disease_id = str(item.get("disease_id") or "")
+            if not disease_id:
+                continue
+            result = str(item.get("result") or "")
+            problem_key = f"disease:{disease_id}"
+            lifecycle: str | None = None
+            incident_id: str | None = None
+
+            if result == "CONFIRMED" and item.get("diagnosis_confirmed"):
+                incident_id = self.db.upsert_incident(
+                    problem_key=problem_key,
+                    incident_type="disease",
+                    severity=str(item.get("severity") or "PROBLEM"),
+                    title=str(item.get("title") or disease_id),
+                    detail=f"Protocol {item.get('protocol_id')} confirmed this disease.",
+                    disease_id=disease_id,
+                )
+                lifecycle = "OPEN_OR_UPDATE"
+                findings.append(
+                    {
+                        "problem_key": problem_key,
+                        "incident_id": incident_id,
+                        "kind": "disease",
+                        "disease_id": disease_id,
+                        "protocol_id": item.get("protocol_id"),
+                        "severity": item.get("severity"),
+                    }
+                )
+            elif result in {"NOT_CONFIRMED", "EXCLUDED"}:
+                if self.db.resolve_problem(
+                    problem_key,
+                    f"Protocol {item.get('protocol_id')} no longer confirms the disease.",
+                ):
+                    lifecycle = "RESOLVED"
+            elif result in uncertain_results:
+                lifecycle = "UNCHANGED_UNCERTAIN"
+
+            summary_items.append(
+                {
+                    "disease_id": disease_id,
+                    "protocol_id": item.get("protocol_id"),
+                    "severity": item.get("severity"),
+                    "result": result,
+                    "applicable": item.get("applicable"),
+                    "applicability_reason": item.get("applicability_reason"),
+                    "lifecycle": lifecycle,
+                    "incident_id": incident_id,
+                }
+            )
+
+        scan_errors = scan.get("errors", [])
+        if isinstance(scan_errors, list) and scan_errors:
+            compact = [
+                f"{item.get('disease_id')}:{item.get('result')}"
+                for item in scan_errors
+                if isinstance(item, dict)
+            ]
+            errors["protocol_pack"] = "; ".join(compact) or "diagnostic uncertainty"
+
+        safe_context = {
+            "database_family": context.get("database_family"),
+            "recorder_present": context.get("recorder_present"),
+            "local_mosquitto": "core_mosquitto" in set(context.get("supervisor_apps") or []),
+            "target_category": context.get("target_category"),
+        }
+        summary = {
+            "mode": mode,
+            "evaluated": scan.get("evaluated", 0),
+            "confirmed": scan.get("confirmed", 0),
+            "context": safe_context,
+            "items": summary_items,
+        }
+        return summary, findings, errors
 
     async def run(
         self,
@@ -338,6 +490,17 @@ class Auditor:
                 if old_key not in current_problem_keys:
                     self.db.resolve_problem(old_key)
 
+        disease_scan: dict[str, Any] | None = None
+        scan_mode = "daily" if audit_type == "daily" else ("targeted" if audit_type == "targeted" else None)
+        if scan_mode is not None:
+            disease_scan, disease_findings, disease_errors = await self._run_disease_scan(
+                mode=scan_mode,
+                target_category=targeted_category,
+                simulated=simulated,
+            )
+            findings.extend(disease_findings)
+            errors.update(disease_errors)
+
         observations = repair_observations if isinstance(bridge, dict) else []
         bridge_required = targeted_category is None
         result = "INCIDENTS_FOUND" if findings else (
@@ -360,6 +523,7 @@ class Auditor:
             "core_stats": data.get("core_stats"),
             "backup_summary": data.get("backup_summary"),
             "disk_used_percent": data.get("disk_used_percent"),
+            "disease_scan": disease_scan,
             "targeted": {
                 "category": targeted_category,
                 "collected_sources": names,

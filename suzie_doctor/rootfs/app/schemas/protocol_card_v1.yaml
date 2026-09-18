@@ -7,7 +7,10 @@ severity: "PROBLEM"  # PROBLEM | DEGRADED | CRITICAL
 
 scan:
   modes: ["daily"]  # daily | targeted | triggered
-  applicability: {}
+  # Supported fail-closed applicability keys include recorder_present,
+  # database_family.any_of, supervisor_app, and target_categories.
+  applicability:
+    recorder_present: true
 
 protocol:
   id: "PROTOCOL-EXAMPLE-001"

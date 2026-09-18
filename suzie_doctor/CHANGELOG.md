@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.18-dev
+- Protocol Pack `0.1.3-dev`: added fail-closed scan/applicability policy without changing primitive set v3.
+- Wired WATCH-card diagnosis into production daily and targeted audits; WATCH still cannot execute treatment.
+- Added official Home Assistant WebSocket `system_health/info` reader for Recorder applicability without reading `db_url` or secrets.
+- Added general Recorder write-path disease card and kept the external-DB disease triggered-only / external-engine-only.
+- Disease incidents now carry `disease_id`; conclusive negative diagnosis resolves them, while skipped/failed/uncertain diagnostics leave prior incidents unchanged.
+- Added idempotent SQLite schema v3 migration so existing `/data` databases gain the `disease_id` column safely.
+- MQTT daily scan applies only when the local `core_mosquitto` App is installed; targeted storage scan selects only the storage card.
+
 ## 0.2.17-dev
 - Added conservative HAOS current-boot filesystem read-only diagnostic probe.
 - Protocol Pack `0.1.2-dev` / primitive set v3: all three starter WATCH cards now have implemented diagnostic primitives.
