@@ -156,25 +156,139 @@ class Database:
     ) -> str:
         now = utcnow()
         row = self.conn.execute(
-            "SELECT id FROM incidents WHERE problem_key=? AND resolved_at IS NULL",
+            "SELECT id, simulated FROM incidents WHERE problem_key=? AND resolved_at IS NULL",
             (problem_key,),
         ).fetchone()
         if row:
             incident_id = str(row["id"])
+            # A real occurrence must never remain hidden just because an earlier
+            # developer simulation used the same problem key.
+            combined_simulated = int(bool(row["simulated"]) and simulated)
             self.conn.execute(
-                "UPDATE incidents SET severity=?, status='OPEN', title=?, detail=?, updated_at=? WHERE id=?",
-                (severity, title, detail, now, incident_id),
+                """UPDATE incidents
+                   SET incident_type=?, severity=?, status='OPEN', title=?, detail=?,
+                       updated_at=?, simulated=?
+                   WHERE id=?""",
+                (
+                    incident_type,
+                    severity,
+                    title,
+                    detail,
+                    now,
+                    combined_simulated,
+                    incident_id,
+                ),
             )
-        else:
-            incident_id = str(uuid4())
+            self.conn.commit()
+            return incident_id
+
+        previous = self.conn.execute(
+            """SELECT id,resolved_at,recurrence_count,simulated
+               FROM incidents
+               WHERE problem_key=? AND status='RESOLVED'
+               ORDER BY resolved_at DESC
+               LIMIT 1""",
+            (problem_key,),
+        ).fetchone()
+
+        recurrence_of: str | None = None
+        recurrence_count = 0
+
+        if previous and previous["resolved_at"]:
+            daily_boundary = self.conn.execute(
+                """SELECT 1 FROM audit_runs
+                   WHERE audit_type='daily'
+                     AND finished_at IS NOT NULL
+                     AND finished_at > ?
+                   LIMIT 1""",
+                (str(previous["resolved_at"]),),
+            ).fetchone()
+
+            if daily_boundary is None:
+                # The symptom returned before the next daily boundary: this is
+                # still the same incident episode, so reopen the same row.
+                incident_id = str(previous["id"])
+                combined_simulated = int(bool(previous["simulated"]) and simulated)
+                self.conn.execute(
+                    """UPDATE incidents
+                       SET incident_type=?, severity=?, status='OPEN', title=?, detail=?,
+                           updated_at=?, resolved_at=NULL, simulated=?
+                       WHERE id=?""",
+                    (
+                        incident_type,
+                        severity,
+                        title,
+                        detail,
+                        now,
+                        combined_simulated,
+                        incident_id,
+                    ),
+                )
+                self.conn.execute(
+                    """INSERT INTO incident_events
+                       (incident_id,occurred_at,event_type,payload_json)
+                       VALUES(?,?,?,?)""",
+                    (
+                        incident_id,
+                        now,
+                        "REOPENED_SAME_EPISODE",
+                        json.dumps(
+                            {"note": "Problem returned before next daily audit boundary."},
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+                self.conn.commit()
+                return incident_id
+
+            recurrence_of = str(previous["id"])
+            recurrence_count = int(previous["recurrence_count"]) + 1
+
+        incident_id = str(uuid4())
+        self.conn.execute(
+            """INSERT INTO incidents
+               (id,problem_key,incident_type,severity,status,title,detail,
+                opened_at,updated_at,recurrence_of,recurrence_count,simulated)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                incident_id,
+                problem_key,
+                incident_type,
+                severity,
+                "OPEN",
+                title,
+                detail,
+                now,
+                now,
+                recurrence_of,
+                recurrence_count,
+                int(simulated),
+            ),
+        )
+        if recurrence_of is not None:
             self.conn.execute(
-                """INSERT INTO incidents
-                   (id,problem_key,incident_type,severity,status,title,detail,opened_at,updated_at,simulated)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (incident_id, problem_key, incident_type, severity, "OPEN", title, detail, now, now, int(simulated)),
+                """INSERT INTO incident_events
+                   (incident_id,occurred_at,event_type,payload_json)
+                   VALUES(?,?,?,?)""",
+                (
+                    incident_id,
+                    now,
+                    "RECURRENCE_OPENED",
+                    json.dumps(
+                        {
+                            "recurrence_of": recurrence_of,
+                            "recurrence_count": recurrence_count,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
             )
         self.conn.commit()
         return incident_id
+
+    def incident_by_id(self, incident_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM incidents WHERE id=?", (incident_id,)).fetchone()
+        return None if row is None else dict(row)
 
     def resolve_problem(self, problem_key: str, note: str = "Symptoms absent on repeat diagnostic") -> bool:
         row = self.conn.execute(
