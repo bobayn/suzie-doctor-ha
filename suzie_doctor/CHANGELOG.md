@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.29-dev
+- Completed local retention coverage: stale observations, finished protocol runs and telemetry older than the configured history window are cleaned together with existing samples/audits/resolved incidents.
+- Open incidents and unfinished protocol runs are explicitly preserved regardless of age. Unsent telemetry is still age-bounded to keep the documented privacy-bounded queue finite.
+- Database cleanup now returns per-table removal counts and logs only non-zero cleanup activity.
+- Added isolated POST /api/dev/test/retention regression with nine cases and included it in the Developer release gate.
+- Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.28-dev
 - Added Developer release gate POST /api/dev/test/release-gate and UI button.
 - Gate aggregates filesystem-readonly, trigger-matching, mount-recovery and recurrence suites, validates Protocol Pack version/primitive compatibility, and requires no active background errors.

@@ -495,12 +495,42 @@ class Database:
             result.append(item)
         return result
 
-    def cleanup(self, retention_days: int) -> None:
+    def cleanup(self, retention_days: int) -> dict[str, int]:
         cutoff = (datetime.now(UTC) - timedelta(days=max(30, retention_days))).isoformat()
-        self.conn.execute("DELETE FROM health_samples WHERE sampled_at < ?", (cutoff,))
-        self.conn.execute("DELETE FROM audit_runs WHERE started_at < ?", (cutoff,))
-        self.conn.execute("DELETE FROM incidents WHERE resolved_at IS NOT NULL AND resolved_at < ?", (cutoff,))
+        statements = {
+            "health_samples": (
+                "DELETE FROM health_samples WHERE sampled_at < ?",
+                (cutoff,),
+            ),
+            "audit_runs": (
+                "DELETE FROM audit_runs WHERE started_at < ?",
+                (cutoff,),
+            ),
+            "resolved_incidents": (
+                "DELETE FROM incidents "
+                "WHERE resolved_at IS NOT NULL AND resolved_at < ?",
+                (cutoff,),
+            ),
+            "observations": (
+                "DELETE FROM observations WHERE last_seen < ?",
+                (cutoff,),
+            ),
+            "finished_protocol_runs": (
+                "DELETE FROM protocol_runs "
+                "WHERE finished_at IS NOT NULL AND finished_at < ?",
+                (cutoff,),
+            ),
+            "telemetry_queue": (
+                "DELETE FROM telemetry_queue WHERE created_at < ?",
+                (cutoff,),
+            ),
+        }
+        removed: dict[str, int] = {}
+        for key, (sql, params) in statements.items():
+            cursor = self.conn.execute(sql, params)
+            removed[key] = max(0, int(cursor.rowcount or 0))
         self.conn.commit()
+        return removed
 
     def dashboard(self) -> dict[str, Any]:
         open_count = int(self.conn.execute(

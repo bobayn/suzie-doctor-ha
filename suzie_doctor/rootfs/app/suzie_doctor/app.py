@@ -288,7 +288,17 @@ class Runtime:
         while True:
             try:
                 await self.run_audit("hourly", "scheduled")
-                self.db.cleanup(self.options.retention_days)
+                removed = self.db.cleanup(self.options.retention_days)
+                if any(removed.values()):
+                    print(
+                        "Suzie Doctor retention cleanup | "
+                        + " ".join(
+                            f"{key}={value}"
+                            for key, value in sorted(removed.items())
+                            if value
+                        ),
+                        flush=True,
+                    )
                 self.record_background_ok("hourly")
             except asyncio.CancelledError:
                 raise
@@ -942,6 +952,163 @@ async def api_dev_trigger_matching_test(request: web.Request) -> web.Response:
     )
 
 
+async def api_dev_retention_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    test_db = Database(":memory:")
+    test_db.initialize()
+    now = datetime.now(UTC)
+    old = (now - timedelta(days=120)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+
+    try:
+        open_id = test_db.upsert_incident(
+            problem_key="developer:retention:open",
+            incident_type="developer_test",
+            severity="PROBLEM",
+            title="Open retention test",
+            detail="must survive",
+            simulated=True,
+        )
+        test_db.conn.execute(
+            "UPDATE incidents SET opened_at=?, updated_at=? WHERE id=?",
+            (old, old, open_id),
+        )
+
+        resolved_id = test_db.upsert_incident(
+            problem_key="developer:retention:resolved",
+            incident_type="developer_test",
+            severity="PROBLEM",
+            title="Resolved retention test",
+            detail="must be removed",
+            simulated=True,
+        )
+        test_db.resolve_problem(
+            "developer:retention:resolved",
+            "retention regression",
+        )
+        test_db.conn.execute(
+            "UPDATE incidents SET opened_at=?, updated_at=?, resolved_at=? WHERE id=?",
+            (old, old, old, resolved_id),
+        )
+
+        test_db.add_observation("old_observation", "developer", {"test": True})
+        test_db.add_observation("recent_observation", "developer", {"test": True})
+        test_db.conn.execute(
+            "UPDATE observations SET first_seen=?, last_seen=? WHERE observation_key=?",
+            (old, old, "old_observation"),
+        )
+        test_db.conn.execute(
+            "UPDATE observations SET first_seen=?, last_seen=? WHERE observation_key=?",
+            (recent, recent, "recent_observation"),
+        )
+
+        old_finished = test_db.begin_protocol_run(
+            incident_id=None,
+            disease_id="DISEASE-RETENTION-OLD",
+            protocol_id="PROTOCOL-RETENTION-OLD",
+            protocol_version="1",
+            protocol_pack_version="test",
+            simulated=True,
+            versions={},
+        )
+        test_db.finish_protocol_run(
+            old_finished,
+            result="SUCCESS",
+            attempt_count=1,
+            restart_level_used="none",
+            versions={},
+        )
+        old_unfinished = test_db.begin_protocol_run(
+            incident_id=None,
+            disease_id="DISEASE-RETENTION-UNFINISHED",
+            protocol_id="PROTOCOL-RETENTION-UNFINISHED",
+            protocol_version="1",
+            protocol_pack_version="test",
+            simulated=True,
+            versions={},
+        )
+        recent_finished = test_db.begin_protocol_run(
+            incident_id=None,
+            disease_id="DISEASE-RETENTION-RECENT",
+            protocol_id="PROTOCOL-RETENTION-RECENT",
+            protocol_version="1",
+            protocol_pack_version="test",
+            simulated=True,
+            versions={},
+        )
+        test_db.finish_protocol_run(
+            recent_finished,
+            result="SUCCESS",
+            attempt_count=1,
+            restart_level_used="none",
+            versions={},
+        )
+        test_db.conn.execute(
+            "UPDATE protocol_runs SET started_at=?, finished_at=? WHERE id=?",
+            (old, old, old_finished),
+        )
+        test_db.conn.execute(
+            "UPDATE protocol_runs SET started_at=? WHERE id=?",
+            (old, old_unfinished),
+        )
+        test_db.conn.execute(
+            "UPDATE protocol_runs SET started_at=?, finished_at=? WHERE id=?",
+            (recent, recent, recent_finished),
+        )
+
+        old_seq = test_db.enqueue_telemetry({"simulated": True, "age": "old"})
+        recent_seq = test_db.enqueue_telemetry({"simulated": True, "age": "recent"})
+        test_db.conn.execute(
+            "UPDATE telemetry_queue SET created_at=? WHERE seq=?",
+            (old, old_seq),
+        )
+        test_db.conn.execute(
+            "UPDATE telemetry_queue SET created_at=? WHERE seq=?",
+            (recent, recent_seq),
+        )
+        test_db.conn.commit()
+
+        removed = test_db.cleanup(90)
+
+        def exists(table: str, key_column: str, value: Any) -> bool:
+            row = test_db.conn.execute(
+                f"SELECT 1 FROM {table} WHERE {key_column}=?",
+                (value,),
+            ).fetchone()
+            return row is not None
+
+        cases = [
+            {"id": "open_incident_preserved", "pass": exists("incidents", "id", open_id)},
+            {"id": "old_resolved_incident_removed", "pass": not exists("incidents", "id", resolved_id)},
+            {"id": "old_observation_removed", "pass": not exists("observations", "observation_key", "old_observation")},
+            {"id": "recent_observation_preserved", "pass": exists("observations", "observation_key", "recent_observation")},
+            {"id": "old_finished_protocol_removed", "pass": not exists("protocol_runs", "id", old_finished)},
+            {"id": "old_unfinished_protocol_preserved", "pass": exists("protocol_runs", "id", old_unfinished)},
+            {"id": "recent_finished_protocol_preserved", "pass": exists("protocol_runs", "id", recent_finished)},
+            {"id": "old_telemetry_removed", "pass": not exists("telemetry_queue", "seq", old_seq)},
+            {"id": "recent_telemetry_preserved", "pass": exists("telemetry_queue", "seq", recent_seq)},
+        ]
+    finally:
+        test_db.conn.close()
+
+    passed = all(item["pass"] for item in cases)
+    return web.json_response(
+        {
+            "result": "PASS" if passed else "FAIL",
+            "cases": cases,
+            "removed": removed,
+            "live_database_touched": False,
+            "note": (
+                "Retention regression uses an in-memory database. "
+                "Open incidents and unfinished protocol runs are preserved."
+            ),
+        }
+    )
+
+
 async def api_dev_release_gate(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -967,6 +1134,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
     triggers = await _response_json(api_dev_trigger_matching_test)
     mounts = await _response_json(api_dev_mount_recovery_test)
     recurrence = await _response_json(api_dev_recurrence_test)
+    retention = await _response_json(api_dev_retention_test)
 
     pack_inventory: dict[str, Any]
     try:
@@ -1002,6 +1170,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "trigger_matching": triggers.get("result") == "PASS",
         "mount_recovery": mounts.get("result") == "PASS",
         "recurrence": recurrence.get("result") == "PASS",
+        "retention": retention.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
         "background_errors_clear": not active_background_errors,
@@ -1033,6 +1202,10 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
                 },
                 "recurrence": {
                     "result": recurrence.get("result"),
+                },
+                "retention": {
+                    "result": retention.get("result"),
+                    "cases": len(retention.get("cases") or []),
                 },
             },
             "unsupported_primitives": unsupported,
@@ -1338,7 +1511,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button> <button class="btn" onclick="devMountTest()">Тест mount</button> <button class="btn" onclick="devReleaseGate()">Release gate</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button> <button class="btn" onclick="devMountTest()">Тест mount</button> <button class="btn" onclick="devRetentionTest()">Тест retention</button> <button class="btn" onclick="devReleaseGate()">Release gate</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -1359,6 +1532,7 @@ async function devReadonlyTest(){document.getElementById('devResult').textConten
 
 async function devTriggerTest(){document.getElementById('devResult').textContent=' тест triggers…';const r=await fetch(api('/api/dev/test/triggers'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' triggers '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
 async function devMountTest(){document.getElementById('devResult').textContent=' тест mount…';const r=await fetch(api('/api/dev/test/mount-recovery'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' mount '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
+async function devRetentionTest(){document.getElementById('devResult').textContent=' тест retention…';const r=await fetch(api('/api/dev/test/retention'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' retention '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
 async function devReleaseGate(){document.getElementById('devResult').textContent=' release gate…';const r=await fetch(api('/api/dev/test/release-gate'),{method:'POST'});const d=await r.json();const failed=Object.entries(d.checks||{}).filter(x=>!x[1]).map(x=>x[0]);document.getElementById('devResult').textContent=' gate '+d.result+(failed.length?' · fail='+failed.join(','):'');await refresh()}
 
 refresh();setInterval(refresh,30000);
@@ -1427,6 +1601,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_trigger_matching_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/mount-recovery"):
         return await api_dev_mount_recovery_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/retention"):
+        return await api_dev_retention_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/release-gate"):
         return await api_dev_release_gate(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
@@ -1459,6 +1635,7 @@ def create_app() -> web.Application:
     )
     app.router.add_post("/api/dev/test/triggers", api_dev_trigger_matching_test)
     app.router.add_post("/api/dev/test/mount-recovery", api_dev_mount_recovery_test)
+    app.router.add_post("/api/dev/test/retention", api_dev_retention_test)
     app.router.add_post("/api/dev/test/release-gate", api_dev_release_gate)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
