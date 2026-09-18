@@ -260,6 +260,44 @@ async def api_dev_audit(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_dev_setup_retry_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    snapshot = await rt.ha.bridge_snapshot()
+    entries = snapshot.get("config_entries", []) if isinstance(snapshot, dict) else []
+    target = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and str(entry.get("domain") or "") == "suzie_doctor"
+            and str(entry.get("state") or "") == "loaded"
+        ),
+        None,
+    )
+    if not isinstance(target, dict):
+        return web.json_response(
+            {"result": "TEST_NOT_READY", "reason": "suzie_doctor_config_entry_not_loaded"},
+            status=409,
+        )
+
+    entry_id = str(target.get("entry_id") or "")
+    rt.ha.simulate_entry_state_once(entry_id, "setup_retry")
+    result = await rt.run_audit(
+        "developer_simulated_setup_retry",
+        "controlled_setup_retry_treatment_test",
+    )
+    result["test_target"] = {
+        "entry_id": entry_id,
+        "domain": "suzie_doctor",
+        "real_state_before": str(target.get("state") or ""),
+        "simulated_state": "setup_retry",
+    }
+    return web.json_response(result)
+
+
 async def ui_index(request: web.Request) -> web.Response:
     ingress_base = request.headers.get("X-Ingress-Path", "").rstrip("/")
     html = UI_HTML.replace("__INGRESS_BASE__", json.dumps(ingress_base))
@@ -281,7 +319,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебный ручной запуск полного аудита только для разработки.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest()">Тест лечения setup_retry</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -293,6 +331,7 @@ async function refresh(){const d=await fetch(api('/api/dashboard')).then(r=>r.js
 const h=d.health||{};const items=[['Температура CPU',h.cpu_temperature_c,' °C'],['CPU',h.host_cpu_percent,' %'],['RAM',h.host_memory_percent,' %'],['Load 5m',h.load_5m,''],['Диск',h.storage_used_percent,' %'],['Ресурс диска использован',h.disk_life_time_percent,' %']];document.getElementById('metrics').innerHTML=items.map(x=>`<div><div class="muted">${x[0]}</div><div class="metric">${fmt(x[1],x[2])}</div></div>`).join('');document.getElementById('bootstrap').textContent=JSON.stringify(d.bootstrap,null,2);document.getElementById('settingsText').textContent=JSON.stringify(d.settings,null,2);document.getElementById('devCard').style.display=d.settings.developer_mode?'block':'none'}
 async function loadIncidents(){const d=await fetch(api('/api/incidents')).then(r=>r.json());document.getElementById('incidentList').innerHTML=d.incidents.length?d.incidents.map(i=>`<div class="row"><b>${i.title}</b> <span class="pill">${i.status}</span><div class="muted">${i.severity} · ${i.opened_at}</div><div>${i.detail||''}</div></div>`).join(''):'<p class="muted">Инцидентов нет.</p>';document.getElementById('auditList').innerHTML=d.audits.map(a=>`<div class="row"><b>${a.audit_type}</b> · ${a.result||'RUNNING'}<div class="muted">${a.started_at} · найдено ${a.found_count}</div></div>`).join('')}
 async function devAudit(){document.getElementById('devResult').textContent=' выполняется…';const r=await fetch(api('/api/dev/audit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'developer_full',reason:'ui'})});const d=await r.json();document.getElementById('devResult').textContent=` ${d.result}`;await refresh()}
+async function devTreatmentTest(){document.getElementById('devResult').textContent=' тест лечения…';const r=await fetch(api('/api/dev/test/setup-retry'),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` ${d.result} · ${f.treatment_result||'NO_RESULT'} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
 
@@ -329,6 +368,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
             return await api_settings(request)
     if request.method == "POST" and path.endswith("/api/dev/audit"):
         return await api_dev_audit(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/setup-retry"):
+        return await api_dev_setup_retry_test(request)
     return await ui_index(request)
 
 
@@ -341,6 +382,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/incidents", api_incidents)
     app.router.add_get("/api/settings", api_settings)
     app.router.add_post("/api/dev/audit", api_dev_audit)
+    app.router.add_post("/api/dev/test/setup-retry", api_dev_setup_retry_test)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
