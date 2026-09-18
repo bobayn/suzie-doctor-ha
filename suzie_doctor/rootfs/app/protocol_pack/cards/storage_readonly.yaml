@@ -2,6 +2,7 @@ schema_version: 1
 disease_id: "DISEASE-STORAGE-READONLY-001"
 title: "Filesystem became read-only"
 component: "storage"
+severity: "CRITICAL"
 protocol:
   id: "PROTOCOL-STORAGE-READONLY-001"
   version: "0.1.0"
