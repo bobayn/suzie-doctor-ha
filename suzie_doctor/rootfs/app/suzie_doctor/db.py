@@ -152,6 +152,7 @@ class Database:
         severity: str,
         title: str,
         detail: str,
+        disease_id: str | None = None,
         simulated: bool = False,
     ) -> str:
         now = utcnow()
@@ -167,13 +168,14 @@ class Database:
             self.conn.execute(
                 """UPDATE incidents
                    SET incident_type=?, severity=?, status='OPEN', title=?, detail=?,
-                       updated_at=?, simulated=?
+                       disease_id=COALESCE(?, disease_id), updated_at=?, simulated=?
                    WHERE id=?""",
                 (
                     incident_type,
                     severity,
                     title,
                     detail,
+                    disease_id,
                     now,
                     combined_simulated,
                     incident_id,
@@ -212,13 +214,15 @@ class Database:
                 self.conn.execute(
                     """UPDATE incidents
                        SET incident_type=?, severity=?, status='OPEN', title=?, detail=?,
-                           updated_at=?, resolved_at=NULL, simulated=?
+                           disease_id=COALESCE(?, disease_id), updated_at=?,
+                           resolved_at=NULL, simulated=?
                        WHERE id=?""",
                     (
                         incident_type,
                         severity,
                         title,
                         detail,
+                        disease_id,
                         now,
                         combined_simulated,
                         incident_id,
@@ -247,9 +251,9 @@ class Database:
         incident_id = str(uuid4())
         self.conn.execute(
             """INSERT INTO incidents
-               (id,problem_key,incident_type,severity,status,title,detail,
+               (id,problem_key,incident_type,severity,status,title,detail,disease_id,
                 opened_at,updated_at,recurrence_of,recurrence_count,simulated)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 incident_id,
                 problem_key,
@@ -258,6 +262,7 @@ class Database:
                 "OPEN",
                 title,
                 detail,
+                disease_id,
                 now,
                 now,
                 recurrence_of,
