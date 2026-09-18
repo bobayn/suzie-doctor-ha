@@ -374,6 +374,111 @@ class Database:
         )
         self.conn.commit()
 
+    def get_or_create_meta_uuid(self, key: str) -> str:
+        existing = self.get_meta(key)
+        if existing:
+            return existing
+        value = str(uuid4())
+        self.set_meta(key, value)
+        return value
+
+    def begin_protocol_run(
+        self,
+        *,
+        incident_id: str | None,
+        disease_id: str,
+        protocol_id: str,
+        protocol_version: str,
+        protocol_pack_version: str,
+        simulated: bool,
+        versions: dict[str, Any],
+    ) -> str:
+        run_id = str(uuid4())
+        self.conn.execute(
+            """INSERT INTO protocol_runs
+               (id,incident_id,disease_id,protocol_id,protocol_version,
+                protocol_pack_version,started_at,simulated,versions_json)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                incident_id,
+                disease_id,
+                protocol_id,
+                protocol_version,
+                protocol_pack_version,
+                utcnow(),
+                int(simulated),
+                json.dumps(versions, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+        return run_id
+
+    def finish_protocol_run(
+        self,
+        run_id: str,
+        *,
+        result: str,
+        attempt_count: int,
+        restart_level_used: str,
+        versions: dict[str, Any],
+    ) -> None:
+        self.conn.execute(
+            """UPDATE protocol_runs
+               SET finished_at=?, result=?, attempt_count=?,
+                   restart_level_used=?, versions_json=?
+               WHERE id=?""",
+            (
+                utcnow(),
+                result,
+                max(1, int(attempt_count)),
+                restart_level_used,
+                json.dumps(versions, ensure_ascii=False),
+                run_id,
+            ),
+        )
+        self.conn.commit()
+
+    def enqueue_telemetry(self, payload: dict[str, Any]) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO telemetry_queue(created_at,payload_json) VALUES(?,?)",
+            (utcnow(), json.dumps(payload, ensure_ascii=False)),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def protocol_runs(self, limit: int = 30) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM protocol_runs ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["versions"] = json.loads(item.pop("versions_json"))
+            except Exception:
+                item["versions"] = {}
+            result.append(item)
+        return result
+
+    def telemetry_queue(self, limit: int = 30) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT seq,created_at,payload_json,sent_at
+               FROM telemetry_queue
+               ORDER BY seq DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["payload"] = json.loads(item.pop("payload_json"))
+            except Exception:
+                item["payload"] = {}
+            result.append(item)
+        return result
+
     def cleanup(self, retention_days: int) -> None:
         cutoff = (datetime.now(UTC) - timedelta(days=max(30, retention_days))).isoformat()
         self.conn.execute("DELETE FROM health_samples WHERE sampled_at < ?", (cutoff,))
