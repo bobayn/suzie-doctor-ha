@@ -107,7 +107,19 @@ class Runtime:
                 )
             except Exception:
                 pass
-            asyncio.create_task(self.run_audit("targeted", f"health_guard:{category}"))
+            asyncio.create_task(
+                self.run_audit(
+                    "targeted",
+                    f"health_guard:{category}",
+                    target_context=dict(self.last_health),
+                )
+            )
+
+    async def on_recovery(self, category: str, title: str, payload: dict[str, Any]) -> None:
+        self.db.resolve_problem(
+            f"health:{category}",
+            f"Health Guard recovered: {json.dumps(payload, ensure_ascii=False)}",
+        )
 
     async def system_busy(self) -> tuple[bool, str | None]:
         try:
@@ -121,7 +133,14 @@ class Runtime:
                     return True, f"backup:{state}"
         return False, None
 
-    async def run_audit(self, audit_type: str, reason: str | None = None) -> dict[str, Any]:
+    async def run_audit(
+        self,
+        audit_type: str,
+        reason: str | None = None,
+        *,
+        target_context: dict[str, Any] | None = None,
+        simulated: bool = False,
+    ) -> dict[str, Any]:
         if self._audit_lock.locked():
             return {"result": "BUSY", "reason": "another_audit_running"}
         if audit_type in {"first_run", "daily", "developer_full", "full"}:
@@ -133,6 +152,8 @@ class Runtime:
                 audit_type,
                 reason,
                 allow_generic_recovery=self.options.trust_mode != "manual",
+                target_context=target_context,
+                simulated=simulated,
             )
             if audit_type in {"first_run", "daily", "full", "developer_full"}:
                 self.last_full_audit = result
@@ -332,6 +353,30 @@ async def api_dev_failed_recovery_test(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_dev_targeted_audit_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    result = await rt.run_audit(
+        "targeted",
+        "health_guard:developer_storage",
+        target_context={"storage_used_percent": 95.0},
+        simulated=True,
+    )
+    finding = (result.get("findings") or [{}])[0]
+    cleanup_resolved = False
+    if isinstance(finding, dict):
+        problem_key = str(finding.get("problem_key") or "")
+        if problem_key:
+            cleanup_resolved = rt.db.resolve_problem(
+                problem_key,
+                "Developer targeted-audit simulation cleanup.",
+            )
+    result["simulated_cleanup_resolved"] = cleanup_resolved
+    return web.json_response(result)
+
+
 async def api_dev_recurrence_test(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -421,7 +466,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -436,13 +481,20 @@ async function devAudit(){document.getElementById('devResult').textContent=' в�
 async function devTreatmentTest(path){document.getElementById('devResult').textContent=' тест лечения…';const r=await fetch(api('/api/dev/test/'+path),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` ${d.result} · ${f.treatment_result||'NO_RESULT'} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 async function devRecurrenceTest(){document.getElementById('devResult').textContent=' тест recurrence…';const r=await fetch(api('/api/dev/test/recurrence'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` recurrence ${d.result}`;await refresh()}
 async function devFailedTreatmentTest(){document.getElementById('devResult').textContent=' тест FAILED…';const r=await fetch(api('/api/dev/test/failed-recovery'),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` FAILED test: ${f.treatment_result||d.result} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
+async function devTargetedTest(){document.getElementById('devResult').textContent=' тест targeted…';const r=await fetch(api('/api/dev/test/targeted'),{method:'POST'});const d=await r.json();const t=d.targeted||{};document.getElementById('devResult').textContent=` targeted ${d.result} · sources=${(t.collected_sources||[]).join(',')}`;await refresh()}
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
 
 
 async def on_startup(app: web.Application) -> None:
     rt: Runtime = app["runtime"]
-    guard = HealthGuard(rt.collect_fast, rt.collect_normal, rt.store_samples, rt.on_anomaly)
+    guard = HealthGuard(
+        rt.collect_fast,
+        rt.collect_normal,
+        rt.store_samples,
+        rt.on_anomaly,
+        rt.on_recovery,
+    )
     app["tasks"] = [
         asyncio.create_task(guard.run(), name="health_guard"),
         asyncio.create_task(rt.first_run(), name="first_run"),
@@ -480,6 +532,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_recurrence_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/failed-recovery"):
         return await api_dev_failed_recovery_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/targeted"):
+        return await api_dev_targeted_audit_test(request)
     return await ui_index(request)
 
 
@@ -496,6 +550,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/setup-error", api_dev_setup_error_test)
     app.router.add_post("/api/dev/test/recurrence", api_dev_recurrence_test)
     app.router.add_post("/api/dev/test/failed-recovery", api_dev_failed_recovery_test)
+    app.router.add_post("/api/dev/test/targeted", api_dev_targeted_audit_test)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
