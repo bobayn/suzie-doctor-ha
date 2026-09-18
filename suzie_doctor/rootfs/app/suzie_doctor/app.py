@@ -485,86 +485,6 @@ async def api_dev_filesystem_readonly_regression_test(
             }
         )
 
-    bridge_events = _bridge_trigger_events(
-        {
-            "issues": [
-                {
-                    "active": True,
-                    "dismissed_version": None,
-                    "translation_key": "issue_mount_mount_failed",
-                    "issue_id": "active_mount",
-                },
-                {
-                    "active": False,
-                    "dismissed_version": None,
-                    "translation_key": "historical_issue",
-                    "issue_id": "historical",
-                },
-                {
-                    "active": True,
-                    "dismissed_version": "2026.9.3",
-                    "translation_key": "dismissed_issue",
-                    "issue_id": "dismissed",
-                },
-            ],
-            "config_entries": [
-                {"domain": "demo", "state": "setup_retry"},
-                {"domain": "healthy", "state": "loaded"},
-            ],
-        }
-    )
-    bridge_event_set = {
-        (str(item.get("type") or ""), str(item.get("match") or ""))
-        for item in bridge_events
-        if isinstance(item, dict)
-    }
-    results.extend(
-        [
-            {
-                "id": "bridge_active_repair_event",
-                "expected_run": True,
-                "actual_run": (
-                    "repair_issue",
-                    "issue_mount_mount_failed",
-                )
-                in bridge_event_set,
-                "pass": (
-                    "repair_issue",
-                    "issue_mount_mount_failed",
-                )
-                in bridge_event_set,
-            },
-            {
-                "id": "bridge_problem_config_entry_event",
-                "expected_run": True,
-                "actual_run": (
-                    "config_entry_state",
-                    "demo:setup_retry",
-                )
-                in bridge_event_set,
-                "pass": (
-                    "config_entry_state",
-                    "demo:setup_retry",
-                )
-                in bridge_event_set,
-            },
-            {
-                "id": "bridge_ignored_noise_absent",
-                "expected_run": True,
-                "actual_run": (
-                    ("repair_issue", "historical_issue") not in bridge_event_set
-                    and ("repair_issue", "dismissed_issue") not in bridge_event_set
-                    and ("config_entry_state", "healthy:loaded") not in bridge_event_set
-                ),
-                "pass": (
-                    ("repair_issue", "historical_issue") not in bridge_event_set
-                    and ("repair_issue", "dismissed_issue") not in bridge_event_set
-                    and ("config_entry_state", "healthy:loaded") not in bridge_event_set
-                ),
-            },
-        ]
-    )
-
     passed = all(item["pass"] for item in results)
     return web.json_response(
         {
@@ -854,6 +774,86 @@ async def api_dev_trigger_matching_test(request: web.Request) -> web.Response:
                 "pass": should_run is case["expected_run"],
             }
         )
+
+    bridge_events = _bridge_trigger_events(
+        {
+            "issues": [
+                {
+                    "active": True,
+                    "dismissed_version": None,
+                    "translation_key": "issue_mount_mount_failed",
+                    "issue_id": "active_mount",
+                },
+                {
+                    "active": False,
+                    "dismissed_version": None,
+                    "translation_key": "historical_issue",
+                    "issue_id": "historical",
+                },
+                {
+                    "active": True,
+                    "dismissed_version": "2026.9.3",
+                    "translation_key": "dismissed_issue",
+                    "issue_id": "dismissed",
+                },
+            ],
+            "config_entries": [
+                {"domain": "demo", "state": "setup_retry"},
+                {"domain": "healthy", "state": "loaded"},
+            ],
+        }
+    )
+    bridge_event_set = {
+        (str(item.get("type") or ""), str(item.get("match") or ""))
+        for item in bridge_events
+        if isinstance(item, dict)
+    }
+    results.extend(
+        [
+            {
+                "id": "bridge_active_repair_event",
+                "expected_run": True,
+                "actual_run": (
+                    "repair_issue",
+                    "issue_mount_mount_failed",
+                )
+                in bridge_event_set,
+                "pass": (
+                    "repair_issue",
+                    "issue_mount_mount_failed",
+                )
+                in bridge_event_set,
+            },
+            {
+                "id": "bridge_problem_config_entry_event",
+                "expected_run": True,
+                "actual_run": (
+                    "config_entry_state",
+                    "demo:setup_retry",
+                )
+                in bridge_event_set,
+                "pass": (
+                    "config_entry_state",
+                    "demo:setup_retry",
+                )
+                in bridge_event_set,
+            },
+            {
+                "id": "bridge_ignored_noise_absent",
+                "expected_run": True,
+                "actual_run": (
+                    ("repair_issue", "historical_issue") not in bridge_event_set
+                    and ("repair_issue", "dismissed_issue") not in bridge_event_set
+                    and ("config_entry_state", "healthy:loaded") not in bridge_event_set
+                ),
+                "pass": (
+                    ("repair_issue", "historical_issue") not in bridge_event_set
+                    and ("repair_issue", "dismissed_issue") not in bridge_event_set
+                    and ("config_entry_state", "healthy:loaded") not in bridge_event_set
+                ),
+            },
+        ]
+    )
 
     passed = all(item["pass"] for item in results)
     return web.json_response(

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.25-dev
+- Fixed Developer regression routing from 0.2.24-dev: bridge-trigger normalization cases now belong to POST /api/dev/test/triggers, not the filesystem-readonly suite.
+- Filesystem-readonly regression remains exactly seven cases; trigger regression is now ten cases including active Repair, problem config-entry, and ignored historical/dismissed/healthy bridge records.
+- Production bridge-trigger wiring from 0.2.24-dev is unchanged. Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.24-dev
 - Added production structured trigger events from the existing Home Assistant Bridge snapshot: active non-dismissed Repairs and config entries in problem states.
 - Repair triggers match the exact translation key (or issue id fallback); config-entry triggers match domain:state.
