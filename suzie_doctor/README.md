@@ -6,7 +6,7 @@ This build:
 - runs as a Home Assistant App with Ingress UI;
 - stores state in `/data` (SQLite);
 - installs the small `suzie_doctor` custom integration bridge into Home Assistant config on first run;
-- can restart Home Assistant Core once after bridge installation;
+- never restarts Home Assistant Core as part of bridge bootstrap; restart actions belong only to explicit treatment logic;
 - performs first-run and daily audits;
 - runs lightweight Health Guard monitoring;
 - keeps incidents and audit history locally.
