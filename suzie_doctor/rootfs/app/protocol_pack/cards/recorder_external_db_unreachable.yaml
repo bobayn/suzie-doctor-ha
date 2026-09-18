@@ -2,6 +2,7 @@ schema_version: 1
 disease_id: "DISEASE-RECORDER-EXTERNAL-DB-UNREACHABLE-001"
 title: "Recorder external database unreachable"
 component: "recorder"
+severity: "DEGRADED"
 protocol:
   id: "PROTOCOL-RECORDER-DB-PREFLIGHT-001"
   version: "0.1.0"
