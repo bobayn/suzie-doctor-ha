@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.21-dev
+- Added authoritative Supervisor mount-state checks to normal Doctor audits so an `inactive` network mount cannot be missed when the HA Repair registry lags behind.
+- Added native recovery via `POST /mounts/<name>/reload`; Doctor never removes or recreates the mount automatically.
+- Added one reload attempt per incident episode and mandatory repeat diagnosis against Supervisor mount state.
+- Successful repeat diagnosis resolves the mount incident; failed/uncertain recovery stays open for deeper network/Samba diagnosis.
+- HA `issue_mount_mount_failed` warnings are deduplicated when Supervisor mount state is available.
+- Bridge stays `0.2.4-dev`; Protocol Pack stays `0.1.3-dev`; no Home Assistant Core restart is required.
+
 ## 0.2.20-dev
 - Extracted the production HAOS filesystem read-only log classifier into a deterministic pure helper used by `read_host_metrics(filesystem_readonly)`.
 - Added Developer endpoint `POST /api/dev/test/filesystem-readonly` and a UI button for a seven-case regression suite.

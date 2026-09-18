@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -61,6 +62,19 @@ class SupervisorClient:
 
     async def backups_info(self) -> dict[str, Any]:
         return await self._request("GET", "/backups/info") or {}
+
+    async def mounts_info(self) -> dict[str, Any]:
+        return await self._request("GET", "/mounts") or {}
+
+    async def reload_mount(self, name: str) -> bool:
+        safe_name = str(name).strip()
+        if not safe_name or "/" in safe_name or "\x00" in safe_name:
+            return False
+        try:
+            await self._request("POST", f"/mounts/{quote(safe_name, safe='')}/reload", json={})
+            return True
+        except aiohttp.ClientResponseError:
+            return False
 
     async def addons(self) -> dict[str, Any]:
         return await self._request("GET", "/addons") or {}

@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.20-dev`
+- App: `0.2.21-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.3-dev`
 
@@ -16,6 +16,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - Health Guard, hourly checks, first-run/full/daily audit engine;
 - correct Home Assistant Repair classification;
 - controlled generic recovery for config entries with repeat diagnosis;
+- native Supervisor mount recovery for confirmed `inactive` mounts with one reload attempt per incident episode and repeat diagnosis;
 - one-attempt-per-episode recovery guard;
 - recurrence episodes across the daily-audit boundary;
 - real targeted Health Guard audits instead of full-audit aliases;
@@ -55,7 +56,7 @@ Current scan policy:
 - missing/unknown applicability is fail-closed: the card is skipped rather than guessed;
 - diagnostic uncertainty does not close an existing disease incident.
 
-The next product step is to add real trigger matching for triggered-only cards, then expand the treatment/fallback/rollback side only for protocols that have enough evidence to move from `WATCH` to `ACTIVE`.
+The next product step after native mount recovery is to add real trigger matching for triggered-only cards, then expand the treatment/fallback/rollback side only for protocols that have enough evidence to move from `WATCH` to `ACTIVE`.
 
 ## Safety properties already enforced
 

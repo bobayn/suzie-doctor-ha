@@ -10,6 +10,35 @@ from .protocol_engine import ProtocolEngine
 from .supervisor import SupervisorClient
 
 PROBLEM_ENTRY_STATES = {"setup_error", "setup_retry", "migration_error", "failed_unload"}
+MOUNT_FAILED_TRANSLATION_KEYS = {"issue_mount_mount_failed", "mount_mount_failed"}
+
+
+def _inactive_mounts(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("mounts")
+    if not isinstance(rows, list):
+        return []
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(row.get("name") or "").strip()
+        and str(row.get("state") or "").lower() == "inactive"
+    ]
+
+
+def _mount_state(payload: Any, name: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("mounts")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("name") or "") == name:
+            state = str(row.get("state") or "").lower()
+            return state or None
+    return None
 
 
 def _iso_age_hours(value: str | None) -> float | None:
@@ -218,11 +247,12 @@ class Auditor:
                 _safe(self.supervisor.core_info),
                 _safe(self.supervisor.core_stats),
                 _safe(self.supervisor.backups_info),
+                _safe(self.supervisor.mounts_info),
                 _safe(self.supervisor.network_info),
                 _safe(self.ha.get_config),
                 _safe(self.ha.bridge_snapshot),
             )
-            names = ["system", "supervisor", "host", "core", "core_stats", "backups", "network", "ha_config", "bridge"]
+            names = ["system", "supervisor", "host", "core", "core_stats", "backups", "mounts", "network", "ha_config", "bridge"]
 
         data = {name: result[0] for name, result in zip(names, results)}
         errors = {name: result[1] for name, result in zip(names, results) if result[1]}
@@ -302,6 +332,88 @@ class Auditor:
             backup_summary["latest_age_hours"] = _iso_age_hours(latest.get("date"))
         data["backup_summary"] = backup_summary
 
+        mounts_payload = data.get("mounts")
+        for mount in _inactive_mounts(mounts_payload):
+            mount_name = str(mount.get("name") or "")
+            key = f"supervisor_mount:{mount_name}"
+            current_problem_keys.add(key)
+            incident_id = self.db.upsert_incident(
+                problem_key=key,
+                incident_type="supervisor_mount",
+                severity="PROBLEM",
+                title=f"Supervisor mount недоступен: {mount_name}",
+                detail=(
+                    f"Supervisor reports mount state=inactive; "
+                    f"type={mount.get('type')}; usage={mount.get('usage')}."
+                ),
+                simulated=simulated,
+            )
+            finding = {
+                "problem_key": key,
+                "kind": "supervisor_mount",
+                "incident_id": incident_id,
+                "mount_name": mount_name,
+                "state": "inactive",
+                "usage": mount.get("usage"),
+                "mount_type": mount.get("type"),
+                "simulated": simulated,
+            }
+            findings.append(finding)
+
+            recovery_allowed = allow_generic_recovery and not simulated
+            if recovery_allowed:
+                attempts = self.db.incident_event_count(incident_id, "MOUNT_RELOAD_ATTEMPT")
+                finding["reload_attempts_before"] = attempts
+                if attempts >= 1:
+                    finding["reload_skipped"] = "already_attempted_this_episode"
+                    recovery_allowed = False
+
+            if recovery_allowed:
+                self.db.add_incident_event(
+                    incident_id,
+                    "MOUNT_RELOAD_ATTEMPT",
+                    {"mount_name": mount_name, "state": "inactive"},
+                )
+                reloaded = await self.supervisor.reload_mount(mount_name)
+                finding["reload_attempted"] = True
+                finding["reload_accepted"] = reloaded
+                if reloaded:
+                    await asyncio.sleep(1.0)
+                    verify_mounts, verify_error = await _safe(self.supervisor.mounts_info)
+                    if verify_error:
+                        finding["repeat_diagnosis_error"] = verify_error
+                        finding["treatment_result"] = "FAILED"
+                    else:
+                        verify_state = _mount_state(verify_mounts, mount_name)
+                        finding["repeat_diagnosis_state"] = verify_state
+                        if verify_state == "active":
+                            resolved = self.db.resolve_problem(
+                                key,
+                                "Supervisor mount reload succeeded; repeat diagnosis state=active.",
+                            )
+                            finding["treatment_result"] = "SUCCESS"
+                            finding["incident_resolved"] = resolved
+                            self.db.add_incident_event(
+                                incident_id,
+                                "MOUNT_RELOAD_SUCCESS",
+                                {"repeat_diagnosis_state": verify_state},
+                            )
+                            current_problem_keys.discard(key)
+                        else:
+                            finding["treatment_result"] = "FAILED"
+                            self.db.add_incident_event(
+                                incident_id,
+                                "MOUNT_RELOAD_FAILED",
+                                {"repeat_diagnosis_state": verify_state},
+                            )
+                else:
+                    finding["treatment_result"] = "FAILED"
+                    self.db.add_incident_event(
+                        incident_id,
+                        "MOUNT_RELOAD_FAILED",
+                        {"reason": "reload_not_accepted"},
+                    )
+
         bridge = data.get("bridge")
         if isinstance(bridge, dict):
             issues = bridge.get("issues", [])
@@ -331,6 +443,18 @@ class Auditor:
                     if dismissed:
                         repair_ignored["dismissed"] += 1
                         self.db.discard_problem(key, f"HA Repair dismissed in version {dismissed}.")
+                        continue
+
+                    # Mount failures are handled from authoritative Supervisor mount state,
+                    # so a lagging HA Repair must not create a duplicate observation/incident.
+                    if (
+                        title in MOUNT_FAILED_TRANSLATION_KEYS
+                        and isinstance(mounts_payload, dict)
+                    ):
+                        self.db.discard_problem(
+                            key,
+                            "Supervisor mount state handled by native mount recovery.",
+                        )
                         continue
 
                     # A Repair WARNING is a real advisory from HA but not, by itself,
@@ -484,6 +608,11 @@ class Auditor:
                                     "GENERIC_RELOAD_FAILED",
                                     {"reason": "reload_not_accepted"},
                                 )
+
+        if isinstance(mounts_payload, dict):
+            for old_key in self.db.open_problem_keys(("supervisor_mount:",)):
+                if old_key not in current_problem_keys:
+                    self.db.resolve_problem(old_key)
 
         if isinstance(bridge, dict):
             for old_key in self.db.open_problem_keys(("repair:", "config_entry:")):
