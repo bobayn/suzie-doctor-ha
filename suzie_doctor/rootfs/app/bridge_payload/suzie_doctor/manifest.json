@@ -1,0 +1,12 @@
+{
+  "domain": "suzie_doctor",
+  "name": "Suzie Doctor",
+  "version": "0.2.0-dev",
+  "config_flow": true,
+  "single_config_entry": true,
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": [],
+  "codeowners": [],
+  "documentation": "https://example.invalid/suzie-doctor"
+}
