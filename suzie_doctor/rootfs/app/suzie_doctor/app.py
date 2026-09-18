@@ -353,6 +353,66 @@ async def api_dev_failed_recovery_test(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_dev_persistence_prepare(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    problem_key = "developer:persistence:simulated"
+    rt.db.resolve_problem(problem_key, "Reset stale developer persistence test.")
+    incident_id = rt.db.upsert_incident(
+        problem_key=problem_key,
+        incident_type="developer_test",
+        severity="PROBLEM",
+        title="Persistence restart self-test",
+        detail="This simulated unfinished incident must survive a Doctor App restart.",
+        simulated=True,
+    )
+    incident = rt.db.incident_by_id(incident_id) or {}
+    return web.json_response(
+        {
+            "result": "PREPARED",
+            "incident_id": incident_id,
+            "problem_key": problem_key,
+            "status": incident.get("status"),
+            "resolved_at": incident.get("resolved_at"),
+            "simulated": bool(incident.get("simulated")),
+        }
+    )
+
+
+async def api_dev_persistence_check(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+    body = await request.json() if request.can_read_body else {}
+    incident_id = str(body.get("incident_id") or "")
+    incident = rt.db.incident_by_id(incident_id) if incident_id else None
+    persisted_open = bool(
+        incident
+        and incident.get("status") == "OPEN"
+        and incident.get("resolved_at") is None
+        and bool(incident.get("simulated"))
+    )
+    cleanup_resolved = False
+    if incident:
+        problem_key = str(incident.get("problem_key") or "")
+        if problem_key:
+            cleanup_resolved = rt.db.resolve_problem(
+                problem_key,
+                "Developer persistence restart self-test cleanup.",
+            )
+    return web.json_response(
+        {
+            "result": "PASS" if persisted_open else "FAIL",
+            "incident_id": incident_id,
+            "persisted_open": persisted_open,
+            "incident": incident,
+            "cleanup_resolved": cleanup_resolved,
+        }
+    )
+
+
 async def api_dev_targeted_audit_test(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -360,7 +420,7 @@ async def api_dev_targeted_audit_test(request: web.Request) -> web.Response:
 
     result = await rt.run_audit(
         "targeted",
-        "health_guard:developer_storage",
+        "health_guard:storage",
         target_context={"storage_used_percent": 95.0},
         simulated=True,
     )
@@ -534,6 +594,10 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_failed_recovery_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/targeted"):
         return await api_dev_targeted_audit_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
+        return await api_dev_persistence_prepare(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/persistence/check"):
+        return await api_dev_persistence_check(request)
     return await ui_index(request)
 
 
@@ -551,6 +615,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/recurrence", api_dev_recurrence_test)
     app.router.add_post("/api/dev/test/failed-recovery", api_dev_failed_recovery_test)
     app.router.add_post("/api/dev/test/targeted", api_dev_targeted_audit_test)
+    app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
+    app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
