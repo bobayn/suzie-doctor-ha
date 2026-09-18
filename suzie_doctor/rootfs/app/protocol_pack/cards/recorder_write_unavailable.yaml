@@ -1,0 +1,46 @@
+schema_version: 1
+disease_id: "DISEASE-RECORDER-WRITE-UNAVAILABLE-001"
+title: "Recorder write path unavailable"
+component: "recorder"
+severity: "DEGRADED"
+scan:
+  modes: ["daily"]
+  applicability: {}
+protocol:
+  id: "PROTOCOL-RECORDER-WRITE-DIAG-001"
+  version: "0.1.0"
+  status: "WATCH"
+source_evidence:
+  - source_id: "LOCAL-FUNCTIONAL-PROBE-RECORDER-WRITE-001"
+    evidence_status: "CONFIRMED"
+triggers:
+  any:
+    - type: "functional_probe"
+      match: "recorder_write_failed"
+preconditions: []
+diagnostics:
+  - id: "recorder_write"
+    primitive: "verify_recorder_write"
+    args: {}
+    save_as: "recorder_write_ok"
+confirm:
+  all:
+    - expr: "recorder_write_ok == false"
+exclude: []
+dont_do:
+  - "Do not guess the database root cause from a failed write probe alone."
+  - "Do not repair dependent integrations before Recorder diagnosis."
+checkpoint:
+  required: false
+  primitive: null
+  args: {}
+treatment: []
+verify:
+  rerun_diagnostics: true
+  success_when: "no_original_symptoms"
+fallback: []
+rollback: []
+cooldown_seconds: 3600
+recurrence_rule: "daily_audit_boundary"
+on_failure: "ESCALATION_REQUIRED"
+automation_class: "DIAGNOSTIC_ONLY"
