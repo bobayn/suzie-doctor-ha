@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -499,6 +500,216 @@ async def api_dev_filesystem_readonly_regression_test(
     )
 
 
+async def api_dev_mount_recovery_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    class FakeSupervisor:
+        def __init__(
+            self,
+            mount_name: str,
+            *,
+            after_state: str,
+            reload_accepted: bool = True,
+        ) -> None:
+            self.mount_name = mount_name
+            self.state = "inactive"
+            self.after_state = after_state
+            self.reload_accepted = reload_accepted
+            self.reload_calls = 0
+
+        async def info(self) -> dict[str, Any]:
+            return {}
+
+        async def supervisor_info(self) -> dict[str, Any]:
+            return {}
+
+        async def host_info(self) -> dict[str, Any]:
+            return {}
+
+        async def core_info(self) -> dict[str, Any]:
+            return {}
+
+        async def core_stats(self) -> dict[str, Any]:
+            return {}
+
+        async def backups_info(self) -> dict[str, Any]:
+            return {"backups": []}
+
+        async def network_info(self) -> dict[str, Any]:
+            return {}
+
+        async def mounts_info(self) -> dict[str, Any]:
+            return {
+                "mounts": [
+                    {
+                        "name": self.mount_name,
+                        "state": self.state,
+                        "type": "cifs",
+                        "usage": "media",
+                    }
+                ]
+            }
+
+        async def reload_mount(self, name: str) -> bool:
+            if name != self.mount_name:
+                return False
+            self.reload_calls += 1
+            if self.reload_accepted:
+                self.state = self.after_state
+            return self.reload_accepted
+
+    class FakeHA:
+        async def get_config(self) -> dict[str, Any]:
+            return {}
+
+        async def bridge_snapshot(self) -> dict[str, Any]:
+            return {"issues": [], "config_entries": []}
+
+    def mount_finding(result: dict[str, Any]) -> dict[str, Any]:
+        return next(
+            (
+                item
+                for item in result.get("findings", [])
+                if isinstance(item, dict)
+                and item.get("kind") == "supervisor_mount"
+            ),
+            {},
+        )
+
+    with TemporaryDirectory(prefix="suzie-doctor-mount-test-") as tmp:
+        test_db = Database(Path(tmp) / "test.sqlite3")
+        test_db.initialize()
+        try:
+            fake_ha = FakeHA()
+
+            success_supervisor = FakeSupervisor(
+                "dev_mount_success",
+                after_state="active",
+            )
+            success_auditor = Auditor(
+                test_db,
+                success_supervisor,
+                fake_ha,
+                rt.protocol_engine,
+            )
+            success_result = await success_auditor.run(
+                "developer_mount_recovery",
+                "simulated_mount_success",
+            )
+            success_finding = mount_finding(success_result)
+            success_open = (
+                "supervisor_mount:dev_mount_success"
+                in test_db.open_problem_keys(("supervisor_mount:",))
+            )
+
+            failure_supervisor = FakeSupervisor(
+                "dev_mount_failure",
+                after_state="inactive",
+            )
+            failure_auditor = Auditor(
+                test_db,
+                failure_supervisor,
+                fake_ha,
+                rt.protocol_engine,
+            )
+            failure_first = await failure_auditor.run(
+                "developer_mount_recovery",
+                "simulated_mount_failure_first",
+            )
+            failure_first_finding = mount_finding(failure_first)
+            reload_calls_after_first = failure_supervisor.reload_calls
+
+            failure_second = await failure_auditor.run(
+                "developer_mount_recovery",
+                "simulated_mount_failure_second",
+            )
+            failure_second_finding = mount_finding(failure_second)
+            failure_open = (
+                "supervisor_mount:dev_mount_failure"
+                in test_db.open_problem_keys(("supervisor_mount:",))
+            )
+
+            cases = [
+                {
+                    "id": "success_reload_once",
+                    "pass": success_supervisor.reload_calls == 1,
+                    "actual": success_supervisor.reload_calls,
+                    "expected": 1,
+                },
+                {
+                    "id": "success_repeat_active",
+                    "pass": success_finding.get("repeat_diagnosis_state") == "active",
+                    "actual": success_finding.get("repeat_diagnosis_state"),
+                    "expected": "active",
+                },
+                {
+                    "id": "success_treatment_result",
+                    "pass": success_finding.get("treatment_result") == "SUCCESS",
+                    "actual": success_finding.get("treatment_result"),
+                    "expected": "SUCCESS",
+                },
+                {
+                    "id": "success_incident_resolved",
+                    "pass": not success_open,
+                    "actual": success_open,
+                    "expected": False,
+                },
+                {
+                    "id": "failure_repeat_inactive",
+                    "pass": failure_first_finding.get("repeat_diagnosis_state") == "inactive",
+                    "actual": failure_first_finding.get("repeat_diagnosis_state"),
+                    "expected": "inactive",
+                },
+                {
+                    "id": "failure_first_attempt_once",
+                    "pass": reload_calls_after_first == 1,
+                    "actual": reload_calls_after_first,
+                    "expected": 1,
+                },
+                {
+                    "id": "failure_second_attempt_blocked",
+                    "pass": (
+                        failure_supervisor.reload_calls == 1
+                        and failure_second_finding.get("reload_skipped")
+                        == "already_attempted_this_episode"
+                    ),
+                    "actual": {
+                        "reload_calls": failure_supervisor.reload_calls,
+                        "reload_skipped": failure_second_finding.get("reload_skipped"),
+                    },
+                    "expected": {
+                        "reload_calls": 1,
+                        "reload_skipped": "already_attempted_this_episode",
+                    },
+                },
+                {
+                    "id": "failure_incident_stays_open",
+                    "pass": failure_open,
+                    "actual": failure_open,
+                    "expected": True,
+                },
+            ]
+        finally:
+            test_db.conn.close()
+
+    passed = all(item["pass"] for item in cases)
+    return web.json_response(
+        {
+            "result": "PASS" if passed else "FAIL",
+            "cases": cases,
+            "live_supervisor_touched": False,
+            "live_database_touched": False,
+            "live_mounts_touched": False,
+            "note": (
+                "Production Auditor mount-recovery regression using fake "
+                "Supervisor/HA providers and a temporary SQLite database."
+            ),
+        }
+    )
+
+
 async def api_dev_trigger_matching_test(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -868,7 +1079,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button> <button class="btn" onclick="devMountTest()">Тест mount</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -888,6 +1099,7 @@ async function devProtocolTest(){document.getElementById('devResult').textConten
 async function devReadonlyTest(){document.getElementById('devResult').textContent=' тест readonly…';const r=await fetch(api('/api/dev/test/filesystem-readonly'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=` readonly ${d.result} · ${ok}/${(d.cases||[]).length}`;await refresh()}
 
 async function devTriggerTest(){document.getElementById('devResult').textContent=' тест triggers…';const r=await fetch(api('/api/dev/test/triggers'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' triggers '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
+async function devMountTest(){document.getElementById('devResult').textContent=' тест mount…';const r=await fetch(api('/api/dev/test/mount-recovery'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' mount '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
 
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
@@ -951,6 +1163,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_filesystem_readonly_regression_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/triggers"):
         return await api_dev_trigger_matching_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/mount-recovery"):
+        return await api_dev_mount_recovery_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
         return await api_dev_persistence_prepare(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/check"):
@@ -980,6 +1194,7 @@ def create_app() -> web.Application:
         api_dev_filesystem_readonly_regression_test,
     )
     app.router.add_post("/api/dev/test/triggers", api_dev_trigger_matching_test)
+    app.router.add_post("/api/dev/test/mount-recovery", api_dev_mount_recovery_test)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)

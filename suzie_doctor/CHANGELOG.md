@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.23-dev
+- Added Developer endpoint/UI test POST /api/dev/test/mount-recovery.
+- The test runs the production Auditor mount-recovery path against fake Supervisor/HA providers and a temporary SQLite database; live Supervisor, mounts and Doctor /data are not touched.
+- Regression cases prove successful reload + repeat state active + incident resolution, failed reload persistence, and the one-attempt-per-episode anti-loop guard.
+- Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.22-dev
 - Added exact, fail-closed structured trigger matching for triggered Protocol Pack cards.
 - The external Recorder DB card now triggers only from a confirmed DISEASE-RECORDER-WRITE-UNAVAILABLE-001 event and still applies only to MySQL/MariaDB/PostgreSQL.
