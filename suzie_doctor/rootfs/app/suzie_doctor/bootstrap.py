@@ -51,18 +51,19 @@ def write_state(data: dict[str, Any]) -> None:
     STATE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-async def ensure_discovery(supervisor: SupervisorClient) -> None:
+async def ensure_discovery(supervisor: SupervisorClient) -> bool:
     try:
         current = await supervisor.list_discovery()
         items = current.get("discovery", []) if isinstance(current, dict) else []
         if any(isinstance(item, dict) and item.get("service") == "suzie_doctor" for item in items):
-            return
+            return True
         await supervisor.create_discovery(
             "suzie_doctor",
             {"bridge_version": BRIDGE_VERSION, "purpose": "suzie_doctor_bridge"},
         )
+        return True
     except Exception:
-        return
+        return False
 
 
 async def bootstrap_bridge(
@@ -95,17 +96,37 @@ async def bootstrap_bridge(
         except Exception:
             pass
         await asyncio.sleep(8)
-        await supervisor.restart_core()
         result["restart_requested"] = True
-        await asyncio.sleep(20)
+        try:
+            await supervisor.restart_core()
+            result["restart_request_result"] = "accepted"
+        except asyncio.TimeoutError:
+            # A restart can interrupt the request before an HTTP response is returned.
+            # The persisted hash prevents a restart loop; continue by waiting for Core.
+            result["restart_request_result"] = "timeout_expected"
+        except Exception as exc:
+            # The command may still have been accepted even if the connection closed.
+            # Do not turn this into a fatal bootstrap error; verify by polling Core.
+            result["restart_request_result"] = f"connection_interrupted:{type(exc).__name__}"
+        await asyncio.sleep(5)
     else:
         write_state(state)
 
-    for _ in range(12):
+    core_ready = False
+    discovery_ready = False
+    for _ in range(36):
         try:
             await ha.get_config()
-            await ensure_discovery(supervisor)
-            break
+            core_ready = True
+            discovery_ready = await ensure_discovery(supervisor)
+            if discovery_ready:
+                break
         except Exception:
-            await asyncio.sleep(5)
+            core_ready = False
+        await asyncio.sleep(5)
+
+    result["core_ready"] = core_ready
+    result["discovery_registered"] = discovery_ready
+    if not discovery_ready:
+        result["warning"] = "bridge_files_installed_but_discovery_not_registered"
     return result
