@@ -1,0 +1,19 @@
+configuration:
+  trust_mode:
+    name: Trust mode
+    description: Controls whether Suzie Doctor asks before treatment actions.
+  daily_audit_time:
+    name: Daily audit time
+    description: Local Home Assistant time for the deep daily audit.
+  retention_days:
+    name: History retention days
+    description: Minimum 30 days.
+  language:
+    name: Interface language
+  developer_mode:
+    name: Developer mode
+    description: Enables developer-only diagnostic controls.
+  auto_install_bridge:
+    name: Install Home Assistant bridge automatically
+  auto_restart_core_once:
+    name: Restart Home Assistant once after bridge installation
