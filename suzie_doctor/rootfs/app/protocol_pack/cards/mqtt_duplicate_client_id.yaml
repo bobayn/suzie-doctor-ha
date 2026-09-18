@@ -2,6 +2,7 @@ schema_version: 1
 disease_id: "DISEASE-MQTT-DUPLICATE-CLIENT-ID-001"
 title: "Duplicate MQTT client ID"
 component: "mqtt"
+severity: "PROBLEM"
 protocol:
   id: "PROTOCOL-MQTT-CLIENTID-001"
   version: "0.1.0"
