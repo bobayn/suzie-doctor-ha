@@ -372,6 +372,46 @@ async def api_dev_protocol_inventory(request: web.Request) -> web.Response:
     return web.json_response(inventory)
 
 
+async def api_dev_protocol_pack_diagnostics(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    loaded = rt.protocol_engine.load_pack()
+    results = []
+    for card in loaded["cards"]:
+        result = await rt.protocol_engine.execute_card(
+            card,
+            context={},
+            trust_mode=rt.options.trust_mode,
+            simulated=True,
+            developer_override=False,
+        )
+        results.append(
+            {
+                "disease_id": card["disease_id"],
+                "protocol_id": card["protocol"]["id"],
+                "status": card["protocol"]["status"],
+                "automation_class": card["automation_class"],
+                "result": result.get("result"),
+                "diagnosis_confirmed": result.get("diagnosis_confirmed"),
+                "treatment_allowed": result.get("treatment_allowed"),
+                "treatment_gate": result.get("treatment_gate"),
+                "diagnostics": result.get("diagnostics", []),
+                "error": result.get("error"),
+            }
+        )
+
+    return web.json_response(
+        {
+            "pack": loaded["pack"],
+            "results": results,
+            "protocol_runs_created": 0,
+            "note": "WATCH cards remain non-treatment diagnostics.",
+        }
+    )
+
+
 async def api_dev_protocol_selftest(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -734,6 +774,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_targeted_audit_test(request)
     if request.method == "GET" and path.endswith("/api/dev/protocols"):
         return await api_dev_protocol_inventory(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/protocol-pack"):
+        return await api_dev_protocol_pack_diagnostics(request)
     if request.method == "POST" and path.endswith("/api/dev/test/protocol"):
         return await api_dev_protocol_selftest(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
@@ -758,6 +800,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/failed-recovery", api_dev_failed_recovery_test)
     app.router.add_post("/api/dev/test/targeted", api_dev_targeted_audit_test)
     app.router.add_get("/api/dev/protocols", api_dev_protocol_inventory)
+    app.router.add_post("/api/dev/test/protocol-pack", api_dev_protocol_pack_diagnostics)
     app.router.add_post("/api/dev/test/protocol", api_dev_protocol_selftest)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
