@@ -36,30 +36,98 @@ class Auditor:
         self.supervisor = supervisor
         self.ha = ha
 
-    async def run(self, audit_type: str, reason: str | None = None, allow_generic_recovery: bool = True) -> dict[str, Any]:
+    async def run(
+        self,
+        audit_type: str,
+        reason: str | None = None,
+        allow_generic_recovery: bool = True,
+        target_context: dict[str, Any] | None = None,
+        simulated: bool = False,
+    ) -> dict[str, Any]:
         audit_id = self.db.begin_audit(audit_type, reason)
-        results = await asyncio.gather(
-            _safe(self.supervisor.info),
-            _safe(self.supervisor.supervisor_info),
-            _safe(self.supervisor.host_info),
-            _safe(self.supervisor.core_info),
-            _safe(self.supervisor.core_stats),
-            _safe(self.supervisor.backups_info),
-            _safe(self.supervisor.network_info),
-            _safe(self.ha.get_config),
-            _safe(self.ha.bridge_snapshot),
-        )
-        names = ["system", "supervisor", "host", "core", "core_stats", "backups", "network", "ha_config", "bridge"]
+        targeted_category = None
+        if audit_type == "targeted" and reason and reason.startswith("health_guard:"):
+            targeted_category = reason.split(":", 1)[1]
+
+        if targeted_category is not None:
+            calls: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
+                ("host", self.supervisor.host_info),
+                ("core_stats", self.supervisor.core_stats),
+            ]
+            if targeted_category == "storage":
+                calls.append(("backups", self.supervisor.backups_info))
+            results = await asyncio.gather(*(_safe(call) for _, call in calls))
+            names = [name for name, _ in calls]
+        else:
+            results = await asyncio.gather(
+                _safe(self.supervisor.info),
+                _safe(self.supervisor.supervisor_info),
+                _safe(self.supervisor.host_info),
+                _safe(self.supervisor.core_info),
+                _safe(self.supervisor.core_stats),
+                _safe(self.supervisor.backups_info),
+                _safe(self.supervisor.network_info),
+                _safe(self.ha.get_config),
+                _safe(self.ha.bridge_snapshot),
+            )
+            names = ["system", "supervisor", "host", "core", "core_stats", "backups", "network", "ha_config", "bridge"]
+
         data = {name: result[0] for name, result in zip(names, results)}
         errors = {name: result[1] for name, result in zip(names, results) if result[1]}
 
         current_problem_keys: set[str] = set()
         findings: list[dict[str, Any]] = []
 
+        target_health_checks = {
+            "thermal": ("cpu_temperature_c", 80.0),
+            "performance": ("host_cpu_percent", 90.0),
+            "memory": ("host_memory_percent", 90.0),
+            "storage": ("storage_used_percent", 90.0),
+            "developer_storage": ("storage_used_percent", 90.0),
+        }
+        if targeted_category in target_health_checks:
+            metric, threshold = target_health_checks[targeted_category]
+            value = (target_context or {}).get(metric)
+            problem_key = (
+                f"health:{targeted_category}:simulated"
+                if simulated
+                else f"health:{targeted_category}"
+            )
+            if isinstance(value, (int, float)):
+                if float(value) >= threshold:
+                    current_problem_keys.add(problem_key)
+                    incident_id = self.db.upsert_incident(
+                        problem_key=problem_key,
+                        incident_type="health_guard",
+                        severity="DEGRADED" if targeted_category in {"thermal", "storage", "developer_storage"} else "PROBLEM",
+                        title=f"Health Guard: {targeted_category}",
+                        detail=f"{metric}={value}; threshold={threshold}",
+                        simulated=simulated,
+                    )
+                    findings.append(
+                        {
+                            "problem_key": problem_key,
+                            "incident_id": incident_id,
+                            "kind": "health_guard_targeted",
+                            "category": targeted_category,
+                            "metric": metric,
+                            "value": value,
+                            "threshold": threshold,
+                            "simulated": simulated,
+                        }
+                    )
+                else:
+                    self.db.resolve_problem(
+                        problem_key,
+                        f"Health metric recovered: {metric}={value} < {threshold}.",
+                    )
+            else:
+                errors["target_context"] = f"Missing numeric target metric: {metric}"
+
         host = data.get("host") or {}
         total = host.get("disk_total")
         used = host.get("disk_used")
-        if isinstance(total, (int, float)) and total > 0 and isinstance(used, (int, float)):
+        if targeted_category is None and isinstance(total, (int, float)) and total > 0 and isinstance(used, (int, float)):
             disk_pct = round(float(used) / float(total) * 100.0, 1)
             data["disk_used_percent"] = disk_pct
             if disk_pct >= 90:
@@ -272,7 +340,12 @@ class Auditor:
                     self.db.resolve_problem(old_key)
 
         observations = repair_observations if isinstance(bridge, dict) else []
-        result = "INCIDENTS_FOUND" if findings else ("OBSERVE" if observations or errors or not isinstance(bridge, dict) else "HEALTHY")
+        bridge_required = targeted_category is None
+        result = "INCIDENTS_FOUND" if findings else (
+            "OBSERVE"
+            if observations or errors or (bridge_required and not isinstance(bridge, dict))
+            else "HEALTHY"
+        )
         payload = {
             "reason": reason,
             "findings": findings,
@@ -288,6 +361,11 @@ class Auditor:
             "core_stats": data.get("core_stats"),
             "backup_summary": data.get("backup_summary"),
             "disk_used_percent": data.get("disk_used_percent"),
+            "targeted": {
+                "category": targeted_category,
+                "collected_sources": names,
+                "target_context": target_context or {},
+            } if targeted_category is not None else None,
         }
         self.db.finish_audit(audit_id, result, len(findings), payload)
         return {"audit_id": audit_id, "result": result, **payload}
