@@ -474,18 +474,51 @@ class ProtocolEngine:
             )
             if not logs:
                 return None
-            readonly_patterns = (
-                r"\bread-only file system\b",
-                r"\bremount(?:ing|ed)?\b.{0,120}\bread-only\b",
-                r"\bfilesystem\b.{0,120}\bread-only\b",
-                r"\bforced?\b.{0,80}\bread-only\b",
+
+            # HAOS deliberately boots an immutable EROFS root. During normal
+            # startup systemd can log EROFS failures while preparing transient
+            # bind mounts for /etc/hosts and /etc/hostname. Those messages mean
+            # "this immutable path is read-only", not "the mutable data/storage
+            # filesystem has failed read-only". A storage disease needs a strong
+            # remount/forced-readonly signal or a write failure on a mutable
+            # Home Assistant data path.
+            benign_patterns = (
+                r"etc-hosts\.mount:.*?/etc/hosts.*?read-only file system",
+                r"etc-hostname\.mount:.*?/etc/hostname.*?read-only file system",
+                r"vfs:\s+mounted root \(erofs filesystem\) readonly",
+                r"mkfs\.erofs availability",
+                r"loading plugin.*?\berofs\b",
             )
-            lowered = logs.lower()
-            return any(
-                re.search(pattern, lowered, re.IGNORECASE | re.DOTALL)
-                is not None
-                for pattern in readonly_patterns
+            strong_patterns = (
+                r"\bremount(?:ing|ed)?\b.{0,120}\bfilesystem\b.{0,120}\bread[- ]only\b",
+                r"\b(?:ext[234]-fs|xfs|btrfs|f2fs)\b.{0,200}\b(?:forced|forcing|remount(?:ing|ed)?)\b.{0,120}\bread[- ]only\b",
+                r"\bfilesystem\b.{0,120}\b(?:forced|forcing)\b.{0,80}\bread[- ]only\b",
             )
+            mutable_paths = (
+                "/data",
+                "/mnt/data",
+                "/homeassistant",
+                "/config",
+            )
+
+            for line in logs.splitlines()[-5000:]:
+                lowered = line.lower()
+                if any(
+                    re.search(pattern, lowered, re.IGNORECASE) is not None
+                    for pattern in benign_patterns
+                ):
+                    continue
+                if any(
+                    re.search(pattern, lowered, re.IGNORECASE) is not None
+                    for pattern in strong_patterns
+                ):
+                    return True
+                if (
+                    "read-only file system" in lowered
+                    and any(path in lowered for path in mutable_paths)
+                ):
+                    return True
+            return False
 
         if name == "mqtt_probe":
             mode = str(resolved.get("mode") or "")
