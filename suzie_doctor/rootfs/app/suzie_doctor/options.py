@@ -15,7 +15,7 @@ class Options:
     language: str = "ru"
     developer_mode: bool = True
     auto_install_bridge: bool = True
-    auto_restart_core_once: bool = True
+    auto_restart_core_once: bool = False
 
 
 def load_options(path: Path = OPTIONS_PATH) -> Options:
@@ -29,5 +29,5 @@ def load_options(path: Path = OPTIONS_PATH) -> Options:
         language=str(raw.get("language", "ru")),
         developer_mode=bool(raw.get("developer_mode", True)),
         auto_install_bridge=bool(raw.get("auto_install_bridge", True)),
-        auto_restart_core_once=bool(raw.get("auto_restart_core_once", True)),
+        auto_restart_core_once=bool(raw.get("auto_restart_core_once", False)),
     )
