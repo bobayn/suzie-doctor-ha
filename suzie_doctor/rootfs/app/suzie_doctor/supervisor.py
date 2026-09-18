@@ -56,6 +56,10 @@ class SupervisorClient:
     async def addons(self) -> dict[str, Any]:
         return await self._request("GET", "/addons") or {}
 
+    async def addon_logs(self, slug: str) -> str:
+        data = await self._request("GET", f"/addons/{slug}/logs")
+        return data if isinstance(data, str) else ""
+
     async def restart_core(self) -> Any:
         return await self._request("POST", "/core/restart", json={})
 
