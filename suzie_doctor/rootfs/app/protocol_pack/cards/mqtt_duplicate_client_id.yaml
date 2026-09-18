@@ -1,0 +1,50 @@
+schema_version: 1
+disease_id: "DISEASE-MQTT-DUPLICATE-CLIENT-ID-001"
+title: "Duplicate MQTT client ID"
+component: "mqtt"
+protocol:
+  id: "PROTOCOL-MQTT-CLIENTID-001"
+  version: "0.1.0"
+  status: "WATCH"
+source_evidence:
+  - source_id: "RCP-MQTT-CLIENTID-001"
+    evidence_status: "CONFIRMED"
+triggers:
+  any:
+    - type: "log_pattern"
+      match: "duplicate client"
+    - type: "mqtt_flapping"
+      match: "same_client_id"
+preconditions:
+  - "broker_logs_readable"
+diagnostics:
+  - id: "find_duplicate_client_ids"
+    primitive: "mqtt_probe"
+    args:
+      mode: "duplicate_client_id"
+    save_as: "duplicates"
+confirm:
+  all:
+    - expr: "duplicates.count >= 1"
+exclude: []
+dont_do:
+  - "Do not restart unrelated integrations."
+checkpoint:
+  required: false
+  primitive: null
+  args: {}
+treatment:
+  - step: 1
+    primitive: "notify_user"
+    args:
+      message: "Duplicate MQTT client ID confirmed; automatic credential/config mutation is not enabled in the first scaffold."
+    max_attempts: 1
+verify:
+  rerun_diagnostics: true
+  success_when: "no_original_symptoms"
+fallback: []
+rollback: []
+cooldown_seconds: 3600
+recurrence_rule: "daily_audit_boundary"
+on_failure: "ESCALATION_REQUIRED"
+automation_class: "CONFIRM_REQUIRED"
