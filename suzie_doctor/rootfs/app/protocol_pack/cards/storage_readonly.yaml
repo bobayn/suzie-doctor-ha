@@ -1,0 +1,44 @@
+schema_version: 1
+disease_id: "DISEASE-STORAGE-READONLY-001"
+title: "Filesystem became read-only"
+component: "storage"
+protocol:
+  id: "PROTOCOL-STORAGE-READONLY-001"
+  version: "0.1.0"
+  status: "WATCH"
+source_evidence:
+  - source_id: "RCP-LINUX-READONLY-FS-001"
+    evidence_status: "CONFIRMED"
+triggers:
+  any:
+    - type: "filesystem_state"
+      match: "read_only"
+    - type: "log_pattern"
+      match: "remount-ro"
+preconditions: []
+diagnostics:
+  - id: "check_filesystem_readonly"
+    primitive: "read_host_metrics"
+    args:
+      metric: "filesystem_readonly"
+    save_as: "filesystem_readonly"
+confirm:
+  all:
+    - expr: "filesystem_readonly == true"
+exclude: []
+dont_do:
+  - "Never auto-remount rw while I/O errors are active."
+checkpoint:
+  required: false
+  primitive: null
+  args: {}
+treatment: []
+verify:
+  rerun_diagnostics: true
+  success_when: "no_original_symptoms"
+fallback: []
+rollback: []
+cooldown_seconds: 3600
+recurrence_rule: "daily_audit_boundary"
+on_failure: "ESCALATION_REQUIRED"
+automation_class: "DIAGNOSTIC_ONLY"
