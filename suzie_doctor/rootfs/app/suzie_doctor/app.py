@@ -261,7 +261,9 @@ async def api_dev_audit(request: web.Request) -> web.Response:
 
 
 async def ui_index(request: web.Request) -> web.Response:
-    return web.Response(text=UI_HTML, content_type="text/html")
+    ingress_base = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    html = UI_HTML.replace("__INGRESS_BASE__", json.dumps(ingress_base))
+    return web.Response(text=html, content_type="text/html")
 
 
 UI_HTML = r'''<!doctype html>
@@ -283,6 +285,8 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
+const BASE=__INGRESS_BASE__;
+function api(path){return `${BASE}${path}`}
 function show(id){for(const s of ['home','incidents','settings'])document.getElementById(s).classList.toggle('hidden',s!==id);if(id==='incidents')loadIncidents()}
 function fmt(v,s=''){return v===undefined||v===null?'—':`${v}${s}`}
 async function refresh(){const d=await fetch(api('/api/dashboard')).then(r=>r.json());document.getElementById('status').textContent='Doctor работает';document.getElementById('version').textContent=`App ${d.app_version} · Bridge ${d.bridge_version} · Pack ${d.protocol_pack_version}`;document.getElementById('fixed24').textContent=d.fixed_24h;document.getElementById('found24').textContent=d.found_24h;document.getElementById('openCount').textContent=d.open_incidents;document.getElementById('healthTitle').textContent=d.open_incidents?`Есть проблем: ${d.open_incidents}`:'Система в норме';document.getElementById('auditText').textContent=d.last_audit?`Последний аудит: ${d.last_audit.audit_type} · ${d.last_audit.result}`:'Первичный аудит ещё не завершён';
@@ -344,4 +348,5 @@ def create_app() -> web.Application:
 
 
 def run() -> None:
+    print(f"Suzie Doctor HTTP server starting on 8099 | app={APP_VERSION} bridge={BRIDGE_VERSION}", flush=True)
     web.run_app(create_app(), host="0.0.0.0", port=8099)
