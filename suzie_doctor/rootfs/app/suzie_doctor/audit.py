@@ -86,6 +86,8 @@ class Auditor:
         bridge = data.get("bridge")
         if isinstance(bridge, dict):
             issues = bridge.get("issues", [])
+            repair_observations: list[dict[str, Any]] = []
+            repair_ignored: dict[str, int] = {"inactive": 0, "dismissed": 0}
             if isinstance(issues, list):
                 for issue in issues:
                     if not isinstance(issue, dict):
@@ -93,16 +95,59 @@ class Auditor:
                     domain = str(issue.get("domain") or "unknown")
                     issue_id = str(issue.get("issue_id") or "unknown")
                     key = f"repair:{domain}:{issue_id}"
+                    title = str(issue.get("translation_key") or issue_id)
+                    active = bool(issue.get("active", False))
+                    dismissed = issue.get("dismissed_version")
+                    severity = str(issue.get("severity") or "").lower()
+
+                    # The HA issue registry retains non-persistent historical records
+                    # as active=False after restart. They are not current faults.
+                    if not active:
+                        repair_ignored["inactive"] += 1
+                        self.db.discard_problem(key, "HA Repair is inactive; historical/non-current issue.")
+                        continue
+
+                    # If the HA user has dismissed the issue for this HA version,
+                    # Doctor must not resurrect it as a fault.
+                    if dismissed:
+                        repair_ignored["dismissed"] += 1
+                        self.db.discard_problem(key, f"HA Repair dismissed in version {dismissed}.")
+                        continue
+
+                    # A Repair WARNING is a real advisory from HA but not, by itself,
+                    # evidence of functional failure. Keep it as OBSERVE only.
+                    if severity not in {"error", "critical"}:
+                        observation = {
+                            "problem_key": key,
+                            "kind": "repair_warning",
+                            "domain": domain,
+                            "issue_id": issue_id,
+                            "severity": severity or "warning",
+                            "breaks_in_ha_version": issue.get("breaks_in_ha_version"),
+                            "is_fixable": issue.get("is_fixable"),
+                        }
+                        repair_observations.append(observation)
+                        self.db.add_observation(key, "repair_warning", observation)
+                        self.db.discard_problem(key, "HA Repair warning reclassified to OBSERVE.")
+                        continue
+
+                    # Active ERROR/CRITICAL Repairs are confirmed HA problems.
                     current_problem_keys.add(key)
-                    title = issue.get("translation_key") or issue_id
+                    doctor_severity = "CRITICAL" if severity == "critical" else "PROBLEM"
                     self.db.upsert_incident(
                         problem_key=key,
                         incident_type="repair_issue",
-                        severity="PROBLEM",
+                        severity=doctor_severity,
                         title=f"Home Assistant Repair: {title}",
-                        detail=f"Источник: {domain}; issue: {issue_id}",
+                        detail=f"Источник: {domain}; issue: {issue_id}; HA severity: {severity}",
                     )
-                    findings.append({"problem_key": key, "kind": "repair", "domain": domain, "issue_id": issue_id})
+                    findings.append({
+                        "problem_key": key,
+                        "kind": "repair",
+                        "domain": domain,
+                        "issue_id": issue_id,
+                        "ha_severity": severity,
+                    })
 
             entries = bridge.get("config_entries", [])
             if isinstance(entries, list):
@@ -136,10 +181,14 @@ class Auditor:
                 if old_key not in current_problem_keys:
                     self.db.resolve_problem(old_key)
 
-        result = "INCIDENTS_FOUND" if findings else ("OBSERVE" if errors or not isinstance(bridge, dict) else "HEALTHY")
+        observations = repair_observations if isinstance(bridge, dict) else []
+        result = "INCIDENTS_FOUND" if findings else ("OBSERVE" if observations or errors or not isinstance(bridge, dict) else "HEALTHY")
         payload = {
             "reason": reason,
             "findings": findings,
+            "observations": observations,
+            "observation_count": len(observations),
+            "repair_ignored": repair_ignored if isinstance(bridge, dict) else {},
             "provider_errors": errors,
             "bridge_available": isinstance(bridge, dict),
             "system": data.get("system"),
