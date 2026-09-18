@@ -414,6 +414,91 @@ async def api_dev_protocol_pack_diagnostics(request: web.Request) -> web.Respons
     )
 
 
+async def api_dev_filesystem_readonly_regression_test(
+    request: web.Request,
+) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    cases = [
+        {
+            "id": "haos_etc_hosts_erofs",
+            "expected": False,
+            "logs": (
+                "etc-hosts.mount: Failed to prepare /etc/hosts: "
+                "Read-only file system"
+            ),
+        },
+        {
+            "id": "haos_etc_hostname_erofs",
+            "expected": False,
+            "logs": (
+                "etc-hostname.mount: Failed to prepare /etc/hostname: "
+                "Read-only file system"
+            ),
+        },
+        {
+            "id": "haos_root_erofs_readonly",
+            "expected": False,
+            "logs": "VFS: Mounted root (erofs filesystem) readonly on device 0:20.",
+        },
+        {
+            "id": "real_ext4_remount_readonly",
+            "expected": True,
+            "logs": "EXT4-fs (nvme0n1p8): Remounting filesystem read-only",
+        },
+        {
+            "id": "mutable_config_write_failed",
+            "expected": True,
+            "logs": (
+                "sqlite3: unable to write /config/home-assistant_v2.db: "
+                "Read-only file system"
+            ),
+        },
+        {
+            "id": "benign_then_real_failure",
+            "expected": True,
+            "logs": (
+                "etc-hosts.mount: Failed to prepare /etc/hosts: "
+                "Read-only file system\n"
+                "EXT4-fs (nvme0n1p8): Remounting filesystem read-only"
+            ),
+        },
+        {
+            "id": "irrelevant_readonly_text",
+            "expected": False,
+            "logs": "notice: documentation mentions a read-only file system image",
+        },
+    ]
+
+    results = []
+    for case in cases:
+        actual = rt.protocol_engine.classify_filesystem_readonly_logs(case["logs"])
+        results.append(
+            {
+                "id": case["id"],
+                "expected": case["expected"],
+                "actual": actual,
+                "pass": actual is case["expected"],
+            }
+        )
+
+    passed = all(item["pass"] for item in results)
+    return web.json_response(
+        {
+            "result": "PASS" if passed else "FAIL",
+            "cases": results,
+            "live_host_logs_read": False,
+            "live_database_touched": False,
+            "note": (
+                "Regression guard for HAOS immutable EROFS false positives; "
+                "uses the production filesystem-readonly classifier."
+            ),
+        }
+    )
+
+
 async def api_dev_protocol_selftest(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -705,7 +790,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -722,6 +807,8 @@ async function devRecurrenceTest(){document.getElementById('devResult').textCont
 async function devFailedTreatmentTest(){document.getElementById('devResult').textContent=' тест FAILED…';const r=await fetch(api('/api/dev/test/failed-recovery'),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` FAILED test: ${f.treatment_result||d.result} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 async function devTargetedTest(){document.getElementById('devResult').textContent=' тест targeted…';const r=await fetch(api('/api/dev/test/targeted'),{method:'POST'});const d=await r.json();const t=d.targeted||{};document.getElementById('devResult').textContent=` targeted ${d.result} · sources=${(t.collected_sources||[]).join(',')}`;await refresh()}
 async function devProtocolTest(){document.getElementById('devResult').textContent=' тест protocol…';const r=await fetch(api('/api/dev/test/protocol'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` protocol ${d.result} · telemetry=${d.telemetry_seq||'—'}`;await refresh()}
+async function devReadonlyTest(){document.getElementById('devResult').textContent=' тест readonly…';const r=await fetch(api('/api/dev/test/filesystem-readonly'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=` readonly ${d.result} · ${ok}/${(d.cases||[]).length}`;await refresh()}
+
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
 
@@ -780,6 +867,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_protocol_pack_diagnostics(request)
     if request.method == "POST" and path.endswith("/api/dev/test/protocol"):
         return await api_dev_protocol_selftest(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/filesystem-readonly"):
+        return await api_dev_filesystem_readonly_regression_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
         return await api_dev_persistence_prepare(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/check"):
@@ -804,6 +893,10 @@ def create_app() -> web.Application:
     app.router.add_get("/api/dev/protocols", api_dev_protocol_inventory)
     app.router.add_post("/api/dev/test/protocol-pack", api_dev_protocol_pack_diagnostics)
     app.router.add_post("/api/dev/test/protocol", api_dev_protocol_selftest)
+    app.router.add_post(
+        "/api/dev/test/filesystem-readonly",
+        api_dev_filesystem_readonly_regression_test,
+    )
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
