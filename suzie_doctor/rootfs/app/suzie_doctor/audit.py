@@ -180,7 +180,7 @@ class Auditor:
                     }
                     findings.append(finding)
 
-                    if allow_generic_recovery and state == "setup_retry":
+                    if allow_generic_recovery and state in {"setup_retry", "setup_error"}:
                         reloaded = await self.ha.bridge_reload_entry(entry_id)
                         finding["generic_reload_attempted"] = True
                         finding["generic_reload_accepted"] = reloaded
