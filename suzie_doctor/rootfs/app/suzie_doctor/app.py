@@ -19,6 +19,7 @@ from .ha_api import HomeAssistantClient
 from .health_guard import HealthGuard, MetricSample
 from .local_metrics import LocalMetrics
 from .options import Options, load_options
+from .protocol_engine import ProtocolEngine
 from .supervisor import SupervisorClient
 
 DATA_DIR = Path(os.environ.get("SUZIE_DOCTOR_DATA", "/data"))
@@ -33,6 +34,14 @@ class Runtime:
         self.supervisor = SupervisorClient()
         self.ha = HomeAssistantClient()
         self.auditor = Auditor(self.db, self.supervisor, self.ha)
+        self.protocol_engine = ProtocolEngine(
+            self.db,
+            self.supervisor,
+            self.ha,
+            app_version=APP_VERSION,
+            bridge_version=BRIDGE_VERSION,
+            pack_version=PROTOCOL_PACK_VERSION,
+        )
         self.local_metrics = LocalMetrics()
         self.started_at = datetime.now(UTC).isoformat()
         self.last_health: dict[str, Any] = {}
@@ -353,6 +362,134 @@ async def api_dev_failed_recovery_test(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_dev_protocol_inventory(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+    inventory = rt.protocol_engine.inventory()
+    inventory["recent_runs"] = rt.db.protocol_runs(10)
+    inventory["telemetry_queue_depth"] = len(rt.db.telemetry_queue(1000))
+    return web.json_response(inventory)
+
+
+async def api_dev_protocol_selftest(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    snapshot = await rt.ha.bridge_snapshot()
+    entries = snapshot.get("config_entries", []) if isinstance(snapshot, dict) else []
+    target = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and str(entry.get("domain") or "") == "suzie_doctor"
+            and str(entry.get("state") or "") == "loaded"
+        ),
+        None,
+    )
+    if not isinstance(target, dict):
+        return web.json_response(
+            {"result": "TEST_NOT_READY", "reason": "suzie_doctor_config_entry_not_loaded"},
+            status=409,
+        )
+
+    entry_id = str(target.get("entry_id") or "")
+    problem_key = "developer:protocol:selftest"
+    rt.db.resolve_problem(problem_key, "Reset stale developer protocol self-test.")
+    incident_id = rt.db.upsert_incident(
+        problem_key=problem_key,
+        incident_type="developer_protocol_test",
+        severity="PROBLEM",
+        title="Protocol Engine self-test",
+        detail="Simulated setup_retry on Suzie Doctor integration.",
+        simulated=True,
+    )
+
+    card = {
+        "schema_version": 1,
+        "disease_id": "DISEASE-DEVELOPER-CONFIG-ENTRY-RETRY-001",
+        "title": "Developer config-entry recovery self-test",
+        "component": "suzie_doctor",
+        "protocol": {
+            "id": "PROTOCOL-DEVELOPER-CONFIG-ENTRY-RELOAD-001",
+            "version": "1.0.0",
+            "status": "ACTIVE",
+        },
+        "source_evidence": [],
+        "triggers": {"any": []},
+        "preconditions": [],
+        "diagnostics": [
+            {
+                "id": "entry_state",
+                "primitive": "config_entry_state",
+                "args": {"entry_id": "$entry_id"},
+                "save_as": "entry_state",
+            }
+        ],
+        "confirm": {
+            "all": [{"expr": "entry_state == 'setup_retry'"}],
+        },
+        "exclude": [],
+        "dont_do": [],
+        "checkpoint": {
+            "required": False,
+            "primitive": None,
+            "args": {},
+        },
+        "treatment": [
+            {
+                "step": 1,
+                "primitive": "reload_config_entry",
+                "args": {"entry_id": "$entry_id"},
+                "max_attempts": 1,
+            }
+        ],
+        "verify": {
+            "rerun_diagnostics": True,
+            "success_when": "no_original_symptoms",
+        },
+        "fallback": [],
+        "rollback": [],
+        "cooldown_seconds": 0,
+        "recurrence_rule": "daily_audit_boundary",
+        "on_failure": "ESCALATION_REQUIRED",
+        "automation_class": "AUTO_SAFE",
+    }
+
+    rt.ha.simulate_entry_state_once(entry_id, "setup_retry")
+    result = await rt.protocol_engine.execute_card(
+        card,
+        context={"entry_id": entry_id},
+        incident_id=incident_id,
+        trust_mode=rt.options.trust_mode,
+        simulated=True,
+        developer_override=True,
+    )
+
+    cleanup_resolved = rt.db.resolve_problem(
+        problem_key,
+        "Developer protocol self-test cleanup.",
+    )
+    telemetry = rt.db.telemetry_queue(1)
+    latest_telemetry = telemetry[0] if telemetry else None
+    if latest_telemetry is not None:
+        payload = latest_telemetry.get("payload") or {}
+        latest_telemetry = {
+            "seq": latest_telemetry.get("seq"),
+            "created_at": latest_telemetry.get("created_at"),
+            "result": payload.get("result"),
+            "protocol_id": payload.get("protocol_id"),
+            "protocol_version": payload.get("protocol_version"),
+            "simulated": payload.get("simulated"),
+        }
+
+    result["simulated_cleanup_resolved"] = cleanup_resolved
+    result["latest_telemetry"] = latest_telemetry
+    return web.json_response(result)
+
+
 async def api_dev_persistence_prepare(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -526,7 +663,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -542,6 +679,7 @@ async function devTreatmentTest(path){document.getElementById('devResult').textC
 async function devRecurrenceTest(){document.getElementById('devResult').textContent=' тест recurrence…';const r=await fetch(api('/api/dev/test/recurrence'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` recurrence ${d.result}`;await refresh()}
 async function devFailedTreatmentTest(){document.getElementById('devResult').textContent=' тест FAILED…';const r=await fetch(api('/api/dev/test/failed-recovery'),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` FAILED test: ${f.treatment_result||d.result} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 async function devTargetedTest(){document.getElementById('devResult').textContent=' тест targeted…';const r=await fetch(api('/api/dev/test/targeted'),{method:'POST'});const d=await r.json();const t=d.targeted||{};document.getElementById('devResult').textContent=` targeted ${d.result} · sources=${(t.collected_sources||[]).join(',')}`;await refresh()}
+async function devProtocolTest(){document.getElementById('devResult').textContent=' тест protocol…';const r=await fetch(api('/api/dev/test/protocol'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` protocol ${d.result} · telemetry=${d.telemetry_seq||'—'}`;await refresh()}
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
 
@@ -594,6 +732,10 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_failed_recovery_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/targeted"):
         return await api_dev_targeted_audit_test(request)
+    if request.method == "GET" and path.endswith("/api/dev/protocols"):
+        return await api_dev_protocol_inventory(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/protocol"):
+        return await api_dev_protocol_selftest(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
         return await api_dev_persistence_prepare(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/check"):
@@ -615,6 +757,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/recurrence", api_dev_recurrence_test)
     app.router.add_post("/api/dev/test/failed-recovery", api_dev_failed_recovery_test)
     app.router.add_post("/api/dev/test/targeted", api_dev_targeted_audit_test)
+    app.router.add_get("/api/dev/protocols", api_dev_protocol_inventory)
+    app.router.add_post("/api/dev/test/protocol", api_dev_protocol_selftest)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)
