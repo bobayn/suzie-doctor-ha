@@ -11,17 +11,15 @@ scan:
       any_of: ["mysql", "mariadb", "postgresql"]
 protocol:
   id: "PROTOCOL-RECORDER-DB-PREFLIGHT-001"
-  version: "0.1.0"
+  version: "0.1.1"
   status: "WATCH"
 source_evidence:
   - source_id: "RCP-RECORDER-DB-STARTUP-PREFLIGHT-001"
     evidence_status: "CONFIRMED"
 triggers:
   any:
-    - type: "config_entry_state"
-      match: "recorder_pending"
-    - type: "log_pattern"
-      match: "recorder connection"
+    - type: "disease_confirmed"
+      match: "DISEASE-RECORDER-WRITE-UNAVAILABLE-001"
 preconditions: []
 diagnostics:
   - id: "recorder_freshness"

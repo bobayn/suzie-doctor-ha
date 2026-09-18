@@ -6,9 +6,9 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.21-dev`
+- App: `0.2.22-dev`
 - Integration bridge: `0.2.4-dev`
-- Protocol Pack: `0.1.3-dev`
+- Protocol Pack: `0.1.4-dev`
 
 The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 
@@ -25,6 +25,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - local `protocol_runs` and privacy-bounded telemetry queue;
 - Protocol Pack loading/validation and Developer Mode self-tests;
 - fail-closed scan/applicability matching;
+- exact structured trigger matching for triggered-only cards, with confirmed disease events feeding the next root-cause stage;
 - WATCH-card disease diagnosis wired into daily and targeted audits without treatment;
 - disease incidents persist `disease_id` and resolve only after a conclusive negative repeat diagnosis.
 
@@ -52,11 +53,11 @@ Current scan policy:
 
 - daily: local Mosquitto duplicate-client-ID, Recorder functional write, and filesystem read-only diagnostics when applicable;
 - targeted storage: filesystem read-only diagnostic only;
-- the external-Recorder-DB card remains triggered-only and applies only to MySQL/MariaDB/PostgreSQL, so SQLite systems are not misclassified;
+- the external-Recorder-DB card remains triggered-only, applies only to MySQL/MariaDB/PostgreSQL, and runs only after `DISEASE-RECORDER-WRITE-UNAVAILABLE-001` is confirmed; SQLite systems are fail-closed;
 - missing/unknown applicability is fail-closed: the card is skipped rather than guessed;
 - diagnostic uncertainty does not close an existing disease incident.
 
-The next product step after native mount recovery is to add real trigger matching for triggered-only cards, then expand the treatment/fallback/rollback side only for protocols that have enough evidence to move from `WATCH` to `ACTIVE`.
+The next product step is to expand safe native repair/recovery coverage and treatment/fallback/rollback only for protocols that have enough evidence to move from `WATCH` to `ACTIVE`.
 
 ## Safety properties already enforced
 

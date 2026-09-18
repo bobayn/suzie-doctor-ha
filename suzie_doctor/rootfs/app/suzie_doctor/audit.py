@@ -131,6 +131,73 @@ class Auditor:
             errors["protocol_pack"] = f"{type(exc).__name__}: {exc}"
             return ({"mode": mode, "failed": True, "items": []}, [], errors)
 
+        trigger_events: list[dict[str, str]] = []
+        if mode == "daily":
+            trigger_events = [
+                {
+                    "type": "disease_confirmed",
+                    "match": str(item.get("disease_id") or ""),
+                }
+                for item in scan.get("items", [])
+                if isinstance(item, dict)
+                and item.get("result") == "CONFIRMED"
+                and item.get("diagnosis_confirmed")
+                and item.get("disease_id")
+            ]
+            triggered_context = dict(context)
+            triggered_context["trigger_events"] = trigger_events
+            try:
+                triggered_scan = await self.protocol_engine.scan_cards(
+                    mode="triggered",
+                    context=triggered_context,
+                )
+            except Exception as exc:
+                errors["protocol_pack_triggered"] = f"{type(exc).__name__}: {exc}"
+            else:
+                triggered_items = [
+                    item
+                    for item in triggered_scan.get("items", [])
+                    if isinstance(item, dict)
+                    and "triggered" in (item.get("scan_modes") or [])
+                ]
+                if triggered_items:
+                    replacement_by_disease = {
+                        str(item.get("disease_id") or ""): item
+                        for item in triggered_items
+                        if item.get("disease_id")
+                    }
+                    merged_items = []
+                    seen: set[str] = set()
+                    for item in scan.get("items", []):
+                        if not isinstance(item, dict):
+                            continue
+                        disease_id = str(item.get("disease_id") or "")
+                        merged_items.append(replacement_by_disease.get(disease_id, item))
+                        seen.add(disease_id)
+                    for disease_id, item in replacement_by_disease.items():
+                        if disease_id not in seen:
+                            merged_items.append(item)
+
+                    scan["items"] = merged_items
+                    scan["evaluated"] = sum(
+                        1 for item in merged_items if item.get("result") != "SKIPPED"
+                    )
+                    scan["confirmed"] = sum(
+                        1 for item in merged_items if item.get("diagnosis_confirmed")
+                    )
+                    error_results = {
+                        "PRECONDITION_FAILED",
+                        "FAILED",
+                        "PROTOCOL_ERROR",
+                        "UNSUPPORTED_PRIMITIVE",
+                    }
+                    scan["errors"] = [
+                        item for item in merged_items if item.get("result") in error_results
+                    ]
+                    scan["triggered_evaluated"] = triggered_scan.get("evaluated", 0)
+                    scan["triggered_confirmed"] = triggered_scan.get("confirmed", 0)
+        scan["trigger_events"] = trigger_events
+
         findings: list[dict[str, Any]] = []
         summary_items: list[dict[str, Any]] = []
         uncertain_results = {
@@ -188,6 +255,8 @@ class Auditor:
                     "result": result,
                     "applicable": item.get("applicable"),
                     "applicability_reason": item.get("applicability_reason"),
+                    "trigger_matched": item.get("trigger_matched"),
+                    "trigger_reason": item.get("trigger_reason"),
                     "lifecycle": lifecycle,
                     "incident_id": incident_id,
                 }
@@ -207,11 +276,14 @@ class Auditor:
             "recorder_present": context.get("recorder_present"),
             "local_mosquitto": "core_mosquitto" in set(context.get("supervisor_apps") or []),
             "target_category": context.get("target_category"),
+            "trigger_event_count": len(scan.get("trigger_events") or []),
         }
         summary = {
             "mode": mode,
             "evaluated": scan.get("evaluated", 0),
             "confirmed": scan.get("confirmed", 0),
+            "triggered_evaluated": scan.get("triggered_evaluated", 0),
+            "triggered_confirmed": scan.get("triggered_confirmed", 0),
             "context": safe_context,
             "items": summary_items,
         }

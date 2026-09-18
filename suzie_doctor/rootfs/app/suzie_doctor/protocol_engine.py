@@ -34,6 +34,11 @@ class ProtocolEngine:
         "verify_recorder_write",
         "wait",
     }
+    SUPPORTED_TRIGGER_TYPES = {
+        "config_entry_state",
+        "disease_confirmed",
+        "repair_issue",
+    }
 
     def __init__(
         self,
@@ -195,6 +200,46 @@ class ProtocolEngine:
 
         return True, "applicable"
 
+    def card_trigger_match(
+        self,
+        card: dict[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        context = context or {}
+        triggers = card.get("triggers")
+        if not isinstance(triggers, dict):
+            return False, "triggers_invalid"
+        rules = triggers.get("any")
+        if not isinstance(rules, list) or not rules:
+            return False, "triggers_missing"
+
+        events = context.get("trigger_events")
+        if not isinstance(events, list) or not events:
+            return False, "trigger_context_missing"
+
+        normalized_events = {
+            (str(event.get("type") or ""), str(event.get("match") or ""))
+            for event in events
+            if isinstance(event, dict)
+            and str(event.get("type") or "") in self.SUPPORTED_TRIGGER_TYPES
+            and str(event.get("match") or "")
+        }
+        if not normalized_events:
+            return False, "trigger_context_invalid"
+
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            trigger_type = str(rule.get("type") or "")
+            trigger_match = str(rule.get("match") or "")
+            if trigger_type not in self.SUPPORTED_TRIGGER_TYPES or not trigger_match:
+                continue
+            if (trigger_type, trigger_match) in normalized_events:
+                return True, f"trigger_match:{trigger_type}:{trigger_match}"
+
+        return False, "trigger_no_match"
+
     async def scan_cards(
         self,
         *,
@@ -209,6 +254,19 @@ class ProtocolEngine:
             applies, applicability_reason = self.card_scan_applicability(
                 card, mode=mode, context=context
             )
+            scan_modes = [
+                str(item)
+                for item in ((card.get("scan") or {}).get("modes") or [])
+            ]
+            trigger_matched: bool | None = None
+            trigger_reason: str | None = None
+            should_run = applies
+            if applies and mode == "triggered":
+                trigger_matched, trigger_reason = self.card_trigger_match(
+                    card, context=context
+                )
+                should_run = trigger_matched
+
             item: dict[str, Any] = {
                 "disease_id": card["disease_id"],
                 "title": card["title"],
@@ -218,10 +276,13 @@ class ProtocolEngine:
                 "protocol_version": card["protocol"]["version"],
                 "protocol_status": card["protocol"]["status"],
                 "source_file": card.get("_source_file"),
+                "scan_modes": scan_modes,
                 "applicable": applies,
                 "applicability_reason": applicability_reason,
+                "trigger_matched": trigger_matched,
+                "trigger_reason": trigger_reason,
             }
-            if not applies:
+            if not should_run:
                 item["result"] = "SKIPPED"
                 item["diagnosis_confirmed"] = False
                 items.append(item)
@@ -317,6 +378,22 @@ class ProtocolEngine:
             applicability = scan.get("applicability", {})
             if not isinstance(applicability, dict):
                 raise ProtocolError(f"{source}: scan.applicability must be a mapping")
+            if "triggered" in {str(item) for item in modes}:
+                triggers = raw.get("triggers")
+                if not isinstance(triggers, dict):
+                    raise ProtocolError(f"{source}: triggered card requires triggers mapping")
+                rules = triggers.get("any")
+                if not isinstance(rules, list) or not rules:
+                    raise ProtocolError(f"{source}: triggered card requires non-empty triggers.any")
+                for index, rule in enumerate(rules):
+                    if not isinstance(rule, dict):
+                        raise ProtocolError(f"{source}: triggers.any[{index}] must be a mapping")
+                    trigger_type = str(rule.get("type") or "")
+                    trigger_match = str(rule.get("match") or "")
+                    if trigger_type not in self.SUPPORTED_TRIGGER_TYPES:
+                        raise ProtocolError(f"{source}: unsupported trigger type {trigger_type!r}")
+                    if not trigger_match:
+                        raise ProtocolError(f"{source}: triggers.any[{index}].match must be non-empty")
         if not isinstance(raw.get("diagnostics"), list):
             raise ProtocolError(f"{source}: diagnostics must be a list")
         if not isinstance(raw.get("treatment"), list):

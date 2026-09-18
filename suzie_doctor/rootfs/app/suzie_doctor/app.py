@@ -499,6 +499,84 @@ async def api_dev_filesystem_readonly_regression_test(
     )
 
 
+async def api_dev_trigger_matching_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    loaded = rt.protocol_engine.load_pack()
+    card = next(
+        (
+            item
+            for item in loaded.get("cards", [])
+            if item.get("disease_id")
+            == "DISEASE-RECORDER-EXTERNAL-DB-UNREACHABLE-001"
+        ),
+        None,
+    )
+    if not isinstance(card, dict):
+        return web.json_response(
+            {"result": "FAIL", "reason": "external_recorder_card_missing"},
+            status=500,
+        )
+
+    matching_event = {
+        "type": "disease_confirmed",
+        "match": "DISEASE-RECORDER-WRITE-UNAVAILABLE-001",
+    }
+    unrelated_event = {
+        "type": "disease_confirmed",
+        "match": "DISEASE-STORAGE-READONLY-001",
+    }
+    cases = [
+        {"id": "positive_mysql", "context": {"recorder_present": True, "database_family": "mysql", "trigger_events": [matching_event]}, "expected_run": True},
+        {"id": "positive_postgresql", "context": {"recorder_present": True, "database_family": "postgresql", "trigger_events": [matching_event]}, "expected_run": True},
+        {"id": "no_trigger_mysql", "context": {"recorder_present": True, "database_family": "mysql", "trigger_events": []}, "expected_run": False},
+        {"id": "unrelated_trigger_mysql", "context": {"recorder_present": True, "database_family": "mysql", "trigger_events": [unrelated_event]}, "expected_run": False},
+        {"id": "wrong_database_family", "context": {"recorder_present": True, "database_family": "oracle", "trigger_events": [matching_event]}, "expected_run": False},
+        {"id": "unknown_database_family", "context": {"recorder_present": True, "database_family": "", "trigger_events": [matching_event]}, "expected_run": False},
+        {"id": "sqlite_negative_path", "context": {"recorder_present": True, "database_family": "sqlite", "trigger_events": [matching_event]}, "expected_run": False},
+    ]
+
+    results = []
+    for case in cases:
+        context = case["context"]
+        applicable, applicability_reason = rt.protocol_engine.card_scan_applicability(
+            card, mode="triggered", context=context
+        )
+        trigger_matched = False
+        trigger_reason = None
+        if applicable:
+            trigger_matched, trigger_reason = rt.protocol_engine.card_trigger_match(
+                card, context=context
+            )
+        should_run = applicable and trigger_matched
+        results.append(
+            {
+                "id": case["id"],
+                "expected_run": case["expected_run"],
+                "actual_run": should_run,
+                "applicable": applicable,
+                "applicability_reason": applicability_reason,
+                "trigger_matched": trigger_matched,
+                "trigger_reason": trigger_reason,
+                "pass": should_run is case["expected_run"],
+            }
+        )
+
+    passed = all(item["pass"] for item in results)
+    return web.json_response(
+        {
+            "result": "PASS" if passed else "FAIL",
+            "cases": results,
+            "diagnostics_executed": False,
+            "live_database_touched": False,
+            "live_logs_read": False,
+            "note": "Pure trigger/applicability regression for the triggered-only external Recorder DB card.",
+        }
+    )
+
+
 async def api_dev_protocol_selftest(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -790,7 +868,7 @@ h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs bu
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
 <div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
-<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button><span id="devResult"></span></div></section>
+<div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button><span id="devResult"></span></div></section>
 <section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
@@ -808,6 +886,8 @@ async function devFailedTreatmentTest(){document.getElementById('devResult').tex
 async function devTargetedTest(){document.getElementById('devResult').textContent=' тест targeted…';const r=await fetch(api('/api/dev/test/targeted'),{method:'POST'});const d=await r.json();const t=d.targeted||{};document.getElementById('devResult').textContent=` targeted ${d.result} · sources=${(t.collected_sources||[]).join(',')}`;await refresh()}
 async function devProtocolTest(){document.getElementById('devResult').textContent=' тест protocol…';const r=await fetch(api('/api/dev/test/protocol'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` protocol ${d.result} · telemetry=${d.telemetry_seq||'—'}`;await refresh()}
 async function devReadonlyTest(){document.getElementById('devResult').textContent=' тест readonly…';const r=await fetch(api('/api/dev/test/filesystem-readonly'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=` readonly ${d.result} · ${ok}/${(d.cases||[]).length}`;await refresh()}
+
+async function devTriggerTest(){document.getElementById('devResult').textContent=' тест triggers…';const r=await fetch(api('/api/dev/test/triggers'),{method:'POST'});const d=await r.json();const ok=(d.cases||[]).filter(x=>x.pass).length;document.getElementById('devResult').textContent=' triggers '+d.result+' · '+ok+'/'+(d.cases||[]).length;await refresh()}
 
 refresh();setInterval(refresh,30000);
 </script></main></body></html>'''
@@ -869,6 +949,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_protocol_selftest(request)
     if request.method == "POST" and path.endswith("/api/dev/test/filesystem-readonly"):
         return await api_dev_filesystem_readonly_regression_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/triggers"):
+        return await api_dev_trigger_matching_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
         return await api_dev_persistence_prepare(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/check"):
@@ -897,6 +979,7 @@ def create_app() -> web.Application:
         "/api/dev/test/filesystem-readonly",
         api_dev_filesystem_readonly_regression_test,
     )
+    app.router.add_post("/api/dev/test/triggers", api_dev_trigger_matching_test)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)
     app.router.add_route("*", "/{tail:.*}", ingress_dispatch)

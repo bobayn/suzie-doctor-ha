@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.22-dev
+- Added exact, fail-closed structured trigger matching for triggered Protocol Pack cards.
+- The external Recorder DB card now triggers only from a confirmed DISEASE-RECORDER-WRITE-UNAVAILABLE-001 event and still applies only to MySQL/MariaDB/PostgreSQL.
+- Daily disease scanning now performs a second triggered-only stage using confirmed disease events from the first stage; triggered cards are overlaid into the same disease summary without duplicate rows.
+- Added Developer endpoint/UI test POST /api/dev/test/triggers with seven pure cases; it executes no diagnostics and does not touch the live Recorder database or logs.
+- Protocol Pack bumped to 0.1.4-dev; external Recorder protocol card bumped to 0.1.1; Bridge stays 0.2.4-dev.
+- Confirmed separately that the stale Home Assistant hassio update entity is a transient Supervisor-integration refresh lag: the entity self-corrected to the installed Doctor version before a config-entry reload was issued.
+
 ## 0.2.21-dev
 - Added authoritative Supervisor mount-state checks to normal Doctor audits so an `inactive` network mount cannot be missed when the HA Repair registry lags behind.
 - Added native recovery via `POST /mounts/<name>/reload`; Doctor never removes or recreates the mount automatically.

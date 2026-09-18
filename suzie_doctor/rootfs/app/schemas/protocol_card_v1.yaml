@@ -21,12 +21,14 @@ source_evidence:
   - source_id: "INC-..."
     evidence_status: "CONFIRMED"  # CONFIRMED | PROBABLE | PARTIAL | UNRESOLVED
 
+# Triggered cards match exact structured events only.
+# Supported types: disease_confirmed, repair_issue, config_entry_state.
 triggers:
   any:
+    - type: "disease_confirmed"
+      match: "DISEASE-OTHER-001"
     - type: "repair_issue"
       match: "example_issue"
-    - type: "log_pattern"
-      match: "example pattern"
 
 preconditions: []
 
