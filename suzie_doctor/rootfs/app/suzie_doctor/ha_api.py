@@ -13,7 +13,7 @@ class HomeAssistantClient:
             raise RuntimeError("SUPERVISOR_TOKEN is not available")
         self.base = "http://supervisor/core/api"
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        self._simulated_entry_states_once: dict[str, str] = {}
+        self._simulated_entry_states_once: dict[str, tuple[str, int]] = {}
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         timeout = aiohttp.ClientTimeout(total=25)
@@ -42,9 +42,12 @@ class HomeAssistantClient:
             {"title": title, "message": message, "notification_id": notification_id},
         )
 
+    def simulate_entry_state_reads(self, entry_id: str, state: str, reads: int = 1) -> None:
+        """Developer-only bounded overlay used by controlled treatment tests."""
+        self._simulated_entry_states_once[str(entry_id)] = (str(state), max(1, int(reads)))
+
     def simulate_entry_state_once(self, entry_id: str, state: str) -> None:
-        """Developer-only one-shot overlay used by controlled treatment tests."""
-        self._simulated_entry_states_once[str(entry_id)] = str(state)
+        self.simulate_entry_state_reads(entry_id, state, 1)
 
     async def bridge_snapshot(self) -> dict[str, Any] | None:
         try:
@@ -54,18 +57,24 @@ class HomeAssistantClient:
 
             if self._simulated_entry_states_once:
                 entries = data.get("config_entries")
-                consumed: list[str] = []
                 if isinstance(entries, list):
                     for entry in entries:
                         if not isinstance(entry, dict):
                             continue
                         entry_id = str(entry.get("entry_id") or "")
-                        if entry_id in self._simulated_entry_states_once:
-                            entry["state"] = self._simulated_entry_states_once[entry_id]
-                            entry["_doctor_simulated_state"] = True
-                            consumed.append(entry_id)
-                for entry_id in consumed:
-                    self._simulated_entry_states_once.pop(entry_id, None)
+                        simulated = self._simulated_entry_states_once.get(entry_id)
+                        if simulated is None:
+                            continue
+                        state, remaining_reads = simulated
+                        entry["state"] = state
+                        entry["_doctor_simulated_state"] = True
+                        if remaining_reads <= 1:
+                            self._simulated_entry_states_once.pop(entry_id, None)
+                        else:
+                            self._simulated_entry_states_once[entry_id] = (
+                                state,
+                                remaining_reads - 1,
+                            )
 
             return data
         except aiohttp.ClientResponseError as err:
