@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
+from uuid import uuid4
 
 import aiohttp
 
@@ -34,6 +38,67 @@ class HomeAssistantClient:
 
     async def call_service(self, domain: str, service: str, data: dict[str, Any] | None = None) -> Any:
         return await self._request("POST", f"/services/{domain}/{service}", json=data or {})
+
+    async def set_state(self, entity_id: str, state: str, attributes: dict[str, Any] | None = None) -> Any:
+        return await self._request(
+            "POST",
+            f"/states/{entity_id}",
+            json={"state": state, "attributes": attributes or {}},
+        )
+
+    async def delete_state(self, entity_id: str) -> None:
+        try:
+            await self._request("DELETE", f"/states/{entity_id}")
+        except aiohttp.ClientResponseError as err:
+            if err.status != 404:
+                raise
+
+    async def history(
+        self,
+        entity_id: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[Any]:
+        start_text = quote(start.astimezone(UTC).isoformat(), safe="")
+        params = {
+            "filter_entity_id": entity_id,
+            "end_time": end.astimezone(UTC).isoformat(),
+            "minimal_response": "",
+            "no_attributes": "",
+        }
+        data = await self._request(
+            "GET",
+            f"/history/period/{start_text}",
+            params=params,
+        )
+        return data if isinstance(data, list) else []
+
+    async def recorder_write_probe(self) -> bool:
+        entity_id = "sensor.suzie_doctor_recorder_probe"
+        marker = f"doctor-{uuid4()}"
+        started = datetime.now(UTC) - timedelta(seconds=1)
+        try:
+            await self.set_state(
+                entity_id,
+                marker,
+                {"friendly_name": "Suzie Doctor Recorder Probe"},
+            )
+            for _ in range(5):
+                await asyncio.sleep(1)
+                history = await self.history(
+                    entity_id,
+                    started,
+                    datetime.now(UTC) + timedelta(seconds=1),
+                )
+                for series in history:
+                    if not isinstance(series, list):
+                        continue
+                    for item in series:
+                        if isinstance(item, dict) and str(item.get("state") or "") == marker:
+                            return True
+            return False
+        finally:
+            await self.delete_state(entity_id)
 
     async def persistent_notification(self, title: str, message: str, notification_id: str) -> None:
         await self.call_service(
