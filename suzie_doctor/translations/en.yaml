@@ -16,4 +16,4 @@ configuration:
   auto_install_bridge:
     name: Install Home Assistant bridge automatically
   auto_restart_core_once:
-    name: Restart Home Assistant once after bridge installation
+    name: Legacy Core restart option — ignored
