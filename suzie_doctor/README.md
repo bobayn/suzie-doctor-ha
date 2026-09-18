@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.19-dev`
+- App: `0.2.20-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.3-dev`
 
@@ -66,5 +66,6 @@ The next product step is to add real trigger matching for triggered-only cards, 
 - simulated Developer Mode cases are hidden from normal incident/value statistics;
 - telemetry contains protocol/system metadata only, not IP addresses, device names, logs, or user content;
 - Bridge version is independent from App version to avoid unnecessary Core restart requirements.
+- Developer Mode includes a filesystem-readonly regression self-test that runs the production classifier against normal HAOS EROFS lines and strong real-failure examples without touching live host logs or the live database.
 
 Not for public production use yet.
