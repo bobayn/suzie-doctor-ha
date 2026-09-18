@@ -1,0 +1,44 @@
+name: "Suzie Doctor DEV"
+version: "0.2.0-dev"
+slug: "suzie_doctor"
+description: "Automatic diagnostics and local treatment engine for Home Assistant"
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+stage: experimental
+ingress: true
+ingress_port: 8099
+ingress_entry: /
+ingress_stream: true
+panel_title: "Suzie Doctor"
+panel_icon: "mdi:stethoscope"
+panel_admin: true
+homeassistant_api: true
+hassio_api: true
+hassio_role: manager
+discovery:
+  - suzie_doctor
+backup: cold
+init: false
+map:
+  - type: homeassistant_config
+    read_only: false
+    path: /homeassistant
+options:
+  trust_mode: "safe_auto"
+  daily_audit_time: "03:15"
+  retention_days: 90
+  language: "ru"
+  developer_mode: true
+  auto_install_bridge: true
+  auto_restart_core_once: true
+schema:
+  trust_mode: "list(manual|safe_auto|full_trust)"
+  daily_audit_time: "str"
+  retention_days: "int(30,)"
+  language: "str"
+  developer_mode: "bool"
+  auto_install_bridge: "bool"
+  auto_restart_core_once: "bool"
