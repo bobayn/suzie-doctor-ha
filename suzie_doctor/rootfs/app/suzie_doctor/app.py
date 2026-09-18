@@ -50,7 +50,28 @@ class Runtime:
         self.last_health: dict[str, Any] = {}
         self.bootstrap_status: dict[str, Any] = {"status": "pending"}
         self.last_full_audit: dict[str, Any] | None = None
+        self.background_errors: dict[str, dict[str, Any]] = {}
         self._audit_lock = asyncio.Lock()
+
+    def record_background_error(self, source: str, exc: BaseException) -> None:
+        source = str(source or "unknown")
+        previous = self.background_errors.get(source) or {}
+        count = int(previous.get("count") or 0) + 1
+        message = str(exc).replace(chr(10), " ").strip()
+        if len(message) > 300:
+            message = message[:297] + "..."
+        payload = {
+            "count": count,
+            "last_at": datetime.now(UTC).isoformat(),
+            "error_type": type(exc).__name__,
+            "error": message,
+        }
+        self.background_errors[source] = payload
+        print(
+            f"Suzie Doctor background error | source={source} "
+            f"count={count} type={payload['error_type']} error={message}",
+            flush=True,
+        )
 
     async def collect_fast(self) -> dict[str, Any]:
         local = self.local_metrics.snapshot()
@@ -213,8 +234,8 @@ class Runtime:
                     continue
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as exc:
+                self.record_background_error("bridge_watch", exc)
             await asyncio.sleep(60)
 
     async def hourly_loop(self) -> None:
@@ -225,8 +246,8 @@ class Runtime:
                 self.db.cleanup(self.options.retention_days)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as exc:
+                self.record_background_error("hourly", exc)
             await asyncio.sleep(3600)
 
     async def daily_loop(self) -> None:
@@ -245,8 +266,8 @@ class Runtime:
                         last_date = today
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as exc:
+                self.record_background_error("daily", exc)
             await asyncio.sleep(30)
 
 
@@ -266,6 +287,7 @@ async def api_dashboard(request: web.Request) -> web.Response:
             "protocol_pack_version": PROTOCOL_PACK_VERSION,
             "health": rt.last_health,
             "bootstrap": rt.bootstrap_status,
+            "background_errors": rt.background_errors,
             "settings": asdict(rt.options),
         }
     )
@@ -1193,6 +1215,7 @@ async def on_startup(app: web.Application) -> None:
         rt.store_samples,
         rt.on_anomaly,
         rt.on_recovery,
+        on_error=rt.record_background_error,
     )
     app["tasks"] = [
         asyncio.create_task(guard.run(), name="health_guard"),

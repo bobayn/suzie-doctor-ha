@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.26-dev
+- Added local background-loop error observability: Health Guard fast/normal collectors, hourly audit, daily audit, and bridge-watch exceptions are no longer silently swallowed.
+- Background failures are written to the Doctor container log and summarized in dashboard.background_errors with count, last timestamp and bounded error text.
+- No external telemetry or new automatic treatment is introduced. Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.25-dev
 - Fixed Developer regression routing from 0.2.24-dev: bridge-trigger normalization cases now belong to POST /api/dev/test/triggers, not the filesystem-readonly suite.
 - Filesystem-readonly regression remains exactly seven cases; trigger regression is now ten cases including active Repair, problem config-entry, and ignored historical/dismissed/healthy bridge records.

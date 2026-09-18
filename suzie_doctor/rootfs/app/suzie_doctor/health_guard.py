@@ -22,6 +22,7 @@ class HealthGuard:
         on_samples: Callable[[list[MetricSample]], Awaitable[None]],
         on_anomaly: Callable[[str, str, dict[str, Any]], Awaitable[None]],
         on_recovery: Callable[[str, str, dict[str, Any]], Awaitable[None]],
+        on_error: Callable[[str, BaseException], None] | None = None,
         fast_interval: int = 120,
         normal_interval: int = 300,
     ) -> None:
@@ -30,6 +31,7 @@ class HealthGuard:
         self.on_samples = on_samples
         self.on_anomaly = on_anomaly
         self.on_recovery = on_recovery
+        self.on_error = on_error
         self.fast_interval = fast_interval
         self.normal_interval = normal_interval
         self._streaks: dict[str, int] = {}
@@ -81,8 +83,15 @@ class HealthGuard:
                 await self._evaluate(values)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as exc:
+                if self.on_error is not None:
+                    self.on_error(f"health_guard:{source}", exc)
+                else:
+                    print(
+                        f"Suzie Doctor Health Guard error | source={source} "
+                        f"type={type(exc).__name__} error={exc}",
+                        flush=True,
+                    )
             await asyncio.sleep(interval)
 
     async def run(self) -> None:
