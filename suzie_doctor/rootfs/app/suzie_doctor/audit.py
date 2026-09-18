@@ -162,7 +162,7 @@ class Auditor:
                     key = f"config_entry:{entry_id}"
                     current_problem_keys.add(key)
                     entry_simulated = bool(entry.get("_doctor_simulated_state"))
-                    self.db.upsert_incident(
+                    incident_id = self.db.upsert_incident(
                         problem_key=key,
                         incident_type="config_entry",
                         severity="DEGRADED" if state in {"setup_error", "migration_error"} else "PROBLEM",
@@ -170,17 +170,40 @@ class Auditor:
                         detail=f"Config entry {entry_id} находится в состоянии {state}.",
                         simulated=entry_simulated,
                     )
+                    incident = self.db.incident_by_id(incident_id) or {}
+                    recurrence_count = int(incident.get("recurrence_count") or 0)
                     finding = {
                         "problem_key": key,
                         "kind": "config_entry",
+                        "incident_id": incident_id,
                         "entry_id": entry_id,
                         "domain": domain,
                         "state": state,
                         "simulated": entry_simulated,
+                        "recurrence_count": recurrence_count,
                     }
                     findings.append(finding)
 
-                    if allow_generic_recovery and state in {"setup_retry", "setup_error"}:
+                    recovery_allowed = allow_generic_recovery and state in {"setup_retry", "setup_error"}
+                    if recovery_allowed and not entry_simulated and recurrence_count > 0:
+                        finding["generic_reload_skipped"] = "recurrence_requires_disease_diagnosis"
+                        finding["requires_disease_diagnosis"] = True
+                        recovery_allowed = False
+
+                    if recovery_allowed and not entry_simulated:
+                        attempts = self.db.incident_event_count(incident_id, "GENERIC_RELOAD_ATTEMPT")
+                        finding["generic_reload_attempts_before"] = attempts
+                        if attempts >= 1:
+                            finding["generic_reload_skipped"] = "already_attempted_this_episode"
+                            recovery_allowed = False
+
+                    if recovery_allowed:
+                        if not entry_simulated:
+                            self.db.add_incident_event(
+                                incident_id,
+                                "GENERIC_RELOAD_ATTEMPT",
+                                {"entry_id": entry_id, "state": state},
+                            )
                         reloaded = await self.ha.bridge_reload_entry(entry_id)
                         finding["generic_reload_attempted"] = True
                         finding["generic_reload_accepted"] = reloaded
@@ -219,11 +242,29 @@ class Auditor:
                                     )
                                     finding["treatment_result"] = "SUCCESS"
                                     finding["incident_resolved"] = resolved
+                                    if not entry_simulated:
+                                        self.db.add_incident_event(
+                                            incident_id,
+                                            "GENERIC_RELOAD_SUCCESS",
+                                            {"repeat_diagnosis_state": verify_state},
+                                        )
                                     current_problem_keys.discard(key)
                                 else:
                                     finding["treatment_result"] = "FAILED"
+                                    if not entry_simulated:
+                                        self.db.add_incident_event(
+                                            incident_id,
+                                            "GENERIC_RELOAD_FAILED",
+                                            {"repeat_diagnosis_state": verify_state or None},
+                                        )
                         else:
                             finding["treatment_result"] = "FAILED"
+                            if not entry_simulated:
+                                self.db.add_incident_event(
+                                    incident_id,
+                                    "GENERIC_RELOAD_FAILED",
+                                    {"reason": "reload_not_accepted"},
+                                )
 
         if isinstance(bridge, dict):
             for old_key in self.db.open_problem_keys(("repair:", "config_entry:")):
