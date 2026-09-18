@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.20-dev
+- Extracted the production HAOS filesystem read-only log classifier into a deterministic pure helper used by `read_host_metrics(filesystem_readonly)`.
+- Added Developer endpoint `POST /api/dev/test/filesystem-readonly` and a UI button for a seven-case regression suite.
+- Regression cases cover normal immutable EROFS lines for `/etc/hosts`, `/etc/hostname`, EROFS root mount, real ext4 remount read-only, mutable `/config` write failure, mixed benign+real failure, and irrelevant read-only text.
+- The self-test does not read live host logs and does not touch the live database.
+- Protocol Pack stays `0.1.3-dev`; Bridge stays `0.2.4-dev`.
+
 ## 0.2.19-dev
 - Fixed HAOS false-positive `DISEASE-STORAGE-READONLY-001` caused by normal immutable EROFS startup lines for `/etc/hosts` and `/etc/hostname`.
 - `read_host_metrics(filesystem_readonly)` now requires strong filesystem remount/forced-readonly evidence, or a `Read-only file system` failure on mutable Home Assistant data paths.
