@@ -13,6 +13,7 @@ class HomeAssistantClient:
             raise RuntimeError("SUPERVISOR_TOKEN is not available")
         self.base = "http://supervisor/core/api"
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        self._simulated_entry_states_once: dict[str, str] = {}
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         timeout = aiohttp.ClientTimeout(total=25)
@@ -41,10 +42,32 @@ class HomeAssistantClient:
             {"title": title, "message": message, "notification_id": notification_id},
         )
 
+    def simulate_entry_state_once(self, entry_id: str, state: str) -> None:
+        """Developer-only one-shot overlay used by controlled treatment tests."""
+        self._simulated_entry_states_once[str(entry_id)] = str(state)
+
     async def bridge_snapshot(self) -> dict[str, Any] | None:
         try:
             data = await self._request("GET", "/suzie_doctor/snapshot")
-            return data if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                return None
+
+            if self._simulated_entry_states_once:
+                entries = data.get("config_entries")
+                consumed: list[str] = []
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry_id = str(entry.get("entry_id") or "")
+                        if entry_id in self._simulated_entry_states_once:
+                            entry["state"] = self._simulated_entry_states_once[entry_id]
+                            entry["_doctor_simulated_state"] = True
+                            consumed.append(entry_id)
+                for entry_id in consumed:
+                    self._simulated_entry_states_once.pop(entry_id, None)
+
+            return data
         except aiohttp.ClientResponseError as err:
             if err.status in (404, 503):
                 return None
