@@ -852,12 +852,71 @@ async def api_dev_server_client_test(request: web.Request) -> web.Response:
                 "pass": primitives_supported,
             },
         ])
+        generated_diagnosis = await rt.doctor_server.diagnose({
+            "request_id": str(uuid4()),
+            "confirmed_disease_id": "DISEASE-KB-BACKUP-C2CE8931AA",
+            "component": "backup",
+            "evidence": {"developer_selftest": "generated_protocol"},
+            "system": {"doctor_app_version": APP_VERSION},
+        })
+        generated_packages = [
+            item
+            for item in (generated_diagnosis.get("execution_packages") or [])
+            if isinstance(item, dict)
+            and str(item.get("protocol_id") or "").startswith(
+                "PROTOCOL-GENERATED-"
+            )
+        ]
+        generated_card = None
+        generated_valid = False
+        generated_nested = False
+        generated_supported = False
+        if generated_packages:
+            generated_card = rt.doctor_server.validate_execution_package(
+                generated_packages[0]
+            )
+            generated_valid = isinstance(generated_card, dict)
+            diagnostics = generated_card.get("diagnostics") or []
+            treatment = generated_card.get("treatment") or []
+            generated_nested = bool(
+                diagnostics
+                and isinstance(diagnostics[0], dict)
+                and diagnostics[0].get("primitive")
+                and treatment
+                and isinstance(treatment[0], dict)
+                and treatment[0].get("primitive")
+            )
+            generated_supported = not bool(
+                rt.protocol_engine._card_primitives(generated_card)
+                - rt.protocol_engine.SUPPORTED_PRIMITIVES
+            )
+        cases.extend([
+            {
+                "id": "generated_protocol_package_returned",
+                "pass": bool(generated_packages),
+            },
+            {
+                "id": "generated_protocol_package_valid",
+                "pass": generated_valid,
+            },
+            {
+                "id": "generated_protocol_nested_fields_preserved",
+                "pass": generated_nested,
+            },
+            {
+                "id": "generated_protocol_primitives_supported",
+                "pass": generated_supported,
+            },
+        ])
+
         details = {
             "server_version": health.get("version"),
             "knowledge": knowledge,
             "license": license_state,
             "diagnosis_result": diagnosis.get("result"),
             "package_count": len(packages),
+            "generated_diagnosis_result": generated_diagnosis.get("result"),
+            "generated_package_count": len(generated_packages),
         }
     except Exception as exc:
         cases.append({

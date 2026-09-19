@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.34-dev
+- Extended the signed Doctor Server client regression to require a real generated Protocol package from the Protocol Factory.
+- The suite now validates generated package binding/expiry, nested diagnostics/treatment preservation after server sanitization, and primitive compatibility with the local ProtocolEngine.
+- This regression does not execute the generated treatment against live Home Assistant; execution remains covered by the fake-provider generated Protocol regression.
+- App 0.2.34-dev; Protocol Pack remains 0.1.4-dev; Bridge remains 0.2.4-dev.
+
 ## 0.2.33-dev
 - Extended ProtocolEngine for server-generated Protocol Factory cards while preserving the deterministic primitive allowlist and signed execution-package validation.
 - Added confirmed_disease, update_state/install_update, config_entry_info/reload_config_entry_verified, addon_info/restart_addon, reload_subsystem, create_backup, check_config and restart_core primitives.
