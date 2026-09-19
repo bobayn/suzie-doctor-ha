@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import APP_VERSION
 from .db import Database
 from .ha_api import HomeAssistantClient
 
@@ -49,6 +50,15 @@ def _is_system_update(state: dict[str, Any]) -> bool:
     return any(token in text for token in _SYSTEM_UPDATE_TOKENS)
 
 
+def _is_doctor_self_update(state: dict[str, Any]) -> bool:
+    entity_id = _update_key(state).lower()
+    title = _update_title(state).strip().lower()
+    return (
+        entity_id == "update.suzie_doctor_dev_update"
+        or title == "suzie doctor dev"
+    )
+
+
 def _is_update_available(state: dict[str, Any]) -> bool:
     if not isinstance(state, dict):
         return False
@@ -61,6 +71,16 @@ def _is_update_available(state: dict[str, Any]) -> bool:
     installed = attrs.get("installed_version")
     latest = attrs.get("latest_version")
     if installed is not None and latest is not None and str(installed) == str(latest):
+        return False
+    # Updating the Doctor app stops this process for a cold backup/restart.
+    # HA's update entity can lag behind Supervisor and advertise the version
+    # already running. For this exact self-update target only, runtime version
+    # is authoritative and prevents a repeated reinstall loop.
+    if (
+        _is_doctor_self_update(state)
+        and latest is not None
+        and str(latest) == APP_VERSION
+    ):
         return False
     return True
 
@@ -510,14 +530,16 @@ def _fake_update(
     supported_features: int = _UPDATE_FEATURE_INSTALL | _UPDATE_FEATURE_BACKUP,
     auto_update: bool = False,
     title: str = "Test update",
+    installed_version: str = "1.0",
+    latest_version: str = "1.1",
 ) -> dict[str, Any]:
     return {
         "entity_id": entity_id,
         "state": "on",
         "attributes": {
             "title": title,
-            "installed_version": "1.0",
-            "latest_version": "1.1",
+            "installed_version": installed_version,
+            "latest_version": latest_version,
             "in_progress": in_progress,
             "supported_features": supported_features,
             "auto_update": auto_update,
@@ -556,6 +578,24 @@ async def recommendation_selftest(db: Database) -> dict[str, Any]:
         and fake.update_calls[0].get("backup") is True
         and action.get("result") == "UPDATED",
         action,
+    )
+
+    fake.update_calls.clear()
+    fake.states = [
+        _fake_update(
+            "update.suzie_doctor_dev_update",
+            title="Suzie Doctor DEV",
+            installed_version="0.0.0-stale",
+            latest_version=APP_VERSION,
+        )
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "doctor_self_update_stale_state_not_replayed",
+        not fake.update_calls
+        and not result.get("actions")
+        and result.get("updates") == 0,
+        result,
     )
 
     fake.update_calls.clear()

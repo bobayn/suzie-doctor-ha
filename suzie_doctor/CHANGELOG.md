@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.39-dev
+
+- Prevent repeated self-update cold-backup loops when Home Assistant's
+  update.suzie_doctor_dev_update state lags behind Supervisor after a
+  successful Doctor App upgrade. For this exact self-update target only, the
+  running App version is authoritative when it already equals latest_version.
+- A genuinely newer Doctor version remains actionable and all non-Doctor update
+  entities retain the broad native-INSTALL owner-intent policy from 0.2.38-dev.
+- Recommendation self-test now covers the stale self-update state regression.
+
 ## 0.2.38-dev
 
 - Recommendation Executor now treats every available Home Assistant update entity
