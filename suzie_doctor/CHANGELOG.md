@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.31-dev
+- Moved the Master Knowledge Base out of the Home Assistant client and onto Suzie Doctor Server on Orange Pi 4 Pro.
+- The client image no longer contains the 411-incident forum corpus or KnowledgeCompiler; the four-card Protocol Pack remains as the local Emergency Pack.
+- Added a mutually authenticated application protocol: each Doctor client generates its own Ed25519 identity, signs every request, verifies the pinned TLS server and verifies Ed25519-signed server responses.
+- Added trial/license gating on the server. Active trial/license may receive short-lived client-bound execution packages; free mode receives diagnosis/recommendations only.
+- Server execution packages contain no source_evidence and still pass the local ProtocolEngine schema, primitive allowlist, trust-mode and diagnosis/verification gates.
+- Confirmed local Disease findings are automatically consulted with Doctor Server; unknown generic findings are sent as structured evidence for candidates/recommendations only.
+- Added signed Doctor Server client regression to the release gate and legacy local-KB cleanup from /data.
+- App 0.2.31-dev; Protocol Pack remains 0.1.4-dev; Bridge remains 0.2.4-dev.
+
+## 0.2.30-dev
+- Added the canonical Knowledge model: Incident -> Disease -> 0..N Protocols.
+- Added deterministic KnowledgeCompiler with conservative root-cause grouping, unclassified incident pool, candidate clusters, shared cross-disease diagnostic playbooks, and protocol candidates.
+- Bundled the v2.7 compiler projection with all 411 forum incidents and all 142 candidate recipes; the full external corpus remains the source of global diagnostic/DON'T-DO/pattern knowledge.
+- Added runtime /data/forum_knowledge_base.json override, five-minute change watcher, compiled output at /data/compiled_knowledge.json, and atomic Developer import endpoint.
+- Protocol Engine now permits multiple unique protocol IDs for one disease ID; duplicate protocol IDs remain rejected.
+- Added Disease schema v1 and Developer knowledge-compiler regression; release gate now includes the new suite.
+- Evidence gaps remain warnings rather than invented diagnoses: v2.7 currently exposes five orphan recipe references for later source repair.
+- No new treatment is promoted to ACTIVE by the compiler. Protocol Pack stays 0.1.4-dev; Bridge stays 0.2.4-dev.
+
 ## 0.2.29-dev
 - Completed local retention coverage: stale observations, finished protocol runs and telemetry older than the configured history window are cleaned together with existing samples/audits/resolved incidents.
 - Open incidents and unfinished protocol runs are explicitly preserved regardless of age. Unsent telemetry is still age-bounded to keep the documented privacy-bounded queue finite.

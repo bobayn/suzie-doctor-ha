@@ -69,19 +69,16 @@ class ProtocolEngine:
 
         cards: list[dict[str, Any]] = []
         seen_protocols: set[str] = set()
-        seen_diseases: set[str] = set()
         cards_dir = self.pack_root / "cards"
         for path in sorted(cards_dir.glob("*.yaml")):
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             card = self._validate_card(raw, source=str(path))
             protocol_id = str(card["protocol"]["id"])
-            disease_id = str(card["disease_id"])
             if protocol_id in seen_protocols:
                 raise ProtocolError(f"Duplicate protocol id: {protocol_id}")
-            if disease_id in seen_diseases:
-                raise ProtocolError(f"Duplicate disease id: {disease_id}")
+            # One Disease may legitimately have multiple environment/version
+            # specific protocols. protocol_id remains globally unique.
             seen_protocols.add(protocol_id)
-            seen_diseases.add(disease_id)
             card["_source_file"] = path.name
             cards.append(card)
 

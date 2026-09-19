@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.29-dev`
+- App: `0.2.31-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 
@@ -20,7 +20,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - controlled generic recovery for config entries with repeat diagnosis;
 - native Supervisor mount recovery for confirmed `inactive` mounts with one reload attempt per incident episode and repeat diagnosis;
 - Developer mount-recovery regression exercises success, failure and one-attempt guard without touching live mounts or the production Doctor database;
-- Developer release gate aggregates safe readonly/trigger/mount/recurrence regressions, Pack consistency and active background-error checks;
+- Developer release gate aggregates safe readonly/trigger/mount/recurrence/retention/server-client regressions, Pack consistency and active background-error checks;
 - one-attempt-per-episode recovery guard;
 - recurrence episodes across the daily-audit boundary;
 - real targeted Health Guard audits instead of full-audit aliases;
@@ -28,6 +28,12 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - deterministic Protocol Engine with no arbitrary shell or `eval`;
 - local `protocol_runs` and privacy-bounded telemetry queue;
 - retention cleanup covers stale observations, completed protocol runs and age-bounded telemetry while preserving open incidents and unfinished protocol runs;
+- the full Incident -> Disease -> 0..N Protocols knowledge model now lives on Suzie Doctor Server, not in the HA client image;
+- the client retains only the local four-card Emergency Pack plus the deterministic Protocol Engine;
+- each client owns a persistent Ed25519 identity and accepts only TLS-pinned, Ed25519-signed server responses;
+- active trial/license can receive short-lived client-bound execution packages; free mode receives diagnosis and written recommendations only;
+- server-delivered cards are revalidated locally and can use only the same supported deterministic primitives as local cards;
+- legacy local knowledge files are removed from /data on upgrade;
 - Protocol Pack loading/validation and Developer Mode self-tests;
 - fail-closed scan/applicability matching;
 - exact structured trigger matching for triggered-only cards, with confirmed disease events feeding the next root-cause stage;

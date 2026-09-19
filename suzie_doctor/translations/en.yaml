@@ -17,3 +17,12 @@ configuration:
     name: Install Home Assistant bridge automatically
   auto_restart_core_once:
     name: Legacy Core restart option — ignored
+  doctor_server_enabled:
+    name: Use Suzie Doctor Server
+    description: Receive diagnoses and signed protocol packages from the Doctor server.
+  doctor_server_url:
+    name: Suzie Doctor Server URL
+    description: HTTPS address of the protected knowledge server.
+  doctor_server_timeout_seconds:
+    name: Doctor Server timeout, seconds
+    description: Maximum time for one server request.

@@ -1,5 +1,5 @@
 name: "Suzie Doctor DEV"
-version: "0.2.29-dev"
+version: "0.2.31-dev"
 slug: "suzie_doctor"
 description: "Automatic diagnostics and local treatment engine for Home Assistant"
 arch:
@@ -34,6 +34,9 @@ options:
   developer_mode: true
   auto_install_bridge: true
   auto_restart_core_once: false
+  doctor_server_enabled: true
+  doctor_server_url: "https://192.168.0.105:8790"
+  doctor_server_timeout_seconds: 10
 schema:
   trust_mode: "list(manual|safe_auto|full_trust)"
   daily_audit_time: "str"
@@ -42,3 +45,6 @@ schema:
   developer_mode: "bool"
   auto_install_bridge: "bool"
   auto_restart_core_once: "bool"
+  doctor_server_enabled: "bool"
+  doctor_server_url: "str"
+  doctor_server_timeout_seconds: "int(2,60)"

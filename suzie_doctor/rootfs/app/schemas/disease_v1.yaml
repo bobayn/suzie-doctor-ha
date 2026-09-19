@@ -1,0 +1,23 @@
+schema_version: 1
+
+disease_id: "DISEASE-EXAMPLE-001"
+title: "Human-readable diagnosis"
+component: "recorder"
+
+diagnosis_status: "CONFIRMED"
+confidence: 0.95
+root_cause: "Canonical technical cause"
+
+incident_refs:
+  - "INC-..."
+
+fingerprints: []
+required_evidence: []
+exclusion_evidence: []
+
+protocol_refs:
+  - "PROTOCOL-..."
+
+protocol_candidate_refs: []
+
+automation_ceiling: "DIAGNOSTIC_ONLY"

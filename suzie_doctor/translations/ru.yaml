@@ -17,3 +17,12 @@ configuration:
     name: Автоматически установить bridge в Home Assistant
   auto_restart_core_once:
     name: Устаревшая опция restart Core — игнорируется
+  doctor_server_enabled:
+    name: Использовать Suzie Doctor Server
+    description: Получать диагнозы и подписанные протоколы с серверной части Doctor.
+  doctor_server_url:
+    name: Адрес Suzie Doctor Server
+    description: HTTPS-адрес защищённого сервера знаний.
+  doctor_server_timeout_seconds:
+    name: Таймаут Doctor Server, секунд
+    description: Максимальное ожидание одного запроса к серверу.

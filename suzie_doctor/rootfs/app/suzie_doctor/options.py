@@ -16,6 +16,9 @@ class Options:
     developer_mode: bool = True
     auto_install_bridge: bool = True
     auto_restart_core_once: bool = False
+    doctor_server_enabled: bool = True
+    doctor_server_url: str = "https://192.168.0.105:8790"
+    doctor_server_timeout_seconds: int = 10
 
 
 def load_options(path: Path = OPTIONS_PATH) -> Options:
@@ -30,4 +33,11 @@ def load_options(path: Path = OPTIONS_PATH) -> Options:
         developer_mode=bool(raw.get("developer_mode", True)),
         auto_install_bridge=bool(raw.get("auto_install_bridge", True)),
         auto_restart_core_once=bool(raw.get("auto_restart_core_once", False)),
+        doctor_server_enabled=bool(raw.get("doctor_server_enabled", True)),
+        doctor_server_url=str(
+            raw.get("doctor_server_url", "https://192.168.0.105:8790")
+        ).rstrip("/"),
+        doctor_server_timeout_seconds=max(
+            2, min(60, int(raw.get("doctor_server_timeout_seconds", 10)))
+        ),
     )

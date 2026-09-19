@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
@@ -19,6 +20,7 @@ from .db import Database
 from .ha_api import HomeAssistantClient
 from .health_guard import HealthGuard, MetricSample
 from .local_metrics import LocalMetrics
+from .server_client import DoctorServerClient, DoctorServerError
 from .options import Options, load_options
 from .protocol_engine import ProtocolEngine
 from .supervisor import SupervisorClient
@@ -51,7 +53,38 @@ class Runtime:
         self.bootstrap_status: dict[str, Any] = {"status": "pending"}
         self.last_full_audit: dict[str, Any] | None = None
         self.background_status: dict[str, dict[str, Any]] = {}
+        self.doctor_server = (
+            DoctorServerClient(
+                base_url=self.options.doctor_server_url,
+                timeout_seconds=self.options.doctor_server_timeout_seconds,
+                app_version=APP_VERSION,
+            )
+            if self.options.doctor_server_enabled
+            else None
+        )
+        self.server_status: dict[str, Any] = {
+            "state": "pending" if self.doctor_server else "disabled"
+        }
+        self.legacy_knowledge_cleanup = self._remove_legacy_local_knowledge()
         self._audit_lock = asyncio.Lock()
+
+    def _remove_legacy_local_knowledge(self) -> dict[str, Any]:
+        removed: list[str] = []
+        errors: list[str] = []
+        for path in (
+            DATA_DIR / "forum_knowledge_base.json",
+            DATA_DIR / "compiled_knowledge.json",
+        ):
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed.append(path.name)
+            except Exception as exc:
+                errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
+        return {
+            "removed": removed,
+            "errors": errors,
+        }
 
     def record_background_error(self, source: str, exc: BaseException) -> None:
         source = str(source or "unknown")
@@ -229,6 +262,20 @@ class Runtime:
                 target_context=target_context,
                 simulated=simulated,
             )
+            try:
+                await self.consult_server_for_audit(
+                    result,
+                    simulated=simulated,
+                )
+            except Exception as exc:
+                self.record_background_error("doctor_server:audit", exc)
+                result["doctor_server"] = {
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            else:
+                if self.doctor_server is not None:
+                    self.record_background_ok("doctor_server:audit")
             if audit_type in {"first_run", "daily", "full", "developer_full"}:
                 self.last_full_audit = result
             return result
@@ -306,6 +353,184 @@ class Runtime:
                 self.record_background_error("hourly", exc)
             await asyncio.sleep(3600)
 
+    async def doctor_server_diagnose(
+        self,
+        evidence: dict[str, Any],
+        *,
+        execute: bool = False,
+        explicit_confirmation: bool = False,
+    ) -> dict[str, Any]:
+        if self.doctor_server is None:
+            raise DoctorServerError("Doctor Server is disabled")
+
+        await self.doctor_server.ensure_enrolled()
+        response = await self.doctor_server.diagnose(evidence)
+        execution_results: list[dict[str, Any]] = []
+        if execute:
+            for package in response.get("execution_packages") or []:
+                try:
+                    card = self.doctor_server.validate_execution_package(package)
+                    primitives = self.protocol_engine._card_primitives(card)
+                    unsupported = sorted(
+                        primitives - self.protocol_engine.SUPPORTED_PRIMITIVES
+                    )
+                    if unsupported:
+                        execution_results.append({
+                            "result": "UNSUPPORTED_PRIMITIVE",
+                            "disease_id": card.get("disease_id"),
+                            "protocol_id": (card.get("protocol") or {}).get("id"),
+                            "unsupported_primitives": unsupported,
+                        })
+                        continue
+                    execution_results.append(
+                        await self.protocol_engine.execute_card(
+                            card,
+                            context=evidence.get("context")
+                            if isinstance(evidence.get("context"), dict)
+                            else {},
+                            trust_mode=self.options.trust_mode,
+                            explicit_confirmation=explicit_confirmation,
+                            simulated=False,
+                            developer_override=False,
+                        )
+                    )
+                except Exception as exc:
+                    execution_results.append({
+                        "result": "PACKAGE_REJECTED",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+        response["execution_results"] = execution_results
+        self.server_status = {
+            "state": "ok",
+            "checked_at": datetime.now(UTC).isoformat(),
+            "client_id": self.doctor_server.client_id,
+            "license": response.get("license"),
+            "last_result": response.get("result"),
+        }
+        return response
+
+    async def consult_server_for_audit(
+        self,
+        result: dict[str, Any],
+        *,
+        simulated: bool,
+    ) -> None:
+        if simulated or self.doctor_server is None:
+            return
+
+        consultations: list[dict[str, Any]] = []
+        scan = result.get("disease_scan")
+        items = scan.get("items", []) if isinstance(scan, dict) else []
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or item.get("result") != "CONFIRMED"
+                or not item.get("diagnosis_confirmed")
+                or not item.get("disease_id")
+            ):
+                continue
+            disease_id = str(item["disease_id"])
+            remote = await self.doctor_server_diagnose(
+                {
+                    "request_id": str(uuid4()),
+                    "confirmed_disease_id": disease_id,
+                    "component": str(item.get("component") or ""),
+                    "evidence": {
+                        "local_protocol_id": item.get("protocol_id"),
+                        "local_result": "CONFIRMED",
+                        "severity": item.get("severity"),
+                    },
+                    "system": {
+                        "doctor_app_version": APP_VERSION,
+                        "protocol_pack_version": PROTOCOL_PACK_VERSION,
+                    },
+                },
+                execute=True,
+            )
+            consultations.append({
+                "disease_id": disease_id,
+                "server_result": remote.get("result"),
+                "license": remote.get("license"),
+                "execution_results": remote.get("execution_results") or [],
+            })
+
+        generic_findings = [
+            item
+            for item in (result.get("findings") or [])
+            if isinstance(item, dict) and item.get("kind") != "disease"
+        ][:5]
+        for finding in generic_findings:
+            remote = await self.doctor_server_diagnose(
+                {
+                    "request_id": str(uuid4()),
+                    "component": str(finding.get("kind") or ""),
+                    "symptoms": str(
+                        finding.get("title")
+                        or finding.get("problem_key")
+                        or finding.get("kind")
+                        or ""
+                    ),
+                    "evidence": {
+                        key: finding.get(key)
+                        for key in (
+                            "kind", "severity", "problem_key",
+                            "category", "state", "reason",
+                        )
+                        if key in finding
+                    },
+                    "system": {
+                        "doctor_app_version": APP_VERSION,
+                    },
+                },
+                execute=False,
+            )
+            consultations.append({
+                "finding": str(
+                    finding.get("problem_key")
+                    or finding.get("kind")
+                    or "unknown"
+                ),
+                "server_result": remote.get("result"),
+                "candidates": remote.get("candidates") or [],
+                "recommendations": remote.get("recommendations"),
+            })
+
+        if consultations:
+            result["doctor_server"] = {
+                "status": "consulted",
+                "consultations": consultations,
+            }
+
+    async def server_watch_loop(self) -> None:
+        while True:
+            try:
+                if self.doctor_server is None:
+                    self.server_status = {"state": "disabled"}
+                    self.record_background_ok("doctor_server")
+                    await asyncio.sleep(300)
+                    continue
+                health = await self.doctor_server.health()
+                license_payload = await self.doctor_server.ensure_enrolled()
+                self.server_status = {
+                    "state": "ok",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "client_id": self.doctor_server.client_id,
+                    "server_version": health.get("version"),
+                    "knowledge": health.get("knowledge"),
+                    "license": license_payload.get("license"),
+                }
+                self.record_background_ok("doctor_server")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.server_status = {
+                    "state": "error",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                self.record_background_error("doctor_server", exc)
+            await asyncio.sleep(300)
+
     async def daily_loop(self) -> None:
         last_date: str | None = None
         while True:
@@ -344,6 +569,8 @@ async def api_dashboard(request: web.Request) -> web.Response:
             "protocol_pack_version": PROTOCOL_PACK_VERSION,
             "health": rt.last_health,
             "bootstrap": rt.bootstrap_status,
+            "doctor_server": rt.server_status,
+            "legacy_knowledge_cleanup": rt.legacy_knowledge_cleanup,
             "background_status": rt.background_status,
             "background_errors": {
                 key: value
@@ -447,6 +674,176 @@ async def api_dev_failed_recovery_test(request: web.Request) -> web.Response:
             )
     result["simulated_cleanup_resolved"] = cleanup_resolved
     return web.json_response(result)
+
+
+async def api_dev_server_status(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+    if rt.doctor_server is None:
+        return web.json_response({"state": "disabled"})
+    try:
+        health = await rt.doctor_server.health()
+        license_payload = await rt.doctor_server.ensure_enrolled()
+    except Exception as exc:
+        return web.json_response(
+            {
+                "state": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            status=503,
+        )
+    rt.server_status = {
+        "state": "ok",
+        "checked_at": datetime.now(UTC).isoformat(),
+        "client_id": rt.doctor_server.client_id,
+        "server_version": health.get("version"),
+        "knowledge": health.get("knowledge"),
+        "license": license_payload.get("license"),
+    }
+    return web.json_response(rt.server_status)
+
+
+async def api_dev_server_diagnose(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+    body = await request.json() if request.can_read_body else {}
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="JSON body must be an object")
+    execute = bool(body.pop("execute", False))
+    explicit_confirmation = bool(body.pop("explicit_confirmation", False))
+    try:
+        result = await rt.doctor_server_diagnose(
+            body,
+            execute=execute,
+            explicit_confirmation=explicit_confirmation,
+        )
+    except Exception as exc:
+        return web.json_response(
+            {
+                "result": "SERVER_ERROR",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            status=503,
+        )
+    return web.json_response(result)
+
+
+async def api_dev_server_client_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    cases: list[dict[str, Any]] = []
+    details: dict[str, Any] = {}
+    if rt.doctor_server is None:
+        return web.json_response(
+            {
+                "result": "FAIL",
+                "cases": [{"id": "server_enabled", "pass": False}],
+            }
+        )
+
+    try:
+        health = await rt.doctor_server.health()
+        cases.append({
+            "id": "server_health",
+            "pass": health.get("status") == "ok",
+        })
+        knowledge = health.get("knowledge") or {}
+        cases.append({
+            "id": "server_master_kb_loaded",
+            "pass": (
+                int(knowledge.get("incidents") or 0) == 411
+                and int(knowledge.get("diseases") or 0) > 0
+            ),
+        })
+
+        license_payload = await rt.doctor_server.ensure_enrolled()
+        license_state = license_payload.get("license") or {}
+        cases.append({
+            "id": "signed_license_response",
+            "pass": bool(license_state.get("mode")),
+        })
+        cases.append({
+            "id": "stable_client_identity",
+            "pass": rt.doctor_server.client_id.startswith("ha-"),
+        })
+
+        inventory = rt.protocol_engine.inventory()
+        cards = inventory.get("cards") or []
+        disease_id = str(cards[0].get("disease_id") or "") if cards else ""
+        cases.append({
+            "id": "emergency_pack_available",
+            "pass": bool(disease_id),
+        })
+
+        diagnosis = await rt.doctor_server.diagnose({
+            "request_id": str(uuid4()),
+            "confirmed_disease_id": disease_id,
+            "evidence": {"developer_selftest": True},
+            "system": {"doctor_app_version": APP_VERSION},
+        }) if disease_id else {}
+
+        packages = diagnosis.get("execution_packages") or []
+        active_license = bool((diagnosis.get("license") or {}).get("active"))
+        if active_license:
+            cases.append({
+                "id": "licensed_protocol_package_returned",
+                "pass": bool(packages),
+            })
+        else:
+            cases.append({
+                "id": "license_gate_blocks_execution_package",
+                "pass": not packages,
+            })
+
+        package_valid = True
+        source_hidden = True
+        primitives_supported = True
+        for package in packages:
+            card = rt.doctor_server.validate_execution_package(package)
+            source_hidden = source_hidden and card.get("source_evidence") == []
+            primitives = rt.protocol_engine._card_primitives(card)
+            if primitives - rt.protocol_engine.SUPPORTED_PRIMITIVES:
+                primitives_supported = False
+        cases.extend([
+            {
+                "id": "server_package_signature_binding_expiry_valid",
+                "pass": package_valid,
+            },
+            {
+                "id": "source_evidence_not_delivered_to_client",
+                "pass": source_hidden,
+            },
+            {
+                "id": "server_protocol_uses_supported_primitives_only",
+                "pass": primitives_supported,
+            },
+        ])
+        details = {
+            "server_version": health.get("version"),
+            "knowledge": knowledge,
+            "license": license_state,
+            "diagnosis_result": diagnosis.get("result"),
+            "package_count": len(packages),
+        }
+    except Exception as exc:
+        cases.append({
+            "id": "server_client_exception",
+            "pass": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+
+    passed = all(bool(item.get("pass")) for item in cases)
+    return web.json_response({
+        "result": "PASS" if passed else "FAIL",
+        "cases": cases,
+        "details": details,
+        "live_protocol_executed": False,
+        "ha_core_restarted": False,
+    })
 
 
 async def api_dev_protocol_inventory(request: web.Request) -> web.Response:
@@ -1135,6 +1532,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
     mounts = await _response_json(api_dev_mount_recovery_test)
     recurrence = await _response_json(api_dev_recurrence_test)
     retention = await _response_json(api_dev_retention_test)
+    server_client = await _response_json(api_dev_server_client_test)
 
     pack_inventory: dict[str, Any]
     try:
@@ -1171,6 +1569,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "mount_recovery": mounts.get("result") == "PASS",
         "recurrence": recurrence.get("result") == "PASS",
         "retention": retention.get("result") == "PASS",
+        "doctor_server_client": server_client.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
         "background_errors_clear": not active_background_errors,
@@ -1207,14 +1606,20 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
                     "result": retention.get("result"),
                     "cases": len(retention.get("cases") or []),
                 },
+                "doctor_server_client": {
+                    "result": server_client.get("result"),
+                    "cases": len(server_client.get("cases") or []),
+                },
             },
             "unsupported_primitives": unsupported,
             "active_background_errors": active_background_errors,
             "live_mounts_touched": False,
             "live_database_touched_by_pure_suites": False,
+            "doctor_server_contacted": True,
             "note": (
-                "Developer release gate aggregates safe regression suites; "
-                "real daily audit remains a separate live verification step."
+                "Developer release gate aggregates safe regression suites and "
+                "the signed Doctor Server client path; real daily audit remains "
+                "a separate live verification step."
             ),
         }
     )
@@ -1556,6 +1961,7 @@ async def on_startup(app: web.Application) -> None:
         asyncio.create_task(rt.hourly_loop(), name="hourly"),
         asyncio.create_task(rt.daily_loop(), name="daily"),
         asyncio.create_task(rt.bridge_watch_loop(), name="bridge_watch"),
+        asyncio.create_task(rt.server_watch_loop(), name="doctor_server_watch"),
     ]
 
 
@@ -1589,6 +1995,12 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_failed_recovery_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/targeted"):
         return await api_dev_targeted_audit_test(request)
+    if request.method == "GET" and path.endswith("/api/dev/server/status"):
+        return await api_dev_server_status(request)
+    if request.method == "POST" and path.endswith("/api/dev/server/diagnose"):
+        return await api_dev_server_diagnose(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/server-client"):
+        return await api_dev_server_client_test(request)
     if request.method == "GET" and path.endswith("/api/dev/protocols"):
         return await api_dev_protocol_inventory(request)
     if request.method == "POST" and path.endswith("/api/dev/test/protocol-pack"):
@@ -1613,7 +2025,7 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
 
 
 def create_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(client_max_size=4 * 1024 * 1024)
     app["runtime"] = Runtime()
     app.router.add_get("/", ui_index)
     app.router.add_get("/api/health", api_health)
@@ -1626,6 +2038,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/recurrence", api_dev_recurrence_test)
     app.router.add_post("/api/dev/test/failed-recovery", api_dev_failed_recovery_test)
     app.router.add_post("/api/dev/test/targeted", api_dev_targeted_audit_test)
+    app.router.add_get("/api/dev/server/status", api_dev_server_status)
+    app.router.add_post("/api/dev/server/diagnose", api_dev_server_diagnose)
+    app.router.add_post("/api/dev/test/server-client", api_dev_server_client_test)
     app.router.add_get("/api/dev/protocols", api_dev_protocol_inventory)
     app.router.add_post("/api/dev/test/protocol-pack", api_dev_protocol_pack_diagnostics)
     app.router.add_post("/api/dev/test/protocol", api_dev_protocol_selftest)
