@@ -54,6 +54,47 @@ class SupervisorClient:
     async def network_info(self) -> dict[str, Any]:
         return await self._request("GET", "/network/info") or {}
 
+    async def network_reload(self) -> bool:
+        try:
+            await self._request("POST", "/network/reload", json={})
+            return True
+        except aiohttp.ClientResponseError:
+            return False
+
+    async def set_primary_auto_dns(self, nameservers: list[str]) -> dict[str, Any]:
+        safe_nameservers = [str(x).strip() for x in nameservers if str(x).strip()]
+        if not safe_nameservers or len(safe_nameservers) > 4:
+            raise ValueError("nameservers must contain 1..4 addresses")
+        info = await self.network_info()
+        interfaces = info.get("interfaces", []) if isinstance(info, dict) else []
+        primary = next(
+            (
+                item for item in interfaces
+                if isinstance(item, dict) and bool(item.get("primary"))
+            ),
+            None,
+        )
+        if primary is None:
+            raise RuntimeError("Primary network interface not found")
+        ipv4 = primary.get("ipv4") if isinstance(primary.get("ipv4"), dict) else {}
+        if str(ipv4.get("method") or "").lower() != "auto":
+            raise RuntimeError("DNS write is restricted to IPv4 method=auto")
+        interface = str(primary.get("interface") or "").strip()
+        if not interface or "/" in interface or "\x00" in interface:
+            raise RuntimeError("Invalid primary network interface")
+        previous = [str(x) for x in (ipv4.get("nameservers") or [])]
+        await self._request(
+            "POST",
+            f"/network/interface/{quote(interface, safe='')}/update",
+            json={"ipv4": {"method": "auto", "nameservers": safe_nameservers}},
+        )
+        await self.network_reload()
+        return {
+            "interface": interface,
+            "previous_nameservers": previous,
+            "nameservers": safe_nameservers,
+        }
+
     async def core_info(self) -> dict[str, Any]:
         return await self._request("GET", "/core/info") or {}
 
@@ -78,6 +119,58 @@ class SupervisorClient:
 
     async def addons(self) -> dict[str, Any]:
         return await self._request("GET", "/addons") or {}
+
+    async def store_info(self) -> dict[str, Any]:
+        return await self._request("GET", "/store") or {}
+
+    async def add_store_repository(self, repository: str) -> bool:
+        value = str(repository).strip()
+        if not value.startswith("https://github.com/"):
+            return False
+        try:
+            await self._request(
+                "POST",
+                "/store/repositories",
+                json={"repository": value},
+            )
+            return True
+        except aiohttp.ClientResponseError:
+            return False
+
+    async def reload_store(self) -> bool:
+        try:
+            await self._request("POST", "/store/reload", json={})
+            return True
+        except aiohttp.ClientResponseError:
+            return False
+
+    async def install_store_addon(self, slug: str) -> bool:
+        safe_slug = str(slug).strip()
+        if not safe_slug or "/" in safe_slug or "\x00" in safe_slug:
+            return False
+        try:
+            await self._request(
+                "POST",
+                f"/store/addons/{quote(safe_slug, safe='')}/install",
+                json={"background": False},
+            )
+            return True
+        except aiohttp.ClientResponseError:
+            return False
+
+    async def start_addon(self, slug: str) -> bool:
+        safe_slug = str(slug).strip()
+        if not safe_slug or "/" in safe_slug or "\x00" in safe_slug:
+            return False
+        try:
+            await self._request(
+                "POST",
+                f"/addons/{quote(safe_slug, safe='')}/start",
+                json={},
+            )
+            return True
+        except aiohttp.ClientResponseError:
+            return False
 
     async def addon_logs(self, slug: str) -> str:
         data = await self._request("GET", f"/addons/{slug}/logs")

@@ -168,6 +168,49 @@ class HomeAssistantClient:
         )
         return data if isinstance(data, dict) else {}
 
+    async def list_config_entries(self, domain: str = "") -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {}
+        if domain:
+            payload["domain"] = str(domain)
+        data = await self.ws_command("config_entries/get", **payload)
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+
+    async def set_config_entry_enabled(
+        self,
+        entry_id: str,
+        *,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        data = await self.ws_command(
+            "config_entries/disable",
+            entry_id=str(entry_id),
+            disabled_by=None if enabled else "user",
+        )
+        return data if isinstance(data, dict) else {}
+
+    async def get_entity_registry_entry(self, entity_id: str) -> dict[str, Any] | None:
+        data = await self.ws_command(
+            "config/entity_registry/get_entries",
+            entity_ids=[str(entity_id)],
+        )
+        if not isinstance(data, dict):
+            return None
+        item = data.get(str(entity_id))
+        return item if isinstance(item, dict) else None
+
+    async def set_entity_registry_enabled(
+        self,
+        entity_id: str,
+        *,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        data = await self.ws_command(
+            "config/entity_registry/update",
+            entity_id=str(entity_id),
+            disabled_by=None if enabled else "user",
+        )
+        return data if isinstance(data, dict) else {}
+
     async def install_update(self, entity_id: str, *, backup: bool = True) -> Any:
         safe_entity_id = str(entity_id).strip()
         if not safe_entity_id.startswith("update."):

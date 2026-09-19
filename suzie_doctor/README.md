@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.34-dev`
+- App: `0.2.35-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 
@@ -22,6 +22,8 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - available update entities are installed through native update.install with backup=true; updates already in progress are never replayed and system updates are serialized across scans;
 - persistent notifications are monitored as context, but arbitrary notification text is never converted into a command;
 - server-generated Protocols are accepted through the existing pinned-TLS/Ed25519 signed execution-package path and revalidated by the local ProtocolEngine;
+- MANUAL generated Protocols are fully curated guidance records: they carry checks/action/verify/rollback to the client but ProtocolEngine can never execute their treatment;
+- HAOS DNS treatment is narrowly bounded to the primary IPv4 method=auto interface, requires explicit dns_servers context, creates a backup, verifies internet/DNS state, and retains rollback nameservers;
 - generated Protocol primitives include confirmed-Disease gating, HA update discovery/install with backup, config-entry lookup/verified reload, add-on lookup/restart, bounded subsystem reload, full backup checkpoint, config check and controlled Core restart;
 - generated-protocol Developer regression executes an in-memory server-style update Protocol through the real ProtocolEngine without touching live Home Assistant;
 - controlled generic recovery for config entries with repeat diagnosis;

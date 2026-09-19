@@ -28,12 +28,22 @@ class ProtocolEngine:
     SUPPORTED_PRIMITIVES = {
         "addon_info",
         "config_entry_info",
+        "config_entry_set_enabled",
         "config_entry_state",
         "confirmed_disease",
+        "context_value",
+        "context_list",
+        "core_memory_stability",
+        "entity_registry_info",
+        "ensure_update_current",
         "check_config",
         "create_backup",
+        "google_assistant_set_exposed",
+        "install_hacs_supported",
         "install_update",
         "mqtt_probe",
+        "network_primary_info",
+        "network_set_primary_dns",
         "notify_user",
         "read_host_metrics",
         "reload_config_entry",
@@ -41,6 +51,8 @@ class ProtocolEngine:
         "reload_subsystem",
         "restart_addon",
         "restart_core",
+        "set_entity_device_class",
+        "set_entity_enabled",
         "update_state",
         "verify_recorder_write",
         "wait",
@@ -155,7 +167,7 @@ class ProtocolEngine:
             return False, f"mode_{mode}_not_enabled"
 
         status = str((card.get("protocol") or {}).get("status") or "")
-        if status not in {"ACTIVE", "WATCH"}:
+        if status not in {"ACTIVE", "WATCH", "MANUAL"}:
             return False, f"protocol_status_{status.lower() or 'unknown'}"
 
         applicability = scan.get("applicability") or {}
@@ -353,6 +365,7 @@ class ProtocolEngine:
         if protocol["status"] not in {
             "ACTIVE",
             "WATCH",
+            "MANUAL",
             "SUSPENDED",
             "RETIRED",
         }:
@@ -597,6 +610,430 @@ class ProtocolEngine:
                 return False
             return confirmed
 
+        if name == "context_value":
+            key = str(resolved.get("key") or "").strip()
+            allowed = {
+                "entity_id",
+                "config_entry_id",
+                "issue_domain",
+                "issue_id",
+                "addon_slug",
+                "update_entity_id",
+                "device_class",
+            }
+            if key not in allowed:
+                raise ProtocolError(f"Unsupported context key: {key!r}")
+            value = env.get(key)
+            if value is None and isinstance(env.get("context"), dict):
+                value = env["context"].get(key)
+            text = str(value or "").strip()
+            return {"found": bool(text), "value": text}
+
+        if name == "context_list":
+            key = str(resolved.get("key") or "").strip()
+            allowed = {"dns_servers", "entity_ids"}
+            if key not in allowed:
+                raise ProtocolError(f"Unsupported context list key: {key!r}")
+            value = env.get(key)
+            if value is None and isinstance(env.get("context"), dict):
+                value = env["context"].get(key)
+            if isinstance(value, str):
+                values = [part.strip() for part in value.split(",") if part.strip()]
+            elif isinstance(value, list):
+                values = [str(part).strip() for part in value if str(part).strip()]
+            else:
+                values = []
+            return {"found": bool(values), "value": values}
+
+        if name == "network_primary_info":
+            info = await self.supervisor.network_info()
+            interfaces = info.get("interfaces", []) if isinstance(info, dict) else []
+            primary = next(
+                (
+                    item for item in interfaces
+                    if isinstance(item, dict) and bool(item.get("primary"))
+                ),
+                None,
+            )
+            if primary is None:
+                return {
+                    "found": False,
+                    "interface": "",
+                    "method": "",
+                    "nameservers": [],
+                    "host_internet": bool(info.get("host_internet")) if isinstance(info, dict) else False,
+                }
+            ipv4 = primary.get("ipv4") if isinstance(primary.get("ipv4"), dict) else {}
+            return {
+                "found": True,
+                "interface": str(primary.get("interface") or ""),
+                "method": str(ipv4.get("method") or ""),
+                "nameservers": [str(x) for x in (ipv4.get("nameservers") or [])],
+                "host_internet": bool(info.get("host_internet")) if isinstance(info, dict) else False,
+                "supervisor_internet": bool(info.get("supervisor_internet")) if isinstance(info, dict) else False,
+            }
+
+        if name == "network_set_primary_dns":
+            nameservers = resolved.get("nameservers")
+            if not isinstance(nameservers, list):
+                raise ProtocolError("network_set_primary_dns requires nameservers list")
+            result = await self.supervisor.set_primary_auto_dns(
+                [str(x) for x in nameservers]
+            )
+            deadline = monotonic() + max(
+                15,
+                min(120, int(resolved.get("timeout_seconds", 60))),
+            )
+            desired = [str(x) for x in nameservers]
+            while monotonic() < deadline:
+                info = await self.supervisor.network_info()
+                interfaces = info.get("interfaces", []) if isinstance(info, dict) else []
+                primary = next(
+                    (
+                        item for item in interfaces
+                        if isinstance(item, dict) and bool(item.get("primary"))
+                    ),
+                    None,
+                )
+                ipv4 = primary.get("ipv4") if isinstance(primary, dict) and isinstance(primary.get("ipv4"), dict) else {}
+                current = [str(x) for x in (ipv4.get("nameservers") or [])]
+                if current == desired and bool(info.get("host_internet")):
+                    return {"ok": True, **result}
+                await asyncio.sleep(3)
+            return False
+
+        if name == "entity_registry_info":
+            entity_id = str(resolved.get("entity_id") or "").strip()
+            if "." not in entity_id:
+                return {
+                    "found": False,
+                    "entity_id": entity_id,
+                    "disabled": False,
+                    "disabled_by": None,
+                    "config_entry_id": None,
+                }
+            data = await self.ha.ws_command("config/entity_registry/list")
+            entries = data if isinstance(data, list) else []
+            matches = [
+                item for item in entries
+                if isinstance(item, dict)
+                and str(item.get("entity_id") or "") == entity_id
+            ]
+            if len(matches) != 1:
+                return {
+                    "found": False,
+                    "entity_id": entity_id,
+                    "disabled": False,
+                    "disabled_by": None,
+                    "config_entry_id": None,
+                }
+            item = matches[0]
+            disabled_by = item.get("disabled_by")
+            return {
+                "found": True,
+                "entity_id": entity_id,
+                "disabled": disabled_by is not None,
+                "disabled_by": disabled_by,
+                "config_entry_id": item.get("config_entry_id"),
+                "platform": item.get("platform"),
+                "device_class": item.get("device_class"),
+            }
+
+        if name == "set_entity_device_class":
+            entity_id = str(resolved.get("entity_id") or "").strip()
+            if "." not in entity_id:
+                raise ProtocolError(
+                    "set_entity_device_class requires exact entity_id"
+                )
+            if "device_class" not in resolved:
+                raise ProtocolError(
+                    "set_entity_device_class requires device_class"
+                )
+            raw_device_class = resolved.get("device_class")
+            device_class = (
+                None
+                if raw_device_class is None
+                else str(raw_device_class).strip() or None
+            )
+            await self.ha.ws_command(
+                "config/entity_registry/update",
+                entity_id=entity_id,
+                device_class=device_class,
+            )
+            registry = await self.ha.ws_command(
+                "config/entity_registry/list"
+            )
+            rows = registry if isinstance(registry, list) else []
+            current = next(
+                (
+                    item for item in rows
+                    if isinstance(item, dict)
+                    and str(item.get("entity_id") or "") == entity_id
+                ),
+                None,
+            )
+            return bool(
+                current is not None
+                and current.get("device_class") == device_class
+            )
+
+        if name == "set_entity_enabled":
+            entity_id = str(resolved.get("entity_id") or "").strip()
+            enabled = bool(resolved.get("enabled"))
+            if "." not in entity_id:
+                raise ProtocolError("set_entity_enabled requires exact entity_id")
+            result = await self.ha.ws_command(
+                "config/entity_registry/update",
+                entity_id=entity_id,
+                disabled_by=None if enabled else "user",
+            )
+            entity_entry = (
+                result.get("entity_entry")
+                if isinstance(result, dict)
+                and isinstance(result.get("entity_entry"), dict)
+                else {}
+            )
+            config_entry_id = str(
+                entity_entry.get("config_entry_id") or ""
+            ).strip()
+            if enabled and isinstance(result, dict) and result.get("require_restart"):
+                # Entity registry says a full HA restart is required. Do not hide
+                # that inside an entity-enable primitive; a separate confirmed
+                # Core restart Protocol step is required.
+                return False
+            if config_entry_id:
+                await asyncio.sleep(1)
+                if not await self.ha.bridge_reload_entry(config_entry_id):
+                    return False
+
+            deadline = monotonic() + max(
+                10,
+                min(120, int(resolved.get("timeout_seconds", 60))),
+            )
+            while monotonic() < deadline:
+                registry = await self.ha.ws_command(
+                    "config/entity_registry/list"
+                )
+                rows = registry if isinstance(registry, list) else []
+                current = next(
+                    (
+                        item for item in rows
+                        if isinstance(item, dict)
+                        and str(item.get("entity_id") or "") == entity_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    await asyncio.sleep(2)
+                    continue
+                disabled_by = current.get("disabled_by")
+                if enabled and disabled_by is not None:
+                    await asyncio.sleep(2)
+                    continue
+                if not enabled and disabled_by is None:
+                    await asyncio.sleep(2)
+                    continue
+                if not enabled:
+                    return True
+                try:
+                    states = await self.ha.get_states()
+                except Exception:
+                    await asyncio.sleep(2)
+                    continue
+                state = next(
+                    (
+                        item for item in states
+                        if isinstance(item, dict)
+                        and str(item.get("entity_id") or "") == entity_id
+                    ),
+                    None,
+                )
+                if state is not None and str(
+                    state.get("state") or ""
+                ).lower() not in {"unavailable", "unknown", ""}:
+                    return True
+                await asyncio.sleep(2)
+            return False
+
+        if name == "google_assistant_set_exposed":
+            entity_id = str(resolved.get("entity_id") or "").strip()
+            exposed = bool(resolved.get("exposed"))
+            if "." not in entity_id:
+                raise ProtocolError(
+                    "google_assistant_set_exposed requires exact entity_id"
+                )
+            await self.ha.ws_command(
+                "homeassistant/expose_entity",
+                assistants=["cloud.google_assistant"],
+                entity_ids=[entity_id],
+                should_expose=exposed,
+            )
+            await self.ha.call_service(
+                "google_assistant",
+                "request_sync",
+                {},
+            )
+            listing = await self.ha.ws_command(
+                "homeassistant/expose_entity/list"
+            )
+            exposed_entities = (
+                listing.get("exposed_entities", {})
+                if isinstance(listing, dict)
+                else {}
+            )
+            current = exposed_entities.get(entity_id, {})
+            is_exposed = bool(
+                isinstance(current, dict)
+                and current.get("cloud.google_assistant")
+            )
+            return is_exposed is exposed
+
+        if name == "ensure_update_current":
+            target = str(resolved.get("target") or "").strip().lower()
+            aliases = {
+                "core": "update.home_assistant_core_update",
+                "supervisor": "update.home_assistant_supervisor_update",
+                "os": "update.home_assistant_operating_system_update",
+                "haos": "update.home_assistant_operating_system_update",
+            }
+            entity_id = aliases.get(target)
+            if not entity_id:
+                raise ProtocolError(
+                    "ensure_update_current supports only core/supervisor/os"
+                )
+            states = await self.ha.get_states()
+            current = next(
+                (
+                    item for item in states
+                    if isinstance(item, dict)
+                    and str(item.get("entity_id") or "") == entity_id
+                ),
+                None,
+            )
+            if current is None:
+                return False
+            attrs = (
+                current.get("attributes")
+                if isinstance(current.get("attributes"), dict)
+                else {}
+            )
+            installed = attrs.get("installed_version")
+            latest = attrs.get("latest_version")
+            available = (
+                str(current.get("state") or "").lower() == "on"
+                and not bool(attrs.get("in_progress"))
+                and not (
+                    installed is not None
+                    and latest is not None
+                    and str(installed) == str(latest)
+                )
+            )
+            if not available:
+                return True
+            await self.ha.install_update(entity_id, backup=True)
+            deadline = monotonic() + max(
+                60,
+                min(900, int(resolved.get("timeout_seconds", 600))),
+            )
+            while monotonic() < deadline:
+                await asyncio.sleep(5)
+                try:
+                    states = await self.ha.get_states()
+                except Exception:
+                    continue
+                current = next(
+                    (
+                        item for item in states
+                        if isinstance(item, dict)
+                        and str(item.get("entity_id") or "") == entity_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    continue
+                attrs = (
+                    current.get("attributes")
+                    if isinstance(current.get("attributes"), dict)
+                    else {}
+                )
+                if attrs.get("in_progress"):
+                    continue
+                installed = attrs.get("installed_version")
+                latest = attrs.get("latest_version")
+                if (
+                    str(current.get("state") or "").lower() != "on"
+                    or (
+                        installed is not None
+                        and latest is not None
+                        and str(installed) == str(latest)
+                    )
+                ):
+                    return True
+            return False
+
+        if name == "install_hacs_supported":
+            repo_url = "https://github.com/hacs/addons"
+            manifest = Path(
+                "/homeassistant/custom_components/hacs/manifest.json"
+            )
+            if manifest.exists():
+                return True
+
+            store = await self.supervisor.store_info()
+            repos = (
+                store.get("repositories", [])
+                if isinstance(store, dict)
+                else []
+            )
+            present = any(
+                isinstance(item, dict)
+                and str(item.get("source") or item.get("url") or "")
+                == repo_url
+                for item in repos
+            )
+            if not present:
+                if not await self.supervisor.add_store_repository(repo_url):
+                    return False
+                if not await self.supervisor.reload_store():
+                    return False
+                await asyncio.sleep(3)
+                store = await self.supervisor.store_info()
+
+            addons = (
+                store.get("addons", [])
+                if isinstance(store, dict)
+                else []
+            )
+            matches = [
+                item
+                for item in addons
+                if isinstance(item, dict)
+                and str(item.get("name") or "") == "Get HACS"
+                and "hacs/addons" in str(item.get("url") or "")
+            ]
+            if len(matches) != 1:
+                return False
+            addon = matches[0]
+            slug = str(addon.get("slug") or "").strip()
+            if not slug:
+                return False
+            installed = addon.get("installed")
+            if installed in (None, False, "", "none", "None"):
+                if not await self.supervisor.install_store_addon(slug):
+                    return False
+            if not await self.supervisor.start_addon(slug):
+                return False
+
+            deadline = monotonic() + max(
+                30,
+                min(240, int(resolved.get("timeout_seconds", 180))),
+            )
+            while monotonic() < deadline:
+                if manifest.exists():
+                    return True
+                await asyncio.sleep(3)
+            return False
+
         if name == "update_state":
             target = str(resolved.get("target") or "").strip().lower()
             exact_entity = str(resolved.get("entity_id") or "").strip()
@@ -736,6 +1173,89 @@ class ProtocolEngine:
                     )
                 ):
                     return True
+            return False
+
+        if name == "core_memory_stability":
+            duration_seconds = max(
+                30,
+                min(180, int(resolved.get("duration_seconds", 60))),
+            )
+            interval_seconds = max(
+                5,
+                min(30, int(resolved.get("interval_seconds", 10))),
+            )
+            max_increase = max(
+                1.0,
+                min(
+                    25.0,
+                    float(resolved.get("max_increase_percent", 8.0)),
+                ),
+            )
+            max_percent = max(
+                50.0,
+                min(98.0, float(resolved.get("max_percent", 90.0))),
+            )
+            samples: list[float] = []
+            deadline = monotonic() + duration_seconds
+            while True:
+                stats = await self.supervisor.core_stats()
+                value = stats.get("memory_percent")
+                if not isinstance(value, (int, float)):
+                    return False
+                current = float(value)
+                samples.append(current)
+                if current >= max_percent:
+                    return False
+                if current - samples[0] >= max_increase:
+                    return False
+                if monotonic() >= deadline:
+                    break
+                await asyncio.sleep(interval_seconds)
+            return True
+
+        if name == "config_entry_set_enabled":
+            entry_id = str(resolved.get("entry_id") or "").strip()
+            enabled = bool(resolved.get("enabled"))
+            if not entry_id:
+                raise ProtocolError(
+                    "config_entry_set_enabled requires exact entry_id"
+                )
+            result = await self.ha.ws_command(
+                "config_entries/disable",
+                entry_id=entry_id,
+                disabled_by=None if enabled else "user",
+            )
+            if (
+                isinstance(result, dict)
+                and bool(result.get("require_restart"))
+            ):
+                return False
+            deadline = monotonic() + max(
+                10,
+                min(120, int(resolved.get("timeout_seconds", 60))),
+            )
+            while monotonic() < deadline:
+                snapshot = await self.ha.bridge_snapshot()
+                entries = (
+                    snapshot.get("config_entries", [])
+                    if isinstance(snapshot, dict)
+                    else []
+                )
+                current = next(
+                    (
+                        item for item in entries
+                        if isinstance(item, dict)
+                        and str(item.get("entry_id") or "") == entry_id
+                    ),
+                    None,
+                )
+                if current is not None:
+                    disabled_by = current.get("disabled_by")
+                    if enabled and disabled_by is None:
+                        return {"ok": True, "require_restart": False}
+                    if not enabled and disabled_by is not None:
+                        return {"ok": True, "require_restart": False}
+                await asyncio.sleep(2)
             return False
 
         if name == "config_entry_info":
@@ -1142,6 +1662,8 @@ class ProtocolEngine:
             "protocol_status": card["protocol"]["status"],
             "automation_class": card["automation_class"],
         }
+        if str(card["protocol"]["status"]) == "MANUAL":
+            response["manual_guidance"] = card.get("manual") or {}
         try:
             await self._prepare_named_preconditions(card, env)
             if not self._eval_conditions(
@@ -1204,6 +1726,8 @@ class ProtocolEngine:
             "automation_class": card["automation_class"],
             "simulated": simulated,
         }
+        if str(card["protocol"]["status"]) == "MANUAL":
+            response["manual_guidance"] = card.get("manual") or {}
 
         try:
             await self._prepare_named_preconditions(card, env)
@@ -1353,6 +1877,70 @@ class ProtocolEngine:
                     else:
                         success = not treatment_failed
                 response["verify"] = verify_results
+
+                rollback_results: list[dict[str, Any]] = []
+                if not success and (card.get("rollback") or []):
+                    for rollback_step in card.get("rollback") or []:
+                        if not isinstance(rollback_step, dict):
+                            continue
+                        rollback_primitive = str(
+                            rollback_step.get("primitive") or ""
+                        )
+                        if not rollback_primitive:
+                            continue
+                        max_attempts = max(
+                            1,
+                            min(
+                                3,
+                                int(
+                                    rollback_step.get(
+                                        "max_attempts", 1
+                                    )
+                                ),
+                            ),
+                        )
+                        rollback_ok = False
+                        rollback_value: Any = None
+                        rollback_error: str | None = None
+                        rollback_attempts = 0
+                        for rollback_attempt in range(
+                            1, max_attempts + 1
+                        ):
+                            rollback_attempts = rollback_attempt
+                            try:
+                                rollback_value = await self._run_primitive(
+                                    rollback_primitive,
+                                    rollback_step.get("args") or {},
+                                    env,
+                                )
+                                rollback_ok = bool(
+                                    rollback_value is not False
+                                )
+                                rollback_error = None
+                            except Exception as exc:
+                                rollback_error = (
+                                    f"{type(exc).__name__}: {exc}"
+                                )
+                                rollback_ok = False
+                            if rollback_ok:
+                                break
+                        rollback_results.append(
+                            {
+                                "step": rollback_step.get("step"),
+                                "primitive": rollback_primitive,
+                                "attempts": rollback_attempts,
+                                "ok": rollback_ok,
+                                "value": rollback_value,
+                                "error": rollback_error,
+                            }
+                        )
+                if rollback_results:
+                    response["rollback"] = rollback_results
+                    response["rollback_succeeded"] = all(
+                        bool(item.get("ok"))
+                        for item in rollback_results
+                    )
+
                 response["result"] = (
                     "SUCCESS" if success else "FAILED"
                 )

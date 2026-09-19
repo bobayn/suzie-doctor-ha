@@ -909,6 +909,65 @@ async def api_dev_server_client_test(request: web.Request) -> web.Response:
             },
         ])
 
+        manual_disease_id = "DISEASE-KB-DOCKER-0B6DB7B3DC"
+        manual_diagnosis = await rt.doctor_server.diagnose({
+            "request_id": str(uuid4()),
+            "confirmed_disease_id": manual_disease_id,
+            "component": "docker",
+            "evidence": {"developer_selftest": "manual_protocol"},
+            "system": {"doctor_app_version": APP_VERSION},
+        })
+        manual_packages = [
+            item
+            for item in (manual_diagnosis.get("execution_packages") or [])
+            if isinstance(item, dict)
+            and str(item.get("protocol_id") or "").startswith(
+                "PROTOCOL-GENERATED-"
+            )
+        ]
+        manual_card = None
+        manual_result: dict[str, Any] = {}
+        if manual_packages:
+            manual_card = rt.doctor_server.validate_execution_package(
+                manual_packages[0]
+            )
+            manual_result = await rt.protocol_engine.execute_card(
+                manual_card,
+                context={
+                    "disease_confirmed": True,
+                    "disease_id": manual_disease_id,
+                },
+                trust_mode="full_trust",
+                explicit_confirmation=True,
+                simulated=True,
+                developer_override=False,
+            )
+        cases.extend([
+            {
+                "id": "manual_protocol_package_returned",
+                "pass": bool(manual_packages),
+            },
+            {
+                "id": "manual_protocol_package_valid",
+                "pass": isinstance(manual_card, dict)
+                and str((manual_card.get("protocol") or {}).get("status"))
+                == "MANUAL",
+            },
+            {
+                "id": "manual_protocol_guidance_delivered",
+                "pass": bool(
+                    (manual_card.get("manual") or {}).get("action")
+                    if isinstance(manual_card, dict)
+                    else False
+                ),
+            },
+            {
+                "id": "manual_protocol_cannot_execute",
+                "pass": manual_result.get("result") == "DIAGNOSIS_ONLY"
+                and manual_result.get("treatment_allowed") is False,
+            },
+        ])
+
         details = {
             "server_version": health.get("version"),
             "knowledge": knowledge,
@@ -917,6 +976,8 @@ async def api_dev_server_client_test(request: web.Request) -> web.Response:
             "package_count": len(packages),
             "generated_diagnosis_result": generated_diagnosis.get("result"),
             "generated_package_count": len(generated_packages),
+            "manual_diagnosis_result": manual_diagnosis.get("result"),
+            "manual_package_count": len(manual_packages),
         }
     except Exception as exc:
         cases.append({
@@ -1792,6 +1853,169 @@ async def api_dev_generated_protocol_test(request: web.Request) -> web.Response:
     })
 
 
+async def api_dev_manual_protocol_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    class FakeHA:
+        pass
+
+    class FakeSupervisor:
+        def __init__(self) -> None:
+            self.network = {
+                "interfaces": [{
+                    "interface": "end0",
+                    "primary": True,
+                    "ipv4": {
+                        "method": "auto",
+                        "nameservers": ["192.168.0.236"],
+                    },
+                }],
+                "host_internet": True,
+                "supervisor_internet": True,
+            }
+            self.dns_calls: list[list[str]] = []
+
+        async def info(self) -> dict[str, Any]:
+            return {
+                "homeassistant": "2026.9.3",
+                "operating_system": "18.3",
+                "arch": "aarch64",
+            }
+
+        async def network_info(self) -> dict[str, Any]:
+            return self.network
+
+        async def set_primary_auto_dns(
+            self, nameservers: list[str]
+        ) -> dict[str, Any]:
+            values = [str(x) for x in nameservers]
+            self.dns_calls.append(values)
+            self.network["interfaces"][0]["ipv4"]["nameservers"] = values
+            return {
+                "interface": "end0",
+                "previous_nameservers": ["192.168.0.236"],
+                "nameservers": values,
+            }
+
+    manual_card = {
+        "schema_version": 1,
+        "disease_id": "DISEASE-DEVELOPER-MANUAL-001",
+        "title": "Manual protocol regression",
+        "component": "docker",
+        "severity": "DEGRADED",
+        "protocol": {
+            "id": "PROTOCOL-DEVELOPER-MANUAL-001",
+            "version": "0.1.0",
+            "status": "MANUAL",
+        },
+        "source_evidence": [],
+        "triggers": {"any": [{
+            "type": "disease_confirmed",
+            "match": "DISEASE-DEVELOPER-MANUAL-001",
+        }]},
+        "preconditions": [],
+        "diagnostics": [{
+            "id": "confirmed_disease",
+            "primitive": "confirmed_disease",
+            "args": {"disease_id": "DISEASE-DEVELOPER-MANUAL-001"},
+            "save_as": "disease_confirmed",
+        }],
+        "confirm": {"all": [{"expr": "disease_confirmed == true"}]},
+        "exclude": [],
+        "dont_do": [],
+        "checkpoint": {"required": False, "primitive": None, "args": {}},
+        "treatment": [],
+        "verify": {"rerun_diagnostics": False, "success_when": "manual_verify"},
+        "fallback": [],
+        "rollback": [],
+        "cooldown_seconds": 3600,
+        "recurrence_rule": "daily_audit_boundary",
+        "on_failure": "ESCALATION_REQUIRED",
+        "automation_class": "DIAGNOSTIC_ONLY",
+        "manual": {
+            "checks": ["Inspect the external container configuration."],
+            "action": "Correct the external host/container configuration manually.",
+            "verify": ["Confirm the original symptom is gone."],
+            "rollback": "Restore the prior container configuration.",
+            "machine_blocker_class": "EXTERNAL_HOST_OR_CONTAINER_CONFIG",
+        },
+    }
+
+    with TemporaryDirectory(prefix="doctor-manual-protocol-") as tmp:
+        test_db = Database(Path(tmp) / "manual.sqlite3")
+        test_db.initialize()
+        fake_supervisor = FakeSupervisor()
+        engine = ProtocolEngine(
+            test_db,
+            fake_supervisor,  # type: ignore[arg-type]
+            FakeHA(),  # type: ignore[arg-type]
+            app_version=APP_VERSION,
+            bridge_version=BRIDGE_VERSION,
+            pack_version=PROTOCOL_PACK_VERSION,
+        )
+        try:
+            validated = engine._validate_card(manual_card)
+            manual_result = await engine.execute_card(
+                manual_card,
+                context={
+                    "disease_confirmed": True,
+                    "disease_id": "DISEASE-DEVELOPER-MANUAL-001",
+                },
+                trust_mode="full_trust",
+                explicit_confirmation=True,
+                simulated=True,
+            )
+            env = {
+                "dns_target": {"value": ["1.1.1.1", "8.8.8.8"]},
+            }
+            dns_result = await engine._run_primitive(
+                "network_set_primary_dns",
+                {
+                    "nameservers": "$dns_target.value",
+                    "timeout_seconds": 15,
+                },
+                env,
+            )
+            dns_calls = list(fake_supervisor.dns_calls)
+        finally:
+            test_db.conn.close()
+
+    cases = [
+        {
+            "id": "manual_status_valid",
+            "pass": (validated.get("protocol") or {}).get("status") == "MANUAL",
+        },
+        {
+            "id": "manual_never_executes_treatment",
+            "pass": manual_result.get("result") == "DIAGNOSIS_ONLY"
+            and manual_result.get("treatment_allowed") is False,
+            "detail": {
+                "result": manual_result.get("result"),
+                "gate": manual_result.get("treatment_gate"),
+            },
+        },
+        {
+            "id": "manual_guidance_survives",
+            "pass": bool(
+                (manual_result.get("manual_guidance") or {}).get("action")
+            ),
+        },
+        {
+            "id": "dns_primitive_fake_runtime_only",
+            "pass": bool(dns_result)
+            and dns_calls == [["1.1.1.1", "8.8.8.8"]],
+            "detail": dns_calls,
+        },
+    ]
+    return web.json_response({
+        "result": "PASS" if all(x["pass"] for x in cases) else "FAIL",
+        "cases": cases,
+        "live_actions_executed": False,
+    })
+
+
 async def api_dev_release_gate(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -1820,6 +2044,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
     retention = await _response_json(api_dev_retention_test)
     recommendations = await _response_json(api_dev_recommendation_executor_test)
     generated_protocol = await _response_json(api_dev_generated_protocol_test)
+    manual_protocol = await _response_json(api_dev_manual_protocol_test)
     server_client = await _response_json(api_dev_server_client_test)
 
     pack_inventory: dict[str, Any]
@@ -1859,6 +2084,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "retention": retention.get("result") == "PASS",
         "recommendation_executor": recommendations.get("result") == "PASS",
         "generated_protocol": generated_protocol.get("result") == "PASS",
+        "manual_protocol": manual_protocol.get("result") == "PASS",
         "doctor_server_client": server_client.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
@@ -1903,6 +2129,10 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
                 "generated_protocol": {
                     "result": generated_protocol.get("result"),
                     "cases": len(generated_protocol.get("cases") or []),
+                },
+                "manual_protocol": {
+                    "result": manual_protocol.get("result"),
+                    "cases": len(manual_protocol.get("cases") or []),
                 },
                 "doctor_server_client": {
                     "result": server_client.get("result"),
@@ -2357,6 +2587,10 @@ def create_app() -> web.Application:
     app.router.add_post(
         "/api/dev/test/generated-protocol",
         api_dev_generated_protocol_test,
+    )
+    app.router.add_post(
+        "/api/dev/test/manual-protocol",
+        api_dev_manual_protocol_test,
     )
     app.router.add_post("/api/dev/test/release-gate", api_dev_release_gate)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)

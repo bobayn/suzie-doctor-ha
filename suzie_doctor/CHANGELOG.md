@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.35-dev
+- Added MANUAL as a first-class generated Protocol status for fully curated treatments that the HA app must not execute (external Docker/NAS/database recovery/credentials/physical work).
+- MANUAL cards remain signed, client-bound and diagnosable, expose checks/action/verify/rollback guidance, and are hard-gated from treatment by ProtocolEngine because only ACTIVE may execute.
+- Added bounded HAOS network primitives for read-only primary-interface inspection and primary IPv4 auto-mode DNS replacement with post-write verification. Static-address interfaces fail closed.
+- Added context-list gating for exact dns_servers/entity_ids supplied by the confirmed diagnosis context.
+- Expanded safe registry/config-entry primitives used by curated protocols; no generic shell or arbitrary service primitive was added.
+- Added a four-case MANUAL/network fake-runtime regression to the Developer release gate. It performs no live Home Assistant network writes.
+- App 0.2.35-dev; Bridge remains 0.2.4-dev; Protocol Pack remains 0.1.4-dev.
+
 ## 0.2.34-dev
 - Extended the signed Doctor Server client regression to require a real generated Protocol package from the Protocol Factory.
 - The suite now validates generated package binding/expiry, nested diagnostics/treatment preservation after server sanitization, and primitive compatibility with the local ProtocolEngine.
