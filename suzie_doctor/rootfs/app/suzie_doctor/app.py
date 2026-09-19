@@ -398,12 +398,25 @@ class Runtime:
                             "unsupported_primitives": unsupported,
                         })
                         continue
+                    execution_context = (
+                        dict(evidence.get("context"))
+                        if isinstance(evidence.get("context"), dict)
+                        else {}
+                    )
+                    confirmed_id = str(
+                        evidence.get("confirmed_disease_id") or ""
+                    ).strip()
+                    if confirmed_id:
+                        execution_context.setdefault(
+                            "disease_confirmed", True
+                        )
+                        execution_context.setdefault(
+                            "disease_id", confirmed_id
+                        )
                     execution_results.append(
                         await self.protocol_engine.execute_card(
                             card,
-                            context=evidence.get("context")
-                            if isinstance(evidence.get("context"), dict)
-                            else {},
+                            context=execution_context,
                             trust_mode=self.options.trust_mode,
                             explicit_confirmation=explicit_confirmation,
                             simulated=False,
@@ -1537,6 +1550,189 @@ async def api_dev_recommendation_executor_test(request: web.Request) -> web.Resp
     return web.json_response(result)
 
 
+async def api_dev_generated_protocol_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    class FakeHA:
+        def __init__(self) -> None:
+            self.states = [{
+                "entity_id": "update.home_assistant_core_update",
+                "state": "on",
+                "attributes": {
+                    "title": "Home Assistant Core",
+                    "installed_version": "2026.9.3",
+                    "latest_version": "2026.9.4",
+                    "in_progress": False,
+                    "supported_features": 1,
+                },
+            }]
+            self.install_calls: list[dict[str, Any]] = []
+
+        async def get_states(self) -> list[dict[str, Any]]:
+            return self.states
+
+        async def install_update(
+            self, entity_id: str, *, backup: bool = True
+        ) -> None:
+            self.install_calls.append({
+                "entity_id": entity_id,
+                "backup": backup,
+            })
+            state = self.states[0]
+            state["state"] = "off"
+            attrs = state["attributes"]
+            attrs["installed_version"] = attrs["latest_version"]
+            attrs["in_progress"] = False
+
+    class FakeSupervisor:
+        async def info(self) -> dict[str, Any]:
+            return {
+                "homeassistant": "2026.9.3",
+                "operating_system": "18.3",
+                "arch": "aarch64",
+            }
+
+    card = {
+        "schema_version": 1,
+        "disease_id": "DISEASE-DEVELOPER-GENERATED-001",
+        "title": "Generated protocol execution regression",
+        "component": "core",
+        "severity": "PROBLEM",
+        "protocol": {
+            "id": "PROTOCOL-DEVELOPER-GENERATED-001",
+            "version": "0.1.0",
+            "status": "ACTIVE",
+        },
+        "source_evidence": [],
+        "triggers": {
+            "any": [{
+                "type": "disease_confirmed",
+                "match": "DISEASE-DEVELOPER-GENERATED-001",
+            }]
+        },
+        "preconditions": [],
+        "diagnostics": [
+            {
+                "id": "confirmed_disease",
+                "primitive": "confirmed_disease",
+                "args": {
+                    "disease_id": "DISEASE-DEVELOPER-GENERATED-001"
+                },
+                "save_as": "disease_confirmed",
+            },
+            {
+                "id": "update_target",
+                "primitive": "update_state",
+                "args": {"target": "core"},
+                "save_as": "update_target",
+            },
+        ],
+        "confirm": {
+            "all": [
+                {"expr": "disease_confirmed == true"},
+                {"expr": "update_target.found == true"},
+                {"expr": "update_target.available == true"},
+            ]
+        },
+        "exclude": [],
+        "dont_do": [],
+        "checkpoint": {
+            "required": False,
+            "primitive": None,
+            "args": {},
+        },
+        "treatment": [{
+            "step": 1,
+            "primitive": "install_update",
+            "args": {
+                "entity_id": "$update_target.entity_id",
+                "timeout_seconds": 30,
+            },
+            "max_attempts": 1,
+        }],
+        "verify": {
+            "rerun_diagnostics": False,
+            "success_when": "primitive_self_verified",
+        },
+        "fallback": [],
+        "rollback": [],
+        "cooldown_seconds": 0,
+        "recurrence_rule": "daily_audit_boundary",
+        "on_failure": "ESCALATION_REQUIRED",
+        "automation_class": "CONFIRM_REQUIRED",
+        "factory": {
+            "state": "ACTIVE_CONFIRM",
+            "mapped": True,
+            "complete_mapping": True,
+        },
+    }
+
+    with TemporaryDirectory(prefix="doctor-generated-protocol-") as tmp:
+        test_db = Database(Path(tmp) / "generated.sqlite3")
+        test_db.initialize()
+        fake_ha = FakeHA()
+        engine = ProtocolEngine(
+            test_db,
+            FakeSupervisor(),  # type: ignore[arg-type]
+            fake_ha,  # type: ignore[arg-type]
+            app_version=APP_VERSION,
+            bridge_version=BRIDGE_VERSION,
+            pack_version=PROTOCOL_PACK_VERSION,
+        )
+        try:
+            validated = engine._validate_card(card)
+            unsupported = sorted(
+                engine._card_primitives(validated)
+                - engine.SUPPORTED_PRIMITIVES
+            )
+            result = await engine.execute_card(
+                card,
+                context={
+                    "disease_confirmed": True,
+                    "disease_id": "DISEASE-DEVELOPER-GENERATED-001",
+                },
+                trust_mode="safe_auto",
+                explicit_confirmation=True,
+                simulated=True,
+                developer_override=False,
+            )
+            calls = list(fake_ha.install_calls)
+        finally:
+            test_db.conn.close()
+
+    cases = [
+        {
+            "id": "generated_card_schema_valid",
+            "pass": not unsupported,
+            "detail": {"unsupported": unsupported},
+        },
+        {
+            "id": "generated_card_executes",
+            "pass": result.get("result") == "SUCCESS",
+            "detail": {
+                "result": result.get("result"),
+                "gate": result.get("treatment_gate"),
+            },
+        },
+        {
+            "id": "generated_update_uses_backup",
+            "pass": bool(calls) and calls[0].get("backup") is True,
+            "detail": calls,
+        },
+        {
+            "id": "generated_confirm_required_obeyed",
+            "pass": result.get("treatment_allowed") is True,
+        },
+    ]
+    return web.json_response({
+        "result": "PASS" if all(x["pass"] for x in cases) else "FAIL",
+        "cases": cases,
+        "live_actions_executed": False,
+    })
+
+
 async def api_dev_release_gate(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -1564,6 +1760,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
     recurrence = await _response_json(api_dev_recurrence_test)
     retention = await _response_json(api_dev_retention_test)
     recommendations = await _response_json(api_dev_recommendation_executor_test)
+    generated_protocol = await _response_json(api_dev_generated_protocol_test)
     server_client = await _response_json(api_dev_server_client_test)
 
     pack_inventory: dict[str, Any]
@@ -1602,6 +1799,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "recurrence": recurrence.get("result") == "PASS",
         "retention": retention.get("result") == "PASS",
         "recommendation_executor": recommendations.get("result") == "PASS",
+        "generated_protocol": generated_protocol.get("result") == "PASS",
         "doctor_server_client": server_client.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
@@ -1642,6 +1840,10 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
                 "recommendation_executor": {
                     "result": recommendations.get("result"),
                     "cases": len(recommendations.get("cases") or []),
+                },
+                "generated_protocol": {
+                    "result": generated_protocol.get("result"),
+                    "cases": len(generated_protocol.get("cases") or []),
                 },
                 "doctor_server_client": {
                     "result": server_client.get("result"),
@@ -2092,6 +2294,10 @@ def create_app() -> web.Application:
     app.router.add_post(
         "/api/dev/test/recommendations",
         api_dev_recommendation_executor_test,
+    )
+    app.router.add_post(
+        "/api/dev/test/generated-protocol",
+        api_dev_generated_protocol_test,
     )
     app.router.add_post("/api/dev/test/release-gate", api_dev_release_gate)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)

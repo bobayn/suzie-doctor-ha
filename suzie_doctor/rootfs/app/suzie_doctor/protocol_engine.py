@@ -26,11 +26,22 @@ class ProtocolEngine:
     """Deterministic disease-protocol executor for the MVP."""
 
     SUPPORTED_PRIMITIVES = {
+        "addon_info",
+        "config_entry_info",
         "config_entry_state",
+        "confirmed_disease",
+        "check_config",
+        "create_backup",
+        "install_update",
         "mqtt_probe",
         "notify_user",
         "read_host_metrics",
         "reload_config_entry",
+        "reload_config_entry_verified",
+        "reload_subsystem",
+        "restart_addon",
+        "restart_core",
+        "update_state",
         "verify_recorder_write",
         "wait",
     }
@@ -578,6 +589,355 @@ class ProtocolEngine:
             raise UnsupportedPrimitive(name)
         resolved = self._resolve_value(args or {}, env)
 
+        if name == "confirmed_disease":
+            expected = str(resolved.get("disease_id") or "").strip()
+            actual = str(env.get("disease_id") or "").strip()
+            confirmed = bool(env.get("disease_confirmed"))
+            if expected and actual and expected != actual:
+                return False
+            return confirmed
+
+        if name == "update_state":
+            target = str(resolved.get("target") or "").strip().lower()
+            exact_entity = str(resolved.get("entity_id") or "").strip()
+            states = await self.ha.get_states()
+            candidates: list[dict[str, Any]] = []
+            aliases = {
+                "core": (
+                    "update.home_assistant_core_update",
+                    "home assistant core",
+                ),
+                "supervisor": (
+                    "update.home_assistant_supervisor_update",
+                    "home assistant supervisor",
+                ),
+                "os": (
+                    "update.home_assistant_operating_system_update",
+                    "home assistant operating system",
+                ),
+                "haos": (
+                    "update.home_assistant_operating_system_update",
+                    "home assistant operating system",
+                ),
+            }
+            for state in states:
+                if not isinstance(state, dict):
+                    continue
+                entity_id = str(state.get("entity_id") or "")
+                if not entity_id.startswith("update."):
+                    continue
+                attrs = (
+                    state.get("attributes")
+                    if isinstance(state.get("attributes"), dict)
+                    else {}
+                )
+                title = str(
+                    attrs.get("title")
+                    or attrs.get("friendly_name")
+                    or ""
+                )
+                haystack = f"{entity_id} {title}".lower()
+                matched = False
+                if exact_entity:
+                    matched = entity_id == exact_entity
+                elif target in aliases:
+                    entity_hint, title_hint = aliases[target]
+                    matched = (
+                        entity_id == entity_hint
+                        or title_hint in haystack
+                    )
+                elif target:
+                    token = re.sub(r"[^a-z0-9]+", "", target)
+                    normalized = re.sub(
+                        r"[^a-z0-9]+", "", haystack
+                    )
+                    matched = bool(token and token in normalized)
+                if matched:
+                    candidates.append(state)
+            if len(candidates) != 1:
+                return {
+                    "found": False,
+                    "ambiguous": len(candidates) > 1,
+                    "match_count": len(candidates),
+                    "entity_id": "",
+                    "available": False,
+                    "in_progress": False,
+                }
+            state = candidates[0]
+            attrs = (
+                state.get("attributes")
+                if isinstance(state.get("attributes"), dict)
+                else {}
+            )
+            installed = attrs.get("installed_version")
+            latest = attrs.get("latest_version")
+            available = (
+                str(state.get("state") or "").lower() == "on"
+                and not bool(attrs.get("in_progress"))
+                and not (
+                    installed is not None
+                    and latest is not None
+                    and str(installed) == str(latest)
+                )
+            )
+            return {
+                "found": True,
+                "ambiguous": False,
+                "match_count": 1,
+                "entity_id": str(state.get("entity_id") or ""),
+                "available": available,
+                "in_progress": bool(attrs.get("in_progress")),
+                "installed_version": installed,
+                "latest_version": latest,
+                "title": attrs.get("title") or attrs.get("friendly_name"),
+            }
+
+        if name == "install_update":
+            entity_id = str(resolved.get("entity_id") or "").strip()
+            if not entity_id.startswith("update."):
+                raise ProtocolError("install_update requires update entity_id")
+            await self.ha.install_update(entity_id, backup=True)
+            timeout_seconds = max(
+                30,
+                min(900, int(resolved.get("timeout_seconds", 300))),
+            )
+            deadline = monotonic() + timeout_seconds
+            while monotonic() < deadline:
+                await asyncio.sleep(5)
+                try:
+                    states = await self.ha.get_states()
+                except Exception:
+                    continue
+                current = next(
+                    (
+                        item for item in states
+                        if isinstance(item, dict)
+                        and str(item.get("entity_id") or "") == entity_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    continue
+                attrs = (
+                    current.get("attributes")
+                    if isinstance(current.get("attributes"), dict)
+                    else {}
+                )
+                if attrs.get("in_progress"):
+                    continue
+                installed = attrs.get("installed_version")
+                latest = attrs.get("latest_version")
+                if (
+                    str(current.get("state") or "").lower() != "on"
+                    or (
+                        installed is not None
+                        and latest is not None
+                        and str(installed) == str(latest)
+                    )
+                ):
+                    return True
+            return False
+
+        if name == "config_entry_info":
+            entry_id = str(resolved.get("entry_id") or "").strip()
+            domain = str(resolved.get("domain") or "").strip().lower()
+            snapshot = await self.ha.bridge_snapshot()
+            entries = (
+                snapshot.get("config_entries", [])
+                if isinstance(snapshot, dict)
+                else []
+            )
+            matches = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry_id and str(entry.get("entry_id") or "") == entry_id:
+                    matches.append(entry)
+                elif (
+                    not entry_id
+                    and domain
+                    and str(entry.get("domain") or "").lower() == domain
+                ):
+                    matches.append(entry)
+            if len(matches) != 1:
+                return {
+                    "found": False,
+                    "ambiguous": len(matches) > 1,
+                    "match_count": len(matches),
+                    "entry_id": "",
+                    "state": None,
+                }
+            entry = matches[0]
+            return {
+                "found": True,
+                "ambiguous": False,
+                "match_count": 1,
+                "entry_id": str(entry.get("entry_id") or ""),
+                "domain": str(entry.get("domain") or ""),
+                "state": str(entry.get("state") or ""),
+                "disabled_by": entry.get("disabled_by"),
+            }
+
+        if name == "addon_info":
+            selector = str(resolved.get("selector") or "").strip().lower()
+            exact_slug = str(resolved.get("slug") or "").strip()
+            payload = await self.supervisor.addons()
+            addons = (
+                payload.get("addons", [])
+                if isinstance(payload, dict)
+                else []
+            )
+            matches = []
+            token = re.sub(r"[^a-z0-9]+", "", selector)
+            for addon in addons:
+                if not isinstance(addon, dict):
+                    continue
+                slug = str(addon.get("slug") or "")
+                name_text = str(addon.get("name") or "")
+                if exact_slug:
+                    matched = slug == exact_slug
+                else:
+                    haystack = re.sub(
+                        r"[^a-z0-9]+",
+                        "",
+                        f"{slug} {name_text}".lower(),
+                    )
+                    matched = bool(token and token in haystack)
+                if matched:
+                    matches.append(addon)
+            if len(matches) != 1:
+                return {
+                    "found": False,
+                    "ambiguous": len(matches) > 1,
+                    "match_count": len(matches),
+                    "slug": "",
+                    "state": None,
+                }
+            addon = matches[0]
+            return {
+                "found": True,
+                "ambiguous": False,
+                "match_count": 1,
+                "slug": str(addon.get("slug") or ""),
+                "name": str(addon.get("name") or ""),
+                "state": str(addon.get("state") or ""),
+                "version": addon.get("version"),
+                "version_latest": addon.get("version_latest"),
+            }
+
+        if name == "restart_addon":
+            slug = str(resolved.get("slug") or "").strip()
+            if not slug:
+                raise ProtocolError("restart_addon requires slug")
+            if not await self.supervisor.restart_addon(slug):
+                return False
+            deadline = monotonic() + max(
+                20,
+                min(180, int(resolved.get("timeout_seconds", 90))),
+            )
+            while monotonic() < deadline:
+                await asyncio.sleep(2)
+                payload = await self.supervisor.addons()
+                addons = (
+                    payload.get("addons", [])
+                    if isinstance(payload, dict)
+                    else []
+                )
+                current = next(
+                    (
+                        item for item in addons
+                        if isinstance(item, dict)
+                        and str(item.get("slug") or "") == slug
+                    ),
+                    None,
+                )
+                if current is not None and str(
+                    current.get("state") or ""
+                ).lower() == "started":
+                    return True
+            return False
+
+        if name == "reload_subsystem":
+            subsystem = str(resolved.get("subsystem") or "").strip().lower()
+            allowed = {
+                "automation": ("automation", "reload"),
+                "script": ("script", "reload"),
+                "scene": ("scene", "reload"),
+                "group": ("group", "reload"),
+                "template": ("template", "reload"),
+            }
+            call = allowed.get(subsystem)
+            if call is None:
+                raise ProtocolError(
+                    f"Unsupported reload subsystem: {subsystem!r}"
+                )
+            await self.ha.call_service(call[0], call[1], {})
+            return True
+
+        if name == "check_config":
+            await self.ha.call_service("homeassistant", "check_config", {})
+            return True
+
+        if name == "restart_core":
+            await self.supervisor.restart_core()
+            timeout_seconds = max(
+                30,
+                min(300, int(resolved.get("timeout_seconds", 180))),
+            )
+            await asyncio.sleep(8)
+            deadline = monotonic() + timeout_seconds
+            while monotonic() < deadline:
+                try:
+                    config = await self.ha.get_config()
+                    if isinstance(config, dict) and config:
+                        return True
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
+            return False
+
+        if name == "create_backup":
+            before = await self.supervisor.backups_info()
+            before_items = (
+                before.get("backups", [])
+                if isinstance(before, dict)
+                else []
+            )
+            before_slugs = {
+                str(item.get("slug") or "")
+                for item in before_items
+                if isinstance(item, dict)
+            }
+            name_text = str(
+                resolved.get("name")
+                or "Suzie Doctor protocol checkpoint"
+            )[:120]
+            await self.ha.call_service(
+                "hassio",
+                "backup_full",
+                {"name": name_text, "compressed": True},
+            )
+            deadline = monotonic() + max(
+                30,
+                min(600, int(resolved.get("timeout_seconds", 300))),
+            )
+            while monotonic() < deadline:
+                await asyncio.sleep(5)
+                after = await self.supervisor.backups_info()
+                after_items = (
+                    after.get("backups", [])
+                    if isinstance(after, dict)
+                    else []
+                )
+                after_slugs = {
+                    str(item.get("slug") or "")
+                    for item in after_items
+                    if isinstance(item, dict)
+                }
+                if after_slugs - before_slugs:
+                    return True
+            return False
+
         if name == "read_host_metrics":
             metric = str(resolved.get("metric") or "")
             if metric != "filesystem_readonly":
@@ -644,6 +1004,41 @@ class ProtocolEngine:
                     continue
                 return str(entry.get("state") or "")
             return None
+
+        if name == "reload_config_entry_verified":
+            entry_id = str(resolved.get("entry_id") or "")
+            if not entry_id:
+                raise ProtocolError(
+                    "reload_config_entry_verified requires entry_id"
+                )
+            if not await self.ha.bridge_reload_entry(entry_id):
+                return False
+            deadline = monotonic() + max(
+                15,
+                min(180, int(resolved.get("timeout_seconds", 90))),
+            )
+            while monotonic() < deadline:
+                await asyncio.sleep(2)
+                snapshot = await self.ha.bridge_snapshot()
+                entries = (
+                    snapshot.get("config_entries", [])
+                    if isinstance(snapshot, dict)
+                    else []
+                )
+                current = next(
+                    (
+                        entry
+                        for entry in entries
+                        if isinstance(entry, dict)
+                        and str(entry.get("entry_id") or "") == entry_id
+                    ),
+                    None,
+                )
+                if current is not None and str(
+                    current.get("state") or ""
+                ) == "loaded":
+                    return True
+            return False
 
         if name == "reload_config_entry":
             entry_id = str(resolved.get("entry_id") or "")

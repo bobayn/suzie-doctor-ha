@@ -83,6 +83,20 @@ class SupervisorClient:
         data = await self._request("GET", f"/addons/{slug}/logs")
         return data if isinstance(data, str) else ""
 
+    async def restart_addon(self, slug: str) -> bool:
+        safe_slug = str(slug).strip()
+        if not safe_slug or "/" in safe_slug or "\x00" in safe_slug:
+            return False
+        try:
+            await self._request(
+                "POST",
+                f"/addons/{quote(safe_slug, safe='')}/restart",
+                json={},
+            )
+            return True
+        except aiohttp.ClientResponseError:
+            return False
+
     async def restart_core(self) -> Any:
         return await self._request("POST", "/core/restart", json={})
 

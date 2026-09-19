@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.32-dev`
+- App: `0.2.33-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 
@@ -21,10 +21,13 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - fixable Repairs are executed through the native Home Assistant RepairFlow; empty confirmation steps are accepted automatically, while required credentials/selections/external authorization are never invented;
 - available update entities are installed through native update.install with backup=true; updates already in progress are never replayed and system updates are serialized across scans;
 - persistent notifications are monitored as context, but arbitrary notification text is never converted into a command;
+- server-generated Protocols are accepted through the existing pinned-TLS/Ed25519 signed execution-package path and revalidated by the local ProtocolEngine;
+- generated Protocol primitives include confirmed-Disease gating, HA update discovery/install with backup, config-entry lookup/verified reload, add-on lookup/restart, bounded subsystem reload, full backup checkpoint, config check and controlled Core restart;
+- generated-protocol Developer regression executes an in-memory server-style update Protocol through the real ProtocolEngine without touching live Home Assistant;
 - controlled generic recovery for config entries with repeat diagnosis;
 - native Supervisor mount recovery for confirmed `inactive` mounts with one reload attempt per incident episode and repeat diagnosis;
 - Developer mount-recovery regression exercises success, failure and one-attempt guard without touching live mounts or the production Doctor database;
-- Developer release gate aggregates safe readonly/trigger/mount/recurrence/retention/recommendation-executor/server-client regressions, Pack consistency and active background-error checks;
+- Developer release gate aggregates safe readonly/trigger/mount/recurrence/retention/recommendation-executor/generated-protocol/server-client regressions, Pack consistency and active background-error checks;
 - one-attempt-per-episode recovery guard;
 - recurrence episodes across the daily-audit boundary;
 - real targeted Health Guard audits instead of full-audit aliases;
