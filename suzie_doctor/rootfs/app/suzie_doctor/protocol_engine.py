@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from .connector import DoctorConnector, ConnectorError
+from .suite import SuiteCompatibilityGate
 from .db import Database
 from .ha_api import HomeAssistantClient
 from .supervisor import SupervisorClient
@@ -81,6 +83,8 @@ class ProtocolEngine:
         self.bridge_version = bridge_version
         self.pack_version = pack_version
         self.pack_root = Path(pack_root)
+        self.connector = DoctorConnector(ha, supervisor)
+        self.suite = SuiteCompatibilityGate(app_version, bridge_version, pack_version)
 
     def load_pack(self) -> dict[str, Any]:
         pack_file = self.pack_root / "pack.yaml"
@@ -595,7 +599,14 @@ class ProtocolEngine:
                 return True
         return False
 
-    async def _run_primitive(
+    async def _run_primitive(self, name: str, args: dict[str, Any], env: dict[str, Any]) -> Any:
+        try:
+            resolved = self._resolve_value(args or {}, env)
+            return await self.connector.dispatch(name, resolved, env, self._run_primitive_backend)
+        except ConnectorError as exc:
+            raise ProtocolError(str(exc)) from exc
+
+    async def _run_primitive_backend(
         self, name: str, args: dict[str, Any], env: dict[str, Any]
     ) -> Any:
         if name not in self.SUPPORTED_PRIMITIVES:
@@ -1633,6 +1644,14 @@ class ProtocolEngine:
         status = str(card["protocol"]["status"])
         automation_class = str(card["automation_class"])
 
+        suite = self.suite.status(protocol_schema=card.get("schema_version"),
+            required=self.connector.required_capabilities(self._card_primitives(card)),
+            known=set(self.connector.registry.capabilities))
+        if not suite["compatible"]:
+            return False, "suite_incompatible:" + ",".join(suite["errors"])
+        missing = self.connector.check(self._card_primitives(card))
+        if missing:
+            return False, "capability_unavailable:" + ",".join(missing)
         if developer_override:
             return True, "developer_override"
         if status != "ACTIVE":
@@ -2024,3 +2043,4 @@ class ProtocolEngine:
             "database_family": "unknown",
             "affected_component_version": "unknown",
         }
+

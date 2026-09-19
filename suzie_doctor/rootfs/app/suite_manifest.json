@@ -1,0 +1,32 @@
+{
+  "suite_version": "0.2.36-dev",
+  "app_version": "0.2.36-dev",
+  "connector_version": "0.2.0",
+  "skill_version": "0.2.0",
+  "protocol_schema_version": 1,
+  "capability_schema_version": 1,
+  "server_api_version": 1,
+  "bridge_version": "0.2.4-dev",
+  "emergency_pack_version": "0.1.4-dev",
+  "skill_sha256": "597d8e7fc746b3782504603d06d1a31737a5b79db8a0b687ffba41e60ca14e1b",
+  "connector_core_version": "0.2.0",
+  "connector_interface_version": 1,
+  "skill_core_version": "0.2.0",
+  "skill_schema_version": 1,
+  "transport_adapters": {
+    "web": {
+      "connector_core_version": "0.2.0",
+      "connector_interface_version": 1,
+      "skill_core_version": "0.2.0",
+      "skill_schema_version": 1
+    },
+    "api": {
+      "connector_core_version": "0.2.0",
+      "connector_interface_version": 1,
+      "skill_core_version": "0.2.0",
+      "skill_schema_version": 1
+    }
+  },
+  "architecture": "one_connector_core_one_skill_core",
+  "treatment_policy_invariant": "same Disease + same client state + same permissions = same treatment policy"
+}

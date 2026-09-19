@@ -1,5 +1,5 @@
 name: "Suzie Doctor DEV"
-version: "0.2.35-dev"
+version: "0.2.36-dev"
 slug: "suzie_doctor"
 description: "Automatic diagnostics and local treatment engine for Home Assistant"
 arch:
@@ -48,3 +48,4 @@ schema:
   doctor_server_enabled: "bool"
   doctor_server_url: "str"
   doctor_server_timeout_seconds: "int(2,60)"
+

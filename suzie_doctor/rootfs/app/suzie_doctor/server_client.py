@@ -289,6 +289,12 @@ class DoctorServerClient:
             raise DoctorServerError("execution package expiry is invalid") from exc
         if expires <= datetime.now(UTC):
             raise DoctorServerError("execution package has expired")
+        # Packages delivered by the existing /v1 signed endpoint are legacy API 1.
+        # An explicit future wire version must never silently fall back to v1.
+        from .suite import SERVER_API_VERSION
+        api_version = package.get("server_api_version", 1)
+        if type(api_version) is not int or api_version != SERVER_API_VERSION:
+            raise DoctorServerError("execution package server API incompatible")
         card = package.get("card")
         if not isinstance(card, dict):
             raise DoctorServerError("execution package has no protocol card")
@@ -300,3 +306,4 @@ class DoctorServerClient:
         if str(card_protocol.get("id") or "") != protocol_id:
             raise DoctorServerError("execution package Protocol mismatch")
         return card
+

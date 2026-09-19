@@ -6,7 +6,9 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.35-dev`
+- Suite/App: `0.2.36-dev`
+- Connector Core: `0.2.0` (interface schema 1)
+- Skill Core: `0.2.0` (Skill schema 1)
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 
@@ -92,3 +94,14 @@ The next product step is to expand safe native repair/recovery coverage and trea
 - Developer Mode includes a filesystem-readonly regression self-test that runs the production classifier against normal HAOS EROFS lines and strong real-failure examples without touching live host logs or the live database.
 
 Not for public production use yet.
+
+
+## Suite contract
+
+See [Connector contract](../docs/connector-contract.md) for embedded capabilities, compatibility,
+unsupported adapters and the current external transport limitation.
+
+Web and API share one Connector Core and one canonical Skill Core. The surface adapters
+only translate envelopes and declare supported contracts; treatment policy stays in the
+shared signed-package/ProtocolEngine path. See `docs/connector-contract.md` for integration
+and current limits. This source candidate has not yet been deployed as a live Suite release.

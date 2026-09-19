@@ -1,3 +1,12 @@
+## 0.2.36-dev (Suite foundation)
+
+- Package Connector 0.1.0 and Skill 0.1.0 with App in one image.
+- Add version manifest, fail-closed compatibility and capability discovery.
+- Route existing ProtocolEngine primitives through a structured facade.
+- Keep unsupported adapters unavailable and add diagnosis-only Ingress contract.
+- Extend Release Gate; preserve signed execution and WATCH/MANUAL policy.
+- Remote ChatGPT OAuth/MCP transport and per-protocol server corpus audit remain pending.
+
 # Changelog
 
 ## 0.2.35-dev
@@ -199,3 +208,10 @@
 - Supervisor discovery for the bridge.
 - First-run audit and Health Guard.
 - Three-screen Ingress UI.
+
+
+### Shared Web/API architecture
+- One Connector Core and one canonical Skill Core 0.2.0; common tool schemas and Skill bundle loader.
+- Versioned transport declarations, permission enforcement and fail-closed treatment compatibility.
+- Identical Web/API protocol execution, confirmation, verification and rollback regression scenarios.
+- Production remote auth/session integration and live release validation remain pending.

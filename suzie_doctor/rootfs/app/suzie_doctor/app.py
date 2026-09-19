@@ -67,6 +67,7 @@ class Runtime:
         self.server_status: dict[str, Any] = {
             "state": "pending" if self.doctor_server else "disabled"
         }
+        self.db.set_meta("suite_compatibility", json.dumps(self.protocol_engine.suite.status()))
         self.legacy_knowledge_cleanup = self._remove_legacy_local_knowledge()
         self._audit_lock = asyncio.Lock()
 
@@ -260,7 +261,7 @@ class Runtime:
             result = await self.auditor.run(
                 audit_type,
                 reason,
-                allow_generic_recovery=self.options.trust_mode != "manual",
+                allow_generic_recovery=(self.options.trust_mode != "manual" and self.protocol_engine.suite.status()["compatible"]),
                 target_context=target_context,
                 simulated=simulated,
             )
@@ -361,7 +362,7 @@ class Runtime:
         await asyncio.sleep(15)
         while True:
             try:
-                await self.recommendation_executor.scan_once(execute=True)
+                await self.recommendation_executor.scan_once(execute=self.protocol_engine.suite.status()["compatible"])
                 self.record_background_ok("recommendations")
             except asyncio.CancelledError:
                 raise
@@ -582,6 +583,54 @@ class Runtime:
             await asyncio.sleep(30)
 
 
+async def api_suite(request: web.Request) -> web.Response:
+    engine = request.app["runtime"].protocol_engine
+    return web.json_response(engine.suite.status(known=set(engine.connector.registry.capabilities)))
+
+
+async def api_connector_capabilities(request: web.Request) -> web.Response:
+    connector = request.app["runtime"].protocol_engine.connector
+    await connector.refresh_health()
+    return web.json_response(connector.discovery())
+
+
+async def api_connector_skill(request: web.Request) -> web.Response:
+    suite = request.app["runtime"].protocol_engine.suite
+    try:
+        return web.json_response({**suite.skill_bundle(), "compatibility": suite.status()})
+    except OSError:
+        return web.json_response({"error": "skill_unavailable"}, status=503)
+
+
+async def api_connector_tool(request: web.Request) -> web.Response:
+    from .transport import DoctorConnectorCore, WebAdapter, APIAdapter, SessionContext
+    from .connector import ConnectorError
+    # Trusted middleware may supply a verified session. JSON cannot supply grants.
+    # Existing authenticated Ingress/proxy grants diagnosis only by default.
+    session = request.get("doctor_session", SessionContext(frozenset({"doctor.read"})))
+    if not isinstance(session, SessionContext):
+        raise web.HTTPForbidden(text="Invalid Doctor session")
+    adapter_type = APIAdapter if request.path.endswith("/api-tool") else WebAdapter
+    adapter = adapter_type(DoctorConnectorCore(request.app["runtime"]))
+    try:
+        return web.json_response(await adapter.call(await request.json(), session))
+    except ConnectorError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    except DoctorServerError:
+        return web.json_response({"error": "server_unavailable"}, status=503)
+
+
+async def api_connector_diagnose(request: web.Request) -> web.Response:
+    body = await request.json()
+    if not isinstance(body, dict) or any(k in body for k in ("execute", "explicit_confirmation")):
+        raise web.HTTPBadRequest(text="Diagnosis-only evidence object required")
+    try:
+        result = await request.app["runtime"].doctor_server_diagnose(body, execute=False)
+        return web.json_response(result)
+    except DoctorServerError:
+        return web.json_response({"error": "server_unavailable"}, status=503)
+
+
 async def api_health(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     return web.json_response({"status": "ok", "version": APP_VERSION, "started_at": rt.started_at})
@@ -599,6 +648,7 @@ async def api_dashboard(request: web.Request) -> web.Response:
             "health": rt.last_health,
             "bootstrap": rt.bootstrap_status,
             "doctor_server": rt.server_status,
+            "suite": rt.protocol_engine.suite.status(),
             "recommendations": rt.recommendation_executor.last_status,
             "legacy_knowledge_cleanup": rt.legacy_knowledge_cleanup,
             "background_status": rt.background_status,
@@ -2090,6 +2140,11 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "supported_primitives_only": not unsupported,
         "background_errors_clear": not active_background_errors,
     }
+    from .suite_selftest import suite_selftest
+    suite_checks = await suite_selftest()
+    checks.update(suite_checks)
+    checks["suite_manifest"] = rt.protocol_engine.suite.status()["compatible"]
+    checks["existing_protocol_regression"] = checks["generated_protocol"] and checks["manual_protocol"]
     passed = all(checks.values())
 
     return web.json_response(
@@ -2452,7 +2507,7 @@ const BASE=__INGRESS_BASE__;
 function api(path){return `${BASE}${path}`}
 function show(id){for(const s of ['home','incidents','settings'])document.getElementById(s).classList.toggle('hidden',s!==id);if(id==='incidents')loadIncidents()}
 function fmt(v,s=''){return v===undefined||v===null?'—':`${v}${s}`}
-async function refresh(){const d=await fetch(api('/api/dashboard')).then(r=>r.json());document.getElementById('status').textContent='Doctor работает';document.getElementById('version').textContent=`App ${d.app_version} · Bridge ${d.bridge_version} · Pack ${d.protocol_pack_version}`;document.getElementById('fixed24').textContent=d.fixed_24h;document.getElementById('found24').textContent=d.found_24h;document.getElementById('openCount').textContent=d.open_incidents;document.getElementById('healthTitle').textContent=d.open_incidents?`Есть проблем: ${d.open_incidents}`:(d.last_audit&&d.last_audit.result==='OBSERVE'?'Есть наблюдения':'Система в норме');document.getElementById('auditText').textContent=d.last_audit?`Последний аудит: ${d.last_audit.audit_type} · ${d.last_audit.result}`:'Первичный аудит ещё не завершён';
+async function refresh(){const d=await fetch(api('/api/dashboard')).then(r=>r.json());document.getElementById('status').textContent=d.suite.compatible?'Doctor работает':'Лечение заблокировано: несовместимые компоненты';document.getElementById('version').textContent=`Suite ${d.suite.suite_version} · App ${d.app_version} · Connector ${d.suite.connector_version} · Skill ${d.suite.skill_version} · Bridge ${d.bridge_version} · Pack ${d.protocol_pack_version}`;document.getElementById('fixed24').textContent=d.fixed_24h;document.getElementById('found24').textContent=d.found_24h;document.getElementById('openCount').textContent=d.open_incidents;document.getElementById('healthTitle').textContent=d.open_incidents?`Есть проблем: ${d.open_incidents}`:(d.last_audit&&d.last_audit.result==='OBSERVE'?'Есть наблюдения':'Система в норме');document.getElementById('auditText').textContent=d.last_audit?`Последний аудит: ${d.last_audit.audit_type} · ${d.last_audit.result}`:'Первичный аудит ещё не завершён';
 const h=d.health||{};const items=[['Температура CPU',h.cpu_temperature_c,' °C'],['CPU',h.host_cpu_percent,' %'],['RAM',h.host_memory_percent,' %'],['Load 5m',h.load_5m,''],['Диск',h.storage_used_percent,' %'],['Ресурс диска использован',h.disk_life_time_percent,' %']];document.getElementById('metrics').innerHTML=items.map(x=>`<div><div class="muted">${x[0]}</div><div class="metric">${fmt(x[1],x[2])}</div></div>`).join('');document.getElementById('bootstrap').textContent=JSON.stringify(d.bootstrap,null,2);document.getElementById('settingsText').textContent=JSON.stringify(d.settings,null,2);document.getElementById('devCard').style.display=d.settings.developer_mode?'block':'none'}
 async function loadIncidents(){const d=await fetch(api('/api/incidents')).then(r=>r.json());document.getElementById('incidentList').innerHTML=d.incidents.length?d.incidents.map(i=>`<div class="row"><b>${i.title}</b> <span class="pill">${i.status}</span><div class="muted">${i.severity} · ${i.opened_at}</div><div>${i.detail||''}</div></div>`).join(''):'<p class="muted">Инцидентов нет.</p>';document.getElementById('auditList').innerHTML=d.audits.map(a=>`<div class="row"><b>${a.audit_type}</b> · ${a.result||'RUNNING'}<div class="muted">${a.started_at} · найдено ${a.found_count}</div></div>`).join('')}
 async function devAudit(){document.getElementById('devResult').textContent=' выполняется…';const r=await fetch(api('/api/dev/audit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'developer_full',reason:'ui'})});const d=await r.json();document.getElementById('devResult').textContent=` ${d.result}`;await refresh()}
@@ -2503,6 +2558,17 @@ async def on_cleanup(app: web.Application) -> None:
 async def ingress_dispatch(request: web.Request) -> web.Response:
     """Accept Home Assistant Ingress paths with an arbitrary prefix."""
     path = request.path.rstrip("/") or "/"
+    connector_routes = {
+        ("GET", "/api/suite"): api_suite,
+        ("GET", "/api/connector/capabilities"): api_connector_capabilities,
+        ("GET", "/api/connector/skill"): api_connector_skill,
+        ("POST", "/api/connector/diagnose"): api_connector_diagnose,
+        ("POST", "/api/connector/web-tool"): api_connector_tool,
+        ("POST", "/api/connector/api-tool"): api_connector_tool,
+    }
+    for (method, suffix), handler in connector_routes.items():
+        if request.method == method and path.endswith(suffix):
+            return await handler(request)
     if request.method == "GET":
         if path.endswith("/api/health"):
             return await api_health(request)
@@ -2556,6 +2622,12 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
 def create_app() -> web.Application:
     app = web.Application(client_max_size=4 * 1024 * 1024)
     app["runtime"] = Runtime()
+    app.router.add_get("/api/suite", api_suite)
+    app.router.add_get("/api/connector/capabilities", api_connector_capabilities)
+    app.router.add_get("/api/connector/skill", api_connector_skill)
+    app.router.add_post("/api/connector/diagnose", api_connector_diagnose)
+    app.router.add_post("/api/connector/web-tool", api_connector_tool)
+    app.router.add_post("/api/connector/api-tool", api_connector_tool)
     app.router.add_get("/", ui_index)
     app.router.add_get("/api/health", api_health)
     app.router.add_get("/api/dashboard", api_dashboard)
@@ -2604,3 +2676,4 @@ def create_app() -> web.Application:
 def run() -> None:
     print(f"Suzie Doctor HTTP server starting on 8099 | app={APP_VERSION} bridge={BRIDGE_VERSION}", flush=True)
     web.run_app(create_app(), host="0.0.0.0", port=8099)
+
