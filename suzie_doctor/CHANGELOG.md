@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.38-dev
+
+- Recommendation Executor now treats every available Home Assistant update entity
+  advertising native INSTALL as owner intent to install; no update category,
+  auto_update setting, or importance allowlist filters it out.
+- Update installation is globally serialized: if any update entity reports
+  in_progress, Doctor starts no other update. Each accepted update is verified
+  before the next one is attempted.
+- backup=true is requested only when the entity advertises the native BACKUP
+  feature; entities without backup support are still installed.
+- Potentially restarting system updates remain one-per-scan so the next scan
+  resumes the queue after Home Assistant returns.
+- Recommendation self-test now covers owner-intent install, unsupported install
+  capability, global in-progress blocking, strict sequential execution, and
+  system-update serialization.
+
 ## 0.2.37-dev
 - Added a real validated Connector adapter/capability registry instead of relying only on a flat tool list.
 - Adapter records now carry version, availability/health/reason, permission level, read/write/dangerous operations, confirmation class, checkpoint/rollback support and compatibility metadata.

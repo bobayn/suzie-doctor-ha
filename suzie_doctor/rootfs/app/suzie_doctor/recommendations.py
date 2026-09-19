@@ -13,6 +13,11 @@ DEFER_META = "recommendation_executor_deferred"
 STATUS_META = "recommendation_executor_status"
 DEFER_HOURS = 6
 
+# Home Assistant UpdateEntityFeature bit values. Keep these local so the Doctor
+# App does not depend on Home Assistant's Python package inside the add-on.
+_UPDATE_FEATURE_INSTALL = 1
+_UPDATE_FEATURE_BACKUP = 8
+
 _SYSTEM_UPDATE_TOKENS = (
     "home_assistant_core",
     "home assistant core",
@@ -60,19 +65,39 @@ def _is_update_available(state: dict[str, Any]) -> bool:
     return True
 
 
+def _update_features(state: dict[str, Any]) -> int:
+    attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+    try:
+        return int(attrs.get("supported_features") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_update_in_progress(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    if not str(state.get("entity_id") or "").startswith("update."):
+        return False
+    attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+    return bool(attrs.get("in_progress"))
+
+
+def _supports_native_install(state: dict[str, Any]) -> bool:
+    return bool(_update_features(state) & _UPDATE_FEATURE_INSTALL)
+
+
+def _supports_native_backup(state: dict[str, Any]) -> bool:
+    return bool(_update_features(state) & _UPDATE_FEATURE_BACKUP)
+
+
 def _is_update_actionable(state: dict[str, Any]) -> bool:
     if not _is_update_available(state):
         return False
-    attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
-    if attrs.get("in_progress"):
+    if _is_update_in_progress(state):
         return False
-    features = attrs.get("supported_features")
-    if features is None:
-        return True
-    try:
-        return bool(int(features) & 1)
-    except (TypeError, ValueError):
-        return False
+    # Product policy: an offered HA update with the native INSTALL feature is
+    # owner intent to install. No category/importance allowlist is applied.
+    return _supports_native_install(state)
 
 
 class RecommendationExecutor:
@@ -81,14 +106,25 @@ class RecommendationExecutor:
     This layer never converts arbitrary notification text into commands. Structured
     Home Assistant mechanisms are authoritative:
     - Repairs -> native RepairFlow;
-    - Updates -> update.install with backup=True;
+    - Updates -> every available update entity advertising native INSTALL is
+      queued regardless of category/auto-update preference; installs are global
+      one-at-a-time and request a backup only when the entity advertises BACKUP;
     - Persistent notifications -> monitoring/context only unless a dedicated
       structured adapter is added.
     """
 
-    def __init__(self, ha: HomeAssistantClient, db: Database) -> None:
+    def __init__(
+        self,
+        ha: HomeAssistantClient,
+        db: Database,
+        *,
+        update_verify_interval_seconds: float = 5.0,
+        update_verify_attempts: int = 120,
+    ) -> None:
         self.ha = ha
         self.db = db
+        self.update_verify_interval_seconds = max(0.0, float(update_verify_interval_seconds))
+        self.update_verify_attempts = max(1, int(update_verify_attempts))
         self.last_status: dict[str, Any] = {
             "state": "pending",
             "checked_at": None,
@@ -276,12 +312,13 @@ class RecommendationExecutor:
         entity_id = _update_key(state)
         title = _update_title(state)
         key = f"update:{entity_id}"
+        backup = _supports_native_backup(state)
         base = {
             "kind": "update",
             "key": key,
             "entity_id": entity_id,
             "title": title,
-            "backup": True,
+            "backup": backup,
             "system_update": _is_system_update(state),
         }
         if not entity_id:
@@ -290,7 +327,7 @@ class RecommendationExecutor:
             return {**base, "result": "DEFERRED_AFTER_FAILURE"}
 
         try:
-            await self.ha.install_update(entity_id, backup=True)
+            await self.ha.install_update(entity_id, backup=backup)
         except Exception as exc:
             self._defer(key, f"update_install_failed:{type(exc).__name__}", hours=1)
             return {
@@ -301,8 +338,8 @@ class RecommendationExecutor:
 
         # update.install is asynchronous from the user's point of view. Verify
         # boundedly. Core/OS updates may temporarily make the API disappear.
-        for _ in range(120):
-            await asyncio.sleep(5)
+        for _ in range(self.update_verify_attempts):
+            await asyncio.sleep(self.update_verify_interval_seconds)
             current = await self._current_update_state(entity_id)
             if current is None:
                 continue
@@ -345,26 +382,38 @@ class RecommendationExecutor:
             note_items = [x for x in notifications if isinstance(x, dict)]
             updates = [x for x in states if _is_update_available(x)]
             actionable_updates = [x for x in updates if _is_update_actionable(x)]
+            unactionable_update_keys = [
+                _update_key(x) for x in updates if not _is_update_actionable(x)
+            ]
+            updates_in_progress = [
+                x for x in states if isinstance(x, dict) and _is_update_in_progress(x)
+            ]
 
             actions: list[dict[str, Any]] = []
             if execute:
                 for issue in repair_items:
                     actions.append(await self._execute_repair(issue))
 
-                # Install ordinary updates first. A system update can restart Core
-                # or the host, so once one is accepted leave the remainder for
-                # the next scan after the system returns.
-                ordered_updates = sorted(
-                    actionable_updates,
-                    key=lambda x: (_is_system_update(x), _update_key(x)),
-                )
-                for update in ordered_updates:
-                    action = await self._execute_update(update)
-                    actions.append(action)
-                    if action.get("system_update") and action.get("result") in {
-                        "UPDATED", "VERIFY_PENDING"
-                    }:
-                        break
+                # Update policy is intentionally broad: every offered update with
+                # native INSTALL support is queued. Execution is intentionally
+                # narrow: never start a new update while ANY update entity reports
+                # in_progress, and always await verification before the next one.
+                if not updates_in_progress:
+                    # Ordinary updates first. A system update can restart Core or
+                    # the host, so after one is accepted leave the remainder for
+                    # the next scan after the system returns.
+                    ordered_updates = sorted(
+                        actionable_updates,
+                        key=lambda x: (_is_system_update(x), _update_key(x)),
+                    )
+                    for update in ordered_updates:
+                        action = await self._execute_update(update)
+                        actions.append(action)
+                        result = str(action.get("result") or "")
+                        if result in {"FAILED", "VERIFY_PENDING"}:
+                            break
+                        if action.get("system_update") and result == "UPDATED":
+                            break
 
             status = {
                 "state": "ok",
@@ -375,9 +424,9 @@ class RecommendationExecutor:
                 "notifications": len(note_items),
                 "updates": len(updates),
                 "actionable_updates": len(actionable_updates),
-                "unactionable_updates": [
-                    _update_key(x) for x in updates if not _is_update_actionable(x)
-                ][:25],
+                "updates_in_progress": [_update_key(x) for x in updates_in_progress][:25],
+                "update_queue_blocked": bool(updates_in_progress),
+                "unactionable_updates": unactionable_update_keys[:25],
                 "actions": actions,
                 "unhandled_notifications": [
                     {
@@ -399,6 +448,8 @@ class _FakeHA:
         self.notifications: list[dict[str, Any]] = []
         self.states: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.active_update_calls = 0
+        self.max_concurrent_update_calls = 0
         self.flow_mode = "confirm"
         self.flow_steps: list[dict[str, Any]] = []
 
@@ -412,13 +463,22 @@ class _FakeHA:
         return list(self.states)
 
     async def install_update(self, entity_id: str, backup: bool) -> None:
-        self.update_calls.append({"entity_id": entity_id, "backup": backup})
-        for state in self.states:
-            if state.get("entity_id") == entity_id:
-                state["state"] = "off"
-                attrs = state.setdefault("attributes", {})
-                attrs["installed_version"] = attrs.get("latest_version")
-                attrs["in_progress"] = False
+        self.active_update_calls += 1
+        self.max_concurrent_update_calls = max(
+            self.max_concurrent_update_calls,
+            self.active_update_calls,
+        )
+        try:
+            self.update_calls.append({"entity_id": entity_id, "backup": backup})
+            await asyncio.sleep(0)
+            for state in self.states:
+                if state.get("entity_id") == entity_id:
+                    state["state"] = "off"
+                    attrs = state.setdefault("attributes", {})
+                    attrs["installed_version"] = attrs.get("latest_version")
+                    attrs["in_progress"] = False
+        finally:
+            self.active_update_calls -= 1
 
     async def start_repair_flow(self, domain: str, issue_id: str) -> dict[str, Any]:
         if self.flow_mode == "confirm":
@@ -443,23 +503,36 @@ class _FakeHA:
         return {"type": "form", "flow_id": flow_id, "step_id": "confirm", "errors": {}}
 
 
-def _fake_update(entity_id: str = "update.test", *, in_progress: bool = False) -> dict[str, Any]:
+def _fake_update(
+    entity_id: str = "update.test",
+    *,
+    in_progress: bool = False,
+    supported_features: int = _UPDATE_FEATURE_INSTALL | _UPDATE_FEATURE_BACKUP,
+    auto_update: bool = False,
+    title: str = "Test update",
+) -> dict[str, Any]:
     return {
         "entity_id": entity_id,
         "state": "on",
         "attributes": {
-            "title": "Test update",
+            "title": title,
             "installed_version": "1.0",
             "latest_version": "1.1",
             "in_progress": in_progress,
-            "supported_features": 1,
+            "supported_features": supported_features,
+            "auto_update": auto_update,
         },
     }
 
 
 async def recommendation_selftest(db: Database) -> dict[str, Any]:
     fake = _FakeHA()
-    executor = RecommendationExecutor(fake, db)  # type: ignore[arg-type]
+    executor = RecommendationExecutor(
+        fake,
+        db,
+        update_verify_interval_seconds=0,
+        update_verify_attempts=3,
+    )  # type: ignore[arg-type]
 
     cases: list[dict[str, Any]] = []
 
@@ -478,7 +551,7 @@ async def recommendation_selftest(db: Database) -> dict[str, Any]:
     )
     action = (result.get("actions") or [{}])[0]
     add(
-        "update_uses_backup",
+        "update_uses_backup_when_supported",
         bool(fake.update_calls)
         and fake.update_calls[0].get("backup") is True
         and action.get("result") == "UPDATED",
@@ -486,9 +559,90 @@ async def recommendation_selftest(db: Database) -> dict[str, Any]:
     )
 
     fake.update_calls.clear()
-    fake.states = [_fake_update("update.busy", in_progress=True)]
+    fake.states = [
+        _fake_update(
+            "update.no_backup",
+            supported_features=_UPDATE_FEATURE_INSTALL,
+            auto_update=False,
+        )
+    ]
     result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
-    add("in_progress_update_not_replayed", not fake.update_calls and not result.get("actions"))
+    action = (result.get("actions") or [{}])[0]
+    add(
+        "native_install_is_owner_intent_without_backup_feature",
+        len(fake.update_calls) == 1
+        and fake.update_calls[0].get("entity_id") == "update.no_backup"
+        and fake.update_calls[0].get("backup") is False
+        and action.get("result") == "UPDATED",
+        action,
+    )
+
+    fake.update_calls.clear()
+    fake.states = [
+        _fake_update(
+            "update.no_install",
+            supported_features=_UPDATE_FEATURE_BACKUP,
+        )
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "update_without_native_install_is_not_pulled",
+        not fake.update_calls
+        and not result.get("actions")
+        and result.get("unactionable_updates") == ["update.no_install"],
+        result,
+    )
+
+    fake.update_calls.clear()
+    fake.states = [
+        _fake_update("update.busy", in_progress=True),
+        _fake_update("update.ready"),
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "any_in_progress_update_blocks_global_update_queue",
+        not fake.update_calls
+        and not result.get("actions")
+        and result.get("update_queue_blocked") is True
+        and result.get("updates_in_progress") == ["update.busy"],
+        result,
+    )
+
+    fake.update_calls.clear()
+    fake.max_concurrent_update_calls = 0
+    fake.states = [
+        _fake_update("update.alpha", supported_features=_UPDATE_FEATURE_INSTALL),
+        _fake_update("update.beta", supported_features=_UPDATE_FEATURE_INSTALL),
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "ordinary_updates_are_strictly_sequential",
+        [x.get("entity_id") for x in fake.update_calls] == ["update.alpha", "update.beta"]
+        and fake.max_concurrent_update_calls == 1
+        and all(x.get("result") == "UPDATED" for x in result.get("actions") or []),
+        result,
+    )
+
+    fake.update_calls.clear()
+    fake.max_concurrent_update_calls = 0
+    fake.states = [
+        _fake_update(
+            "update.home_assistant_core",
+            title="Home Assistant Core",
+        ),
+        _fake_update(
+            "update.home_assistant_os",
+            title="Home Assistant Operating System",
+        ),
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "system_updates_are_one_per_scan",
+        len(fake.update_calls) == 1
+        and fake.max_concurrent_update_calls == 1
+        and len([x for x in fake.states if _is_update_available(x)]) == 1,
+        result,
+    )
 
     fake.flow_mode = "confirm"
     fake.repairs = [{

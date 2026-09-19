@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.37-dev`
+- App: `0.2.38-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 - Suite: `0.1.1-dev`
@@ -27,7 +27,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - correct Home Assistant Repair classification;
 - continuous Home Assistant recommendation executor monitors active Repairs, persistent notifications and update entities every minute;
 - fixable Repairs are executed through the native Home Assistant RepairFlow; empty confirmation steps are accepted automatically, while required credentials/selections/external authorization are never invented;
-- available update entities are installed through native update.install with backup=true; updates already in progress are never replayed and system updates are serialized across scans;
+- every available update entity advertising native INSTALL is queued regardless of category or auto-update preference; installs are global one-at-a-time, backup is requested only when the entity advertises BACKUP, and system updates are serialized across scans;
 - persistent notifications are monitored as context, but arbitrary notification text is never converted into a command;
 - server-generated Protocols are accepted through the existing pinned-TLS/Ed25519 signed execution-package path and revalidated by the local ProtocolEngine;
 - MANUAL generated Protocols are fully curated guidance records: they carry checks/action/verify/rollback to the client but ProtocolEngine can never execute their treatment;
