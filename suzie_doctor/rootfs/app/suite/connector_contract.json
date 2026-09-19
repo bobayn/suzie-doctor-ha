@@ -7,15 +7,38 @@
   "tools": [
     {
       "name": "doctor.capabilities",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Return Connector capability families, canonical tools, Suite compatibility and supported ProtocolEngine primitives.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "doctor.suite",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Return bundled Suite/App/Connector/Skill/Protocol/Bridge/Server-API compatibility status.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "doctor.skill",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Return the canonical Doctor Skill descriptor and, when requested, the canonical SKILL text.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "include_text": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      }
     },
     {
       "name": "doctor.diagnose",
@@ -24,51 +47,139 @@
         "evidence",
         "execute"
       ],
-      "confirmation_source": "trusted_adapter_context_only"
+      "confirmation_source": "trusted_adapter_context_only",
+      "description": "Consult Doctor Server and optionally use only its validated signed execution-package treatment path.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "evidence": {
+            "type": "object"
+          },
+          "execute": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
     },
     {
       "name": "ha.config.read",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Read Home Assistant core configuration metadata.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "ha.repairs.list",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "List active Home Assistant Repairs data.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "ha.notifications.list",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "List persistent Home Assistant notifications as diagnostic context only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "ha.config_entries.list",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "List Home Assistant config entries, optionally filtered by domain.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.info",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Read Supervisor metadata.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.host.info",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Read HAOS/Supervised host metadata.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.core.info",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Read Home Assistant Core Supervisor metadata.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.network.info",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "Read Supervisor network metadata.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.addons.list",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "List Supervisor apps/add-ons.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.mounts.list",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "List Supervisor mounts.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "supervisor.backups.list",
-      "risk": "read_only"
+      "risk": "read_only",
+      "description": "List Supervisor backups.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     }
   ],
   "families": {
