@@ -5,13 +5,14 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from .db import Database
-from .ha_api import HomeAssistantClient
-from .supervisor import SupervisorClient
+if TYPE_CHECKING:
+    from .ha_api import HomeAssistantClient
+    from .supervisor import SupervisorClient
 
 
 class ProtocolError(RuntimeError):
@@ -73,6 +74,7 @@ class ProtocolEngine:
         bridge_version: str,
         pack_version: str,
         pack_root: str | Path = "/app/protocol_pack",
+        compatibility_guard: Any | None = None,
     ) -> None:
         self.db = db
         self.supervisor = supervisor
@@ -81,6 +83,7 @@ class ProtocolEngine:
         self.bridge_version = bridge_version
         self.pack_version = pack_version
         self.pack_root = Path(pack_root)
+        self.compatibility_guard = compatibility_guard
 
     def load_pack(self) -> dict[str, Any]:
         pack_file = self.pack_root / "pack.yaml"
@@ -1632,6 +1635,14 @@ class ProtocolEngine:
     ) -> tuple[bool, str]:
         status = str(card["protocol"]["status"])
         automation_class = str(card["automation_class"])
+
+        if self.compatibility_guard is not None:
+            try:
+                compatible, reason = self.compatibility_guard()
+            except Exception:
+                return False, "suite_compatibility_error"
+            if not compatible:
+                return False, str(reason or "suite_incompatible")
 
         if developer_override:
             return True, "developer_override"

@@ -1,0 +1,36 @@
+{
+  "suite_name": "Suzie Doctor Suite",
+  "suite_version": "0.1.0-dev",
+  "app_version": "0.2.36-dev",
+  "connector": {
+    "version": "0.1.0-dev",
+    "interface_version": 1,
+    "canonical_core": true
+  },
+  "skill": {
+    "version": "0.1.0-dev",
+    "schema_version": 1,
+    "canonical_core": true
+  },
+  "protocol": {
+    "card_schema_version": 1,
+    "primitive_set_version": 3
+  },
+  "doctor_server_api": "v1",
+  "bridge_version": "0.2.4-dev",
+  "emergency_pack_version": "0.1.4-dev",
+  "surfaces": {
+    "web": {
+      "adapter_contract": 1
+    },
+    "api": {
+      "adapter_contract": 1
+    }
+  },
+  "policy": {
+    "treatment_fail_closed_on_incompatibility": true,
+    "master_knowledge_base_local": false,
+    "arbitrary_shell": false,
+    "arbitrary_eval": false
+  }
+}

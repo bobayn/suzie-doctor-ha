@@ -1,0 +1,124 @@
+{
+  "name": "suzie-doctor-connector",
+  "version": "0.1.0-dev",
+  "interface_version": 1,
+  "canonical_core": true,
+  "treatment_path": "doctor.diagnose->signed_execution_package->ProtocolEngine",
+  "tools": [
+    {
+      "name": "doctor.capabilities",
+      "risk": "read_only"
+    },
+    {
+      "name": "doctor.suite",
+      "risk": "read_only"
+    },
+    {
+      "name": "doctor.skill",
+      "risk": "read_only"
+    },
+    {
+      "name": "doctor.diagnose",
+      "risk": "signed_treatment",
+      "arguments": [
+        "evidence",
+        "execute"
+      ],
+      "confirmation_source": "trusted_adapter_context_only"
+    },
+    {
+      "name": "ha.config.read",
+      "risk": "read_only"
+    },
+    {
+      "name": "ha.repairs.list",
+      "risk": "read_only"
+    },
+    {
+      "name": "ha.notifications.list",
+      "risk": "read_only"
+    },
+    {
+      "name": "ha.config_entries.list",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.info",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.host.info",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.core.info",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.network.info",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.addons.list",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.mounts.list",
+      "risk": "read_only"
+    },
+    {
+      "name": "supervisor.backups.list",
+      "risk": "read_only"
+    }
+  ],
+  "families": {
+    "doctor": {
+      "available": true,
+      "mode": "core"
+    },
+    "ha": {
+      "available": true,
+      "mode": "native"
+    },
+    "supervisor": {
+      "available": true,
+      "mode": "native"
+    },
+    "frigate": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "docker": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "z2m": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "zwave": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "mqtt": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "esphome": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "nodered": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "storage": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    },
+    "network": {
+      "available": false,
+      "mode": "adapter_not_yet_exposed"
+    }
+  }
+}

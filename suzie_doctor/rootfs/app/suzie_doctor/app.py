@@ -16,6 +16,7 @@ from aiohttp import web
 from . import APP_VERSION, BRIDGE_VERSION, PROTOCOL_PACK_VERSION
 from .audit import Auditor, _bridge_trigger_events
 from .bootstrap import bootstrap_bridge
+from .connector import ConnectorCore, ConnectorError
 from .db import Database
 from .ha_api import HomeAssistantClient
 from .health_guard import HealthGuard, MetricSample
@@ -24,7 +25,9 @@ from .server_client import DoctorServerClient, DoctorServerError
 from .options import Options, load_options
 from .protocol_engine import ProtocolEngine
 from .recommendations import RecommendationExecutor, recommendation_selftest
+from .suite import SuiteRuntime
 from .supervisor import SupervisorClient
+from .surface_adapters import ApiConnectorAdapter, WebConnectorAdapter
 
 DATA_DIR = Path(os.environ.get("SUZIE_DOCTOR_DATA", "/data"))
 DB_PATH = DATA_DIR / "suzie_doctor.sqlite3"
@@ -37,6 +40,7 @@ class Runtime:
         self.db.initialize()
         self.supervisor = SupervisorClient()
         self.ha = HomeAssistantClient()
+        self.suite = SuiteRuntime()
         self.protocol_engine = ProtocolEngine(
             self.db,
             self.supervisor,
@@ -44,6 +48,7 @@ class Runtime:
             app_version=APP_VERSION,
             bridge_version=BRIDGE_VERSION,
             pack_version=PROTOCOL_PACK_VERSION,
+            compatibility_guard=self.suite.treatment_gate,
         )
         self.auditor = Auditor(
             self.db, self.supervisor, self.ha, self.protocol_engine
@@ -67,6 +72,16 @@ class Runtime:
         self.server_status: dict[str, Any] = {
             "state": "pending" if self.doctor_server else "disabled"
         }
+        self.connector = ConnectorCore(
+            suite=self.suite,
+            skill=self.suite.skill,
+            ha=self.ha,
+            supervisor=self.supervisor,
+            protocol_engine=self.protocol_engine,
+            diagnose_callback=self.doctor_server_diagnose,
+        )
+        self.web_connector = WebConnectorAdapter(self.connector)
+        self.api_connector = ApiConnectorAdapter(self.connector)
         self.legacy_knowledge_cleanup = self._remove_legacy_local_knowledge()
         self._audit_lock = asyncio.Lock()
 
@@ -584,7 +599,60 @@ class Runtime:
 
 async def api_health(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
-    return web.json_response({"status": "ok", "version": APP_VERSION, "started_at": rt.started_at})
+    return web.json_response({
+        "status": "ok",
+        "version": APP_VERSION,
+        "started_at": rt.started_at,
+        "suite": rt.suite.status(),
+    })
+
+
+async def api_doctor_suite(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    return web.json_response(rt.suite.status())
+
+
+async def api_doctor_skill(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    include_text = str(request.query.get("include_text") or "").lower() in {
+        "1", "true", "yes"
+    }
+    return web.json_response(rt.suite.skill.descriptor(include_text=include_text))
+
+
+async def api_doctor_capabilities(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    return web.json_response(rt.connector.capabilities())
+
+
+async def api_doctor_tools(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    surface = str(request.query.get("surface") or "api").lower()
+    adapter = rt.web_connector if surface == "web" else rt.api_connector
+    return web.json_response(adapter.tool_catalog())
+
+
+async def api_doctor_invoke(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise web.HTTPBadRequest(text=f"invalid_json:{type(exc).__name__}") from exc
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="request_body_must_be_object")
+    surface = str(body.get("surface") or "api").lower()
+    if surface not in {"web", "api"}:
+        raise web.HTTPBadRequest(text="surface_must_be_web_or_api")
+    tool_name = str(body.get("tool") or "").strip()
+    arguments = body.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        raise web.HTTPBadRequest(text="arguments_must_be_object")
+    adapter = rt.web_connector if surface == "web" else rt.api_connector
+    try:
+        result = await adapter.invoke(tool_name, arguments)
+    except ConnectorError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response(result)
 
 
 async def api_dashboard(request: web.Request) -> web.Response:
@@ -596,6 +664,8 @@ async def api_dashboard(request: web.Request) -> web.Response:
             "app_version": APP_VERSION,
             "bridge_version": BRIDGE_VERSION,
             "protocol_pack_version": PROTOCOL_PACK_VERSION,
+            "suite": rt.suite.status(),
+            "connector": rt.connector.capabilities(),
             "health": rt.last_health,
             "bootstrap": rt.bootstrap_status,
             "doctor_server": rt.server_status,
@@ -2016,6 +2086,125 @@ async def api_dev_manual_protocol_test(request: web.Request) -> web.Response:
     })
 
 
+async def api_dev_suite_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+
+    cases: list[dict[str, Any]] = []
+
+    def add(case_id: str, passed: bool, detail: Any = None) -> None:
+        item: dict[str, Any] = {
+            "id": case_id,
+            "passed": bool(passed),
+        }
+        if detail is not None:
+            item["detail"] = detail
+        cases.append(item)
+
+    suite_status = rt.suite.status()
+    add(
+        "suite_manifest_compatible",
+        bool(suite_status.get("compatible")),
+        suite_status.get("compatibility_errors"),
+    )
+    add(
+        "skill_core_loaded",
+        rt.suite.skill.version == suite_status.get("skill_version")
+        and bool(rt.suite.skill.sha256),
+        rt.suite.skill.descriptor(include_text=False),
+    )
+
+    tools = rt.connector.tool_catalog()
+    tool_names = [str(item.get("name") or "") for item in tools]
+    forbidden_tokens = ("shell", "eval", "exec", "python", "sql.write")
+    forbidden_tools = [
+        name
+        for name in tool_names
+        if any(token in name.lower() for token in forbidden_tokens)
+    ]
+    add("connector_has_no_generic_unsafe_tool", not forbidden_tools, forbidden_tools)
+    add(
+        "signed_treatment_is_single_write_path",
+        [
+            str(item.get("name") or "")
+            for item in tools
+            if str(item.get("risk") or "") != "read_only"
+        ] == ["doctor.diagnose"],
+    )
+    diagnose_spec = next(
+        (
+            item
+            for item in tools
+            if str(item.get("name") or "") == "doctor.diagnose"
+        ),
+        {},
+    )
+    add(
+        "human_confirmation_is_transport_owned",
+        diagnose_spec.get("confirmation_source")
+        == "trusted_adapter_context_only"
+        and "explicit_confirmation"
+        not in (diagnose_spec.get("arguments") or []),
+    )
+
+    web_catalog = rt.web_connector.tool_catalog()
+    api_catalog = rt.api_connector.tool_catalog()
+    add(
+        "surface_tool_catalog_parity",
+        web_catalog.get("tools") == api_catalog.get("tools")
+        and web_catalog.get("interface_version") == api_catalog.get("interface_version"),
+    )
+
+    web_capabilities = await rt.web_connector.invoke("doctor.capabilities", {})
+    api_capabilities = await rt.api_connector.invoke("doctor.capabilities", {})
+    add(
+        "surface_capability_resolution_parity",
+        web_capabilities.get("result") == api_capabilities.get("result"),
+    )
+
+    fail_closed_engine = ProtocolEngine(
+        rt.db,
+        rt.supervisor,
+        rt.ha,
+        app_version=APP_VERSION,
+        bridge_version=BRIDGE_VERSION,
+        pack_version=PROTOCOL_PACK_VERSION,
+        compatibility_guard=lambda: (False, "suite_incompatible"),
+    )
+    allowed, reason = fail_closed_engine._treatment_allowed(
+        {
+            "protocol": {"status": "ACTIVE"},
+            "automation_class": "CONFIRM_REQUIRED",
+        },
+        trust_mode="full_trust",
+        explicit_confirmation=True,
+        developer_override=True,
+    )
+    add(
+        "suite_incompatibility_blocks_treatment",
+        allowed is False and reason == "suite_incompatible",
+        {"allowed": allowed, "reason": reason},
+    )
+
+    passed = all(bool(item.get("passed")) for item in cases)
+    return web.json_response(
+        {
+            "result": "PASS" if passed else "FAIL",
+            "cases": cases,
+            "suite": suite_status,
+            "web_adapter": {
+                "surface": web_catalog.get("surface"),
+                "interface_version": web_catalog.get("interface_version"),
+            },
+            "api_adapter": {
+                "surface": api_catalog.get("surface"),
+                "interface_version": api_catalog.get("interface_version"),
+            },
+        }
+    )
+
+
 async def api_dev_release_gate(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -2046,6 +2235,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
     generated_protocol = await _response_json(api_dev_generated_protocol_test)
     manual_protocol = await _response_json(api_dev_manual_protocol_test)
     server_client = await _response_json(api_dev_server_client_test)
+    suite_core = await _response_json(api_dev_suite_test)
 
     pack_inventory: dict[str, Any]
     try:
@@ -2086,6 +2276,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "generated_protocol": generated_protocol.get("result") == "PASS",
         "manual_protocol": manual_protocol.get("result") == "PASS",
         "doctor_server_client": server_client.get("result") == "PASS",
+        "suite_core": suite_core.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
         "background_errors_clear": not active_background_errors,
@@ -2137,6 +2328,10 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
                 "doctor_server_client": {
                     "result": server_client.get("result"),
                     "cases": len(server_client.get("cases") or []),
+                },
+                "suite_core": {
+                    "result": suite_core.get("result"),
+                    "cases": len(suite_core.get("cases") or []),
                 },
             },
             "unsupported_primitives": unsupported,
@@ -2512,6 +2707,16 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
             return await api_incidents(request)
         if path.endswith("/api/settings"):
             return await api_settings(request)
+        if path.endswith("/api/doctor/suite"):
+            return await api_doctor_suite(request)
+        if path.endswith("/api/doctor/skill"):
+            return await api_doctor_skill(request)
+        if path.endswith("/api/doctor/capabilities"):
+            return await api_doctor_capabilities(request)
+        if path.endswith("/api/doctor/tools"):
+            return await api_doctor_tools(request)
+    if request.method == "POST" and path.endswith("/api/doctor/invoke"):
+        return await api_doctor_invoke(request)
     if request.method == "POST" and path.endswith("/api/dev/audit"):
         return await api_dev_audit(request)
     if request.method == "POST" and path.endswith("/api/dev/test/setup-retry"):
@@ -2544,6 +2749,8 @@ async def ingress_dispatch(request: web.Request) -> web.Response:
         return await api_dev_mount_recovery_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/retention"):
         return await api_dev_retention_test(request)
+    if request.method == "POST" and path.endswith("/api/dev/test/suite"):
+        return await api_dev_suite_test(request)
     if request.method == "POST" and path.endswith("/api/dev/test/release-gate"):
         return await api_dev_release_gate(request)
     if request.method == "POST" and path.endswith("/api/dev/test/persistence/prepare"):
@@ -2561,6 +2768,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/dashboard", api_dashboard)
     app.router.add_get("/api/incidents", api_incidents)
     app.router.add_get("/api/settings", api_settings)
+    app.router.add_get("/api/doctor/suite", api_doctor_suite)
+    app.router.add_get("/api/doctor/skill", api_doctor_skill)
+    app.router.add_get("/api/doctor/capabilities", api_doctor_capabilities)
+    app.router.add_get("/api/doctor/tools", api_doctor_tools)
+    app.router.add_post("/api/doctor/invoke", api_doctor_invoke)
     app.router.add_post("/api/dev/audit", api_dev_audit)
     app.router.add_post("/api/dev/test/setup-retry", api_dev_setup_retry_test)
     app.router.add_post("/api/dev/test/setup-error", api_dev_setup_error_test)
@@ -2592,6 +2804,7 @@ def create_app() -> web.Application:
         "/api/dev/test/manual-protocol",
         api_dev_manual_protocol_test,
     )
+    app.router.add_post("/api/dev/test/suite", api_dev_suite_test)
     app.router.add_post("/api/dev/test/release-gate", api_dev_release_gate)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)

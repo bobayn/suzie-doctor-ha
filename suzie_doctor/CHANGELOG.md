@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.36-dev
+- Added Suzie Doctor Suite 0.1.0-dev: one canonical Connector Core plus one canonical Skill Core bundled inside the App image.
+- Added surface-neutral Connector interface v1 with Web and API adapters that resolve to the same tool catalog and execution policy.
+- Added canonical Skill schema v1 and hash-bound SKILL.md; the Skill contains Doctor operating methodology only and does not contain the proprietary Master Knowledge Base.
+- Added Suite manifest compatibility gate covering App, Connector, Skill, Protocol schema/primitive set, Doctor Server API contract, Bridge and Emergency Pack versions.
+- ProtocolEngine treatment now fails closed when Suite compatibility is invalid, including under developer override; diagnostic paths remain available.
+- Added initial safe Connector tools for Doctor capability/Skill/Suite discovery, HA read-only diagnostics, Supervisor read-only diagnostics, and signed Doctor Server treatment through doctor.diagnose.
+- No arbitrary shell/eval/generic write primitive is exposed by Connector Core; doctor.diagnose remains the only treatment-capable Connector tool and keeps the existing signed execution-package path.
+- Added Developer Suite regression for manifest/Skill compatibility, unsafe-tool rejection, Web/API parity and incompatibility fail-closed behavior.
+- App 0.2.36-dev; Suite/Connector/Skill 0.1.0-dev; Bridge remains 0.2.4-dev; Protocol Pack remains 0.1.4-dev.
+
 ## 0.2.35-dev
 - Added MANUAL as a first-class generated Protocol status for fully curated treatments that the HA app must not execute (external Docker/NAS/database recovery/credentials/physical work).
 - MANUAL cards remain signed, client-bound and diagnosable, expose checks/action/verify/rollback guidance, and are hard-gated from treatment by ProtocolEngine because only ACTIVE may execute.

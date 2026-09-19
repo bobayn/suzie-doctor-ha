@@ -6,13 +6,19 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.35-dev`
+- App: `0.2.36-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
+- Suite: `0.1.0-dev`
+- Connector Core: `0.1.0-dev` (interface v1)
+- Skill Core: `0.1.0-dev` (schema v1)
 
 The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 
 - Ingress UI and persistent SQLite storage in `/data`;
+- one canonical Suzie Doctor Connector Core is bundled with the App and exposed through Web and API surface adapters with the same tool contract;
+- one canonical versioned Suzie Doctor Skill Core is bundled with the App; it contains operating methodology, not the proprietary Master Knowledge Base;
+- Suite compatibility is checked at runtime and blocks all treatment fail-closed while leaving diagnostics available if App/Connector/Skill/Protocol/Bridge/Server-API contracts drift;
 - Health Guard, hourly checks, first-run/full/daily audit engine;
 - local background-loop error observability for Health Guard, hourly, daily and bridge-watch tasks;
 - background status tracks recovery/last-ok state and provider-level metric collection failures instead of leaving stale errors permanently active;
