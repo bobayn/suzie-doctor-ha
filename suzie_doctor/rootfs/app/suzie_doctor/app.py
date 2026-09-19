@@ -23,6 +23,7 @@ from .local_metrics import LocalMetrics
 from .server_client import DoctorServerClient, DoctorServerError
 from .options import Options, load_options
 from .protocol_engine import ProtocolEngine
+from .recommendations import RecommendationExecutor, recommendation_selftest
 from .supervisor import SupervisorClient
 
 DATA_DIR = Path(os.environ.get("SUZIE_DOCTOR_DATA", "/data"))
@@ -47,6 +48,7 @@ class Runtime:
         self.auditor = Auditor(
             self.db, self.supervisor, self.ha, self.protocol_engine
         )
+        self.recommendation_executor = RecommendationExecutor(self.ha, self.db)
         self.local_metrics = LocalMetrics()
         self.started_at = datetime.now(UTC).isoformat()
         self.last_health: dict[str, Any] = {}
@@ -353,6 +355,20 @@ class Runtime:
                 self.record_background_error("hourly", exc)
             await asyncio.sleep(3600)
 
+    async def recommendation_loop(self) -> None:
+        # Let Home Assistant and the bridge settle after app start, then keep
+        # watching Settings > System recommendations continuously.
+        await asyncio.sleep(15)
+        while True:
+            try:
+                await self.recommendation_executor.scan_once(execute=True)
+                self.record_background_ok("recommendations")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.record_background_error("recommendations", exc)
+            await asyncio.sleep(60)
+
     async def doctor_server_diagnose(
         self,
         evidence: dict[str, Any],
@@ -570,6 +586,7 @@ async def api_dashboard(request: web.Request) -> web.Response:
             "health": rt.last_health,
             "bootstrap": rt.bootstrap_status,
             "doctor_server": rt.server_status,
+            "recommendations": rt.recommendation_executor.last_status,
             "legacy_knowledge_cleanup": rt.legacy_knowledge_cleanup,
             "background_status": rt.background_status,
             "background_errors": {
@@ -1506,6 +1523,20 @@ async def api_dev_retention_test(request: web.Request) -> web.Response:
     )
 
 
+async def api_dev_recommendation_executor_test(request: web.Request) -> web.Response:
+    rt: Runtime = request.app["runtime"]
+    if not rt.options.developer_mode:
+        raise web.HTTPForbidden()
+    with TemporaryDirectory(prefix="doctor-recommendations-") as tmp:
+        test_db = Database(Path(tmp) / "recommendations.sqlite3")
+        test_db.initialize()
+        try:
+            result = await recommendation_selftest(test_db)
+        finally:
+            test_db.conn.close()
+    return web.json_response(result)
+
+
 async def api_dev_release_gate(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     if not rt.options.developer_mode:
@@ -1532,6 +1563,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
     mounts = await _response_json(api_dev_mount_recovery_test)
     recurrence = await _response_json(api_dev_recurrence_test)
     retention = await _response_json(api_dev_retention_test)
+    recommendations = await _response_json(api_dev_recommendation_executor_test)
     server_client = await _response_json(api_dev_server_client_test)
 
     pack_inventory: dict[str, Any]
@@ -1569,6 +1601,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "mount_recovery": mounts.get("result") == "PASS",
         "recurrence": recurrence.get("result") == "PASS",
         "retention": retention.get("result") == "PASS",
+        "recommendation_executor": recommendations.get("result") == "PASS",
         "doctor_server_client": server_client.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
@@ -1605,6 +1638,10 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
                 "retention": {
                     "result": retention.get("result"),
                     "cases": len(retention.get("cases") or []),
+                },
+                "recommendation_executor": {
+                    "result": recommendations.get("result"),
+                    "cases": len(recommendations.get("cases") or []),
                 },
                 "doctor_server_client": {
                     "result": server_client.get("result"),
@@ -1961,6 +1998,7 @@ async def on_startup(app: web.Application) -> None:
         asyncio.create_task(rt.hourly_loop(), name="hourly"),
         asyncio.create_task(rt.daily_loop(), name="daily"),
         asyncio.create_task(rt.bridge_watch_loop(), name="bridge_watch"),
+        asyncio.create_task(rt.recommendation_loop(), name="recommendations"),
         asyncio.create_task(rt.server_watch_loop(), name="doctor_server_watch"),
     ]
 
@@ -2051,6 +2089,10 @@ def create_app() -> web.Application:
     app.router.add_post("/api/dev/test/triggers", api_dev_trigger_matching_test)
     app.router.add_post("/api/dev/test/mount-recovery", api_dev_mount_recovery_test)
     app.router.add_post("/api/dev/test/retention", api_dev_retention_test)
+    app.router.add_post(
+        "/api/dev/test/recommendations",
+        api_dev_recommendation_executor_test,
+    )
     app.router.add_post("/api/dev/test/release-gate", api_dev_release_gate)
     app.router.add_post("/api/dev/test/persistence/prepare", api_dev_persistence_prepare)
     app.router.add_post("/api/dev/test/persistence/check", api_dev_persistence_check)

@@ -101,6 +101,83 @@ class HomeAssistantClient:
         finally:
             await self.delete_state(entity_id)
 
+    async def ws_command(self, command_type: str, **data: Any) -> Any:
+        """Run one authenticated one-shot Home Assistant WebSocket command."""
+        timeout = aiohttp.ClientTimeout(total=20)
+        ws_headers = {"Authorization": f"Bearer {self.token}"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=ws_headers) as session:
+            async with session.ws_connect("ws://supervisor/core/websocket", heartbeat=10) as ws:
+                first = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if not isinstance(first, dict) or first.get("type") != "auth_required":
+                    raise RuntimeError("Unexpected Home Assistant WebSocket greeting")
+                await ws.send_json({"type": "auth", "access_token": self.token})
+                auth = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if not isinstance(auth, dict) or auth.get("type") != "auth_ok":
+                    raise RuntimeError("Home Assistant WebSocket authentication failed")
+                payload = {"id": 1, "type": str(command_type)}
+                payload.update(data)
+                await ws.send_json(payload)
+                for _ in range(20):
+                    message = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                    if not isinstance(message, dict) or message.get("id") != 1:
+                        continue
+                    if message.get("type") != "result":
+                        continue
+                    if not message.get("success", False):
+                        raise RuntimeError(
+                            f"{command_type} failed: {message.get('error')}"
+                        )
+                    return message.get("result")
+                raise RuntimeError(f"No result received for {command_type}")
+
+    async def list_repairs(self) -> list[dict[str, Any]]:
+        data = await self.ws_command("repairs/list_issues")
+        if isinstance(data, dict):
+            issues = data.get("issues")
+            return [x for x in issues if isinstance(x, dict)] if isinstance(issues, list) else []
+        return []
+
+    async def list_persistent_notifications(self) -> list[dict[str, Any]]:
+        data = await self.ws_command("persistent_notification/get")
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+
+    async def start_repair_flow(self, domain: str, issue_id: str) -> dict[str, Any]:
+        data = await self._request(
+            "POST",
+            "/repairs/issues/fix",
+            json={"handler": str(domain), "issue_id": str(issue_id)},
+        )
+        return data if isinstance(data, dict) else {}
+
+    async def repair_flow_step(
+        self,
+        flow_id: str,
+        user_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        data = await self._request(
+            "POST",
+            f"/repairs/issues/fix/{quote(str(flow_id), safe='')}",
+            json=user_input,
+        )
+        return data if isinstance(data, dict) else {}
+
+    async def get_repair_flow(self, flow_id: str) -> dict[str, Any]:
+        data = await self._request(
+            "GET",
+            f"/repairs/issues/fix/{quote(str(flow_id), safe='')}",
+        )
+        return data if isinstance(data, dict) else {}
+
+    async def install_update(self, entity_id: str, *, backup: bool = True) -> Any:
+        safe_entity_id = str(entity_id).strip()
+        if not safe_entity_id.startswith("update."):
+            raise ValueError("Only update entities may be installed")
+        return await self.call_service(
+            "update",
+            "install",
+            {"entity_id": safe_entity_id, "backup": bool(backup)},
+        )
+
     async def system_health_info(self) -> dict[str, Any]:
         """Read the initial Home Assistant system-health snapshot over the official WS API."""
         timeout = aiohttp.ClientTimeout(total=15)

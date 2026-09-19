@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.32-dev
+- Added the Home Assistant Recommendation Executor as a continuous one-minute background loop.
+- Doctor now monitors active Home Assistant Repairs, persistent notifications, and all available update entities without waiting for the user to open Settings.
+- Fixable Repairs are executed through the native Home Assistant RepairFlow. Empty/confirm forms are submitted automatically; flows that require credentials, choices, menus, OAuth/external steps, or other real user input stop as NEEDS_INPUT instead of inventing values.
+- Available update entities are installed through native update.install with backup=true, matching the UI backed-up update path. In-progress updates are not replayed; system-level updates are serialized so Core/OS/Supervisor restart boundaries do not trigger a burst of subsequent updates.
+- Persistent notification text is monitor-only unless a dedicated structured adapter exists; arbitrary text can never become a service/shell command.
+- Added bounded post-action verification, temporary deferral after failures/required-input flows, dashboard recommendation status, and a six-case simulated recommendation regression suite.
+- Added the recommendation regression to the Developer release gate. No Home Assistant Core restart is part of this app deployment.
+- App 0.2.32-dev; Protocol Pack remains 0.1.4-dev; Bridge remains 0.2.4-dev.
+
 ## 0.2.31-dev
 - Moved the Master Knowledge Base out of the Home Assistant client and onto Suzie Doctor Server on Orange Pi 4 Pro.
 - The client image no longer contains the 411-incident forum corpus or KnowledgeCompiler; the four-card Protocol Pack remains as the local Emergency Pack.
