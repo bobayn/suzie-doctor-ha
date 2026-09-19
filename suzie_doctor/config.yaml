@@ -1,5 +1,5 @@
 name: "Suzie Doctor DEV"
-version: "0.2.39-dev"
+version: "0.2.40-dev"
 slug: "suzie_doctor"
 description: "Automatic diagnostics and local treatment engine for Home Assistant"
 arch:

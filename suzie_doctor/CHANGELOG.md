@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.40-dev
+
+- Doctor now repairs a stale self-update UI state instead of merely suppressing
+  a repeated self-update. When the running App already equals the offered
+  latest_version but Home Assistant still reports an older installed_version,
+  Recommendation Executor reloads the single exact Supervisor (hassio) config
+  entry through Home Assistant's native reload_config_entry service.
+- The repair is verified by re-reading update.suzie_doctor_dev_update and is
+  successful only when state=off and installed_version=latest_version=APP_VERSION.
+- Ambiguous/missing Supervisor config-entry targeting fails closed and never
+  falls back to reinstalling the already-running Doctor version.
+- Recommendation regression now covers successful state synchronization and
+  exact-target refusal.
+
 ## 0.2.39-dev
 
 - Prevent repeated self-update cold-backup loops when Home Assistant's

@@ -59,6 +59,22 @@ def _is_doctor_self_update(state: dict[str, Any]) -> bool:
     )
 
 
+def _is_stale_doctor_self_update_state(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict) or not _is_doctor_self_update(state):
+        return False
+    if str(state.get("state") or "").lower() != "on":
+        return False
+    attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+    installed = attrs.get("installed_version")
+    latest = attrs.get("latest_version")
+    return (
+        not bool(attrs.get("in_progress"))
+        and latest is not None
+        and str(latest) == APP_VERSION
+        and str(installed or "") != APP_VERSION
+    )
+
+
 def _is_update_available(state: dict[str, Any]) -> bool:
     if not isinstance(state, dict):
         return False
@@ -72,15 +88,10 @@ def _is_update_available(state: dict[str, Any]) -> bool:
     latest = attrs.get("latest_version")
     if installed is not None and latest is not None and str(installed) == str(latest):
         return False
-    # Updating the Doctor app stops this process for a cold backup/restart.
-    # HA's update entity can lag behind Supervisor and advertise the version
-    # already running. For this exact self-update target only, runtime version
-    # is authoritative and prevents a repeated reinstall loop.
-    if (
-        _is_doctor_self_update(state)
-        and latest is not None
-        and str(latest) == APP_VERSION
-    ):
+    # Never replay a Doctor version that is already the running App. A separate
+    # structured repair path below reloads the Supervisor config entry and
+    # verifies that Home Assistant's update entity is corrected as well.
+    if _is_stale_doctor_self_update_state(state):
         return False
     return True
 
@@ -140,11 +151,15 @@ class RecommendationExecutor:
         *,
         update_verify_interval_seconds: float = 5.0,
         update_verify_attempts: int = 120,
+        state_sync_interval_seconds: float = 1.0,
+        state_sync_attempts: int = 10,
     ) -> None:
         self.ha = ha
         self.db = db
         self.update_verify_interval_seconds = max(0.0, float(update_verify_interval_seconds))
         self.update_verify_attempts = max(1, int(update_verify_attempts))
+        self.state_sync_interval_seconds = max(0.0, float(state_sync_interval_seconds))
+        self.state_sync_attempts = max(1, int(state_sync_attempts))
         self.last_status: dict[str, Any] = {
             "state": "pending",
             "checked_at": None,
@@ -328,6 +343,99 @@ class RecommendationExecutor:
                 return state
         return None
 
+    async def _repair_stale_doctor_update_state(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        entity_id = _update_key(state)
+        attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+        key = f"update_state_sync:{entity_id}"
+        base = {
+            "kind": "update_state_sync",
+            "key": key,
+            "entity_id": entity_id,
+            "installed_version": attrs.get("installed_version"),
+            "latest_version": attrs.get("latest_version"),
+            "running_version": APP_VERSION,
+        }
+
+        if not _is_stale_doctor_self_update_state(state):
+            return {**base, "result": "NOT_NEEDED"}, state
+        if self._deferred_active(key):
+            return {**base, "result": "DEFERRED_AFTER_FAILURE"}, state
+
+        try:
+            entries = await self.ha.list_config_entries("hassio")
+        except Exception as exc:
+            self._defer(key, f"hassio_entry_lookup_failed:{type(exc).__name__}", hours=1)
+            return {
+                **base,
+                "result": "FAILED",
+                "reason": "HASSIO_ENTRY_LOOKUP_FAILED",
+                "error": f"{type(exc).__name__}: {exc}"[:700],
+            }, state
+
+        candidates = [
+            item
+            for item in entries
+            if isinstance(item, dict)
+            and str(item.get("domain") or "hassio") == "hassio"
+            and str(item.get("entry_id") or "")
+        ]
+        if len(candidates) != 1:
+            self._defer(key, "hassio_exact_target_required", hours=1)
+            return {
+                **base,
+                "result": "EXACT_TARGET_REQUIRED",
+                "candidate_count": len(candidates),
+            }, state
+
+        entry_id = str(candidates[0].get("entry_id") or "")
+        try:
+            await self.ha.reload_config_entry(entry_id)
+        except Exception as exc:
+            self._defer(key, f"hassio_reload_failed:{type(exc).__name__}", hours=1)
+            return {
+                **base,
+                "result": "FAILED",
+                "reason": "HASSIO_RELOAD_FAILED",
+                "entry_id": entry_id,
+                "error": f"{type(exc).__name__}: {exc}"[:700],
+            }, state
+
+        current: dict[str, Any] | None = None
+        for _ in range(self.state_sync_attempts):
+            await asyncio.sleep(self.state_sync_interval_seconds)
+            current = await self._current_update_state(entity_id)
+            if current is None:
+                continue
+            current_attrs = (
+                current.get("attributes")
+                if isinstance(current.get("attributes"), dict)
+                else {}
+            )
+            if (
+                str(current.get("state") or "").lower() != "on"
+                and str(current_attrs.get("installed_version") or "") == APP_VERSION
+                and str(current_attrs.get("latest_version") or "") == APP_VERSION
+                and not bool(current_attrs.get("in_progress"))
+            ):
+                self._clear_defer(key)
+                return {
+                    **base,
+                    "result": "SYNCED",
+                    "entry_id": entry_id,
+                    "installed_version": current_attrs.get("installed_version"),
+                    "latest_version": current_attrs.get("latest_version"),
+                }, current
+
+        self._defer(key, "hassio_update_state_verify_pending", hours=1)
+        return {
+            **base,
+            "result": "VERIFY_PENDING",
+            "entry_id": entry_id,
+        }, current or state
+
     async def _execute_update(self, state: dict[str, Any]) -> dict[str, Any]:
         entity_id = _update_key(state)
         title = _update_title(state)
@@ -400,6 +508,26 @@ class RecommendationExecutor:
 
             repair_items = [x for x in repairs if isinstance(x, dict) and not x.get("ignored")]
             note_items = [x for x in notifications if isinstance(x, dict)]
+            actions: list[dict[str, Any]] = []
+
+            stale_self_updates = [
+                x
+                for x in states
+                if isinstance(x, dict) and _is_stale_doctor_self_update_state(x)
+            ]
+            if execute:
+                for stale_state in stale_self_updates:
+                    action, refreshed = await self._repair_stale_doctor_update_state(stale_state)
+                    actions.append(action)
+                    if refreshed is not None:
+                        refreshed_id = _update_key(refreshed)
+                        states = [
+                            refreshed
+                            if isinstance(item, dict) and _update_key(item) == refreshed_id
+                            else item
+                            for item in states
+                        ]
+
             updates = [x for x in states if _is_update_available(x)]
             actionable_updates = [x for x in updates if _is_update_actionable(x)]
             unactionable_update_keys = [
@@ -408,8 +536,12 @@ class RecommendationExecutor:
             updates_in_progress = [
                 x for x in states if isinstance(x, dict) and _is_update_in_progress(x)
             ]
+            stale_self_updates_remaining = [
+                _update_key(x)
+                for x in states
+                if isinstance(x, dict) and _is_stale_doctor_self_update_state(x)
+            ]
 
-            actions: list[dict[str, Any]] = []
             if execute:
                 for issue in repair_items:
                     actions.append(await self._execute_repair(issue))
@@ -444,6 +576,8 @@ class RecommendationExecutor:
                 "notifications": len(note_items),
                 "updates": len(updates),
                 "actionable_updates": len(actionable_updates),
+                "stale_self_updates_detected": len(stale_self_updates),
+                "stale_self_updates_remaining": stale_self_updates_remaining[:25],
                 "updates_in_progress": [_update_key(x) for x in updates_in_progress][:25],
                 "update_queue_blocked": bool(updates_in_progress),
                 "unactionable_updates": unactionable_update_keys[:25],
@@ -470,6 +604,11 @@ class _FakeHA:
         self.update_calls: list[dict[str, Any]] = []
         self.active_update_calls = 0
         self.max_concurrent_update_calls = 0
+        self.config_entries: list[dict[str, Any]] = [
+            {"entry_id": "hassio-entry", "domain": "hassio", "state": "loaded"}
+        ]
+        self.reload_config_entry_calls: list[str] = []
+        self.sync_self_update_on_reload = True
         self.flow_mode = "confirm"
         self.flow_steps: list[dict[str, Any]] = []
 
@@ -481,6 +620,25 @@ class _FakeHA:
 
     async def get_states(self) -> list[dict[str, Any]]:
         return list(self.states)
+
+    async def list_config_entries(self, domain: str = "") -> list[dict[str, Any]]:
+        return [
+            dict(item)
+            for item in self.config_entries
+            if not domain or str(item.get("domain") or "") == domain
+        ]
+
+    async def reload_config_entry(self, entry_id: str) -> None:
+        self.reload_config_entry_calls.append(str(entry_id))
+        if not self.sync_self_update_on_reload:
+            return
+        for state in self.states:
+            if _is_stale_doctor_self_update_state(state):
+                state["state"] = "off"
+                attrs = state.setdefault("attributes", {})
+                attrs["installed_version"] = APP_VERSION
+                attrs["latest_version"] = APP_VERSION
+                attrs["in_progress"] = False
 
     async def install_update(self, entity_id: str, backup: bool) -> None:
         self.active_update_calls += 1
@@ -554,6 +712,8 @@ async def recommendation_selftest(db: Database) -> dict[str, Any]:
         db,
         update_verify_interval_seconds=0,
         update_verify_attempts=3,
+        state_sync_interval_seconds=0,
+        state_sync_attempts=3,
     )  # type: ignore[arg-type]
 
     cases: list[dict[str, Any]] = []
@@ -590,13 +750,45 @@ async def recommendation_selftest(db: Database) -> dict[str, Any]:
         )
     ]
     result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    state_sync_action = (result.get("actions") or [{}])[0]
     add(
-        "doctor_self_update_stale_state_not_replayed",
+        "doctor_self_update_stale_state_is_repaired",
         not fake.update_calls
-        and not result.get("actions")
-        and result.get("updates") == 0,
+        and fake.reload_config_entry_calls == ["hassio-entry"]
+        and state_sync_action.get("result") == "SYNCED"
+        and result.get("updates") == 0
+        and result.get("stale_self_updates_detected") == 1
+        and not result.get("stale_self_updates_remaining"),
         result,
     )
+
+    fake.reload_config_entry_calls.clear()
+    fake.config_entries = [
+        {"entry_id": "hassio-a", "domain": "hassio", "state": "loaded"},
+        {"entry_id": "hassio-b", "domain": "hassio", "state": "loaded"},
+    ]
+    fake.states = [
+        _fake_update(
+            "update.suzie_doctor_dev_update",
+            title="Suzie Doctor DEV",
+            installed_version="0.0.0-stale",
+            latest_version=APP_VERSION,
+        )
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    state_sync_action = (result.get("actions") or [{}])[0]
+    add(
+        "doctor_self_update_sync_requires_exact_hassio_target",
+        not fake.update_calls
+        and not fake.reload_config_entry_calls
+        and state_sync_action.get("result") == "EXACT_TARGET_REQUIRED"
+        and result.get("stale_self_updates_remaining")
+        == ["update.suzie_doctor_dev_update"],
+        result,
+    )
+    fake.config_entries = [
+        {"entry_id": "hassio-entry", "domain": "hassio", "state": "loaded"}
+    ]
 
     fake.update_calls.clear()
     fake.states = [

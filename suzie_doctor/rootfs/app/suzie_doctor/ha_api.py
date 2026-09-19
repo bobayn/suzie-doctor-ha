@@ -188,6 +188,16 @@ class HomeAssistantClient:
         )
         return data if isinstance(data, dict) else {}
 
+    async def reload_config_entry(self, entry_id: str) -> Any:
+        safe_entry_id = str(entry_id).strip()
+        if not safe_entry_id:
+            raise ValueError("reload_config_entry requires entry_id")
+        return await self.call_service(
+            "homeassistant",
+            "reload_config_entry",
+            {"entry_id": safe_entry_id},
+        )
+
     async def get_entity_registry_entry(self, entity_id: str) -> dict[str, Any] | None:
         data = await self.ws_command(
             "config/entity_registry/get_entries",
