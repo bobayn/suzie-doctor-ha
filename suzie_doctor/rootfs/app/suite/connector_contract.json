@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.0-dev",
+  "version": "0.1.1-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose->signed_execution_package->ProtocolEngine",
@@ -13,7 +13,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "doctor.core",
+      "family": "doctor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "doctor.suite",
@@ -23,7 +30,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "doctor.core",
+      "family": "doctor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "doctor.skill",
@@ -38,7 +52,14 @@
           }
         },
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "doctor.core",
+      "family": "doctor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "doctor.diagnose",
@@ -64,7 +85,14 @@
           "evidence"
         ],
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "doctor.core",
+      "family": "doctor",
+      "target_policy": "signed_execution_package",
+      "target_fields": [],
+      "checkpoint_support": "protocol_defined",
+      "rollback_support": "protocol_defined",
+      "confirmation_class": "protocol_defined"
     },
     {
       "name": "ha.config.read",
@@ -74,7 +102,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "ha.native",
+      "family": "ha",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "ha.repairs.list",
@@ -84,7 +119,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "ha.native",
+      "family": "ha",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "ha.notifications.list",
@@ -94,7 +136,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "ha.native",
+      "family": "ha",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "ha.config_entries.list",
@@ -109,7 +158,14 @@
           }
         },
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "ha.native",
+      "family": "ha",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.info",
@@ -119,7 +175,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.host.info",
@@ -129,7 +192,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.core.info",
@@ -139,7 +209,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.network.info",
@@ -149,7 +226,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.addons.list",
@@ -159,7 +243,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.mounts.list",
@@ -169,7 +260,14 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     },
     {
       "name": "supervisor.backups.list",
@@ -179,57 +277,385 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
-      }
+      },
+      "adapter_id": "supervisor.native",
+      "family": "supervisor",
+      "target_policy": "none",
+      "target_fields": [],
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "confirmation_class": "none"
     }
   ],
   "families": {
-    "doctor": {
-      "available": true,
-      "mode": "core"
-    },
-    "ha": {
-      "available": true,
-      "mode": "native"
-    },
-    "supervisor": {
-      "available": true,
-      "mode": "native"
-    },
-    "frigate": {
+    "auth": {
       "available": false,
-      "mode": "adapter_not_yet_exposed"
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
     },
     "docker": {
       "available": false,
-      "mode": "adapter_not_yet_exposed"
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
     },
-    "z2m": {
-      "available": false,
-      "mode": "adapter_not_yet_exposed"
-    },
-    "zwave": {
-      "available": false,
-      "mode": "adapter_not_yet_exposed"
-    },
-    "mqtt": {
-      "available": false,
-      "mode": "adapter_not_yet_exposed"
+    "doctor": {
+      "available": true,
+      "mode": "adapter_registry",
+      "reason": ""
     },
     "esphome": {
       "available": false,
-      "mode": "adapter_not_yet_exposed"
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
     },
-    "nodered": {
+    "frigate": {
       "available": false,
-      "mode": "adapter_not_yet_exposed"
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
     },
-    "storage": {
+    "ha": {
+      "available": true,
+      "mode": "adapter_registry",
+      "reason": ""
+    },
+    "human": {
       "available": false,
-      "mode": "adapter_not_yet_exposed"
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
+    },
+    "mqtt": {
+      "available": false,
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
     },
     "network": {
       "available": false,
-      "mode": "adapter_not_yet_exposed"
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
+    },
+    "nodered": {
+      "available": false,
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
+    },
+    "recorder": {
+      "available": false,
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
+    },
+    "storage": {
+      "available": false,
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
+    },
+    "supervisor": {
+      "available": true,
+      "mode": "adapter_registry",
+      "reason": ""
+    },
+    "z2m": {
+      "available": false,
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
+    },
+    "zwave": {
+      "available": false,
+      "mode": "adapter_registry",
+      "reason": "safe_backend_not_exposed_in_connector_v1"
     }
-  }
+  },
+  "schema_version": 1,
+  "adapters": [
+    {
+      "adapter_id": "doctor.core",
+      "adapter_version": "0.1.1-dev",
+      "family": "doctor",
+      "available": true,
+      "health": "ready",
+      "reason": "",
+      "permissions": "local_runtime+signed_server",
+      "read_operations": [
+        "doctor.capabilities",
+        "doctor.suite",
+        "doctor.skill"
+      ],
+      "write_operations": [
+        "doctor.diagnose"
+      ],
+      "dangerous_operations": [
+        "doctor.diagnose:execute=true"
+      ],
+      "confirmation_class": "protocol_defined",
+      "checkpoint_support": "protocol_defined",
+      "rollback_support": "protocol_defined",
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "ha.native",
+      "adapter_version": "0.1.1-dev",
+      "family": "ha",
+      "available": true,
+      "health": "configured_not_probed",
+      "reason": "",
+      "permissions": "homeassistant_api",
+      "read_operations": [
+        "ha.config.read",
+        "ha.repairs.list",
+        "ha.notifications.list",
+        "ha.config_entries.list"
+      ],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "supervisor.native",
+      "adapter_version": "0.1.1-dev",
+      "family": "supervisor",
+      "available": true,
+      "health": "configured_not_probed",
+      "reason": "",
+      "permissions": "hassio_api_manager",
+      "read_operations": [
+        "supervisor.info",
+        "supervisor.host.info",
+        "supervisor.core.info",
+        "supervisor.network.info",
+        "supervisor.addons.list",
+        "supervisor.mounts.list",
+        "supervisor.backups.list"
+      ],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "frigate.stub",
+      "adapter_version": "stub-1",
+      "family": "frigate",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "docker.stub",
+      "adapter_version": "stub-1",
+      "family": "docker",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "z2m.stub",
+      "adapter_version": "stub-1",
+      "family": "z2m",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "zwave.stub",
+      "adapter_version": "stub-1",
+      "family": "zwave",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "mqtt.stub",
+      "adapter_version": "stub-1",
+      "family": "mqtt",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "esphome.stub",
+      "adapter_version": "stub-1",
+      "family": "esphome",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "nodered.stub",
+      "adapter_version": "stub-1",
+      "family": "nodered",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "storage.stub",
+      "adapter_version": "stub-1",
+      "family": "storage",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "recorder.stub",
+      "adapter_version": "stub-1",
+      "family": "recorder",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "network.stub",
+      "adapter_version": "stub-1",
+      "family": "network",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "auth.stub",
+      "adapter_version": "stub-1",
+      "family": "auth",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    },
+    {
+      "adapter_id": "human.stub",
+      "adapter_version": "stub-1",
+      "family": "human",
+      "available": false,
+      "health": "unsupported",
+      "reason": "safe_backend_not_exposed_in_connector_v1",
+      "permissions": "none",
+      "read_operations": [],
+      "write_operations": [],
+      "dangerous_operations": [],
+      "confirmation_class": "none",
+      "checkpoint_support": false,
+      "rollback_support": false,
+      "compatibility": {
+        "interface_version": 1
+      }
+    }
+  ]
 }

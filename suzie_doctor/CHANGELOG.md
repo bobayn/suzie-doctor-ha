@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.37-dev
+- Added a real validated Connector adapter/capability registry instead of relying only on a flat tool list.
+- Adapter records now carry version, availability/health/reason, permission level, read/write/dangerous operations, confirmation class, checkpoint/rollback support and compatibility metadata.
+- Reserved Frigate, Docker, Zigbee2MQTT, Z-Wave, MQTT, ESPHome, Node-RED, storage, Recorder, network, auth and human adapters are explicit unavailable stubs; they cannot fake success or fall back to shell.
+- Connector capability records now enforce risk/target policy and preserve checkpoint/rollback metadata; duplicate adapters/capabilities, unknown tools and missing exact targets fail closed.
+- Added Connector schema v1 to the Suite manifest/compatibility gate while keeping Connector interface v1 backward compatible.
+- Skill Core 0.1.1-dev is bound to Connector interface v1, declares no local Master KB/source evidence, adds explicit recurrence/verify/HUMAN_ACTION_REQUIRED/AI-assisted governance rules, and is packaged by identical Web/API Skill loaders.
+- Expanded Developer Suite selftests for registry duplicates, deterministic discovery, unavailable adapters, exact targets, exception propagation, Web/API semantic parity, Skill vocabulary, and incompatible-version diagnosis/treatment behavior.
+- Release Gate now exposes connector_registry, capability_discovery, connector_security, skill_loaded, skill_connector_compatibility, suite_manifest, suite_version_gate and existing_protocol_regression checks.
+- Existing ProtocolEngine primitive set and signed execution-package treatment path are unchanged; WATCH and MANUAL treatment gates are unchanged.
+- App 0.2.37-dev; Suite/Connector/Skill 0.1.1-dev; Bridge 0.2.4-dev; Emergency Pack 0.1.4-dev.
+
 ## 0.2.36-dev
 - Added Suzie Doctor Suite 0.1.0-dev: one canonical Connector Core plus one canonical Skill Core bundled inside the App image.
 - Added surface-neutral Connector interface v1 with Web and API adapters that resolve to the same tool catalog and execution policy.

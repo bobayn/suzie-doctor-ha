@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from . import CONNECTOR_INTERFACE_VERSION, CONNECTOR_VERSION
+from . import (
+    CONNECTOR_INTERFACE_VERSION,
+    CONNECTOR_SCHEMA_VERSION,
+    CONNECTOR_VERSION,
+)
+from .connector_registry import CapabilityRegistry, CapabilityRegistryError
 if TYPE_CHECKING:
     from .ha_api import HomeAssistantClient
     from .protocol_engine import ProtocolEngine
@@ -40,6 +45,10 @@ class ConnectorCore:
         self.diagnose_callback = diagnose_callback
         self.contract_path = Path(contract_path)
         self.contract = self._load_contract()
+        try:
+            self.registry = CapabilityRegistry(self.contract)
+        except CapabilityRegistryError as exc:
+            raise ConnectorError(f"Connector registry invalid: {exc}") from exc
         self._validate_contract()
 
     def _load_contract(self) -> dict[str, Any]:
@@ -58,30 +67,35 @@ class ConnectorCore:
             raise ConnectorError("Connector version mismatch")
         if int(self.contract.get("interface_version") or 0) != CONNECTOR_INTERFACE_VERSION:
             raise ConnectorError("Connector interface version mismatch")
+        if int(self.contract.get("schema_version") or 0) != CONNECTOR_SCHEMA_VERSION:
+            raise ConnectorError("Connector schema version mismatch")
         if self.contract.get("canonical_core") is not True:
             raise ConnectorError("Connector contract is not canonical")
-        names = [str(item.get("name") or "") for item in self.contract.get("tools") or []]
-        if len(names) != len(set(names)) or not all(names):
-            raise ConnectorError("Connector tool names must be unique and non-empty")
         forbidden = ("shell", "eval", "exec", "python", "sql.write")
-        for name in names:
+        for item in self.registry.tool_catalog():
+            name = str(item.get("name") or "")
             lowered = name.lower()
             if any(token in lowered for token in forbidden):
                 raise ConnectorError(f"Forbidden generic tool in Connector contract: {name}")
 
     def tool_catalog(self) -> list[dict[str, Any]]:
-        return [dict(item) for item in self.contract.get("tools") or []]
+        return self.registry.tool_catalog()
 
     def capabilities(self) -> dict[str, Any]:
+        registry = self.registry.snapshot()
         return {
             "connector": {
                 "version": CONNECTOR_VERSION,
                 "interface_version": CONNECTOR_INTERFACE_VERSION,
+                "schema_version": CONNECTOR_SCHEMA_VERSION,
                 "canonical_core": True,
+                "registry": "adapter_capability_registry_v1",
             },
             "suite": self.suite.status(),
             "skill": self.skill.descriptor(include_text=False),
-            "families": dict(self.contract.get("families") or {}),
+            "families": registry["families"],
+            "adapters": registry["adapters"],
+            "capabilities": registry["capabilities"],
             "tools": self.tool_catalog(),
             "protocol_engine_primitives": sorted(
                 self.protocol_engine.SUPPORTED_PRIMITIVES
@@ -98,11 +112,11 @@ class ConnectorCore:
     ) -> dict[str, Any]:
         args = dict(arguments or {})
         trusted = dict(trusted_context or {})
-        allowed_names = {
-            str(item.get("name") or "") for item in self.contract.get("tools") or []
-        }
-        if tool_name not in allowed_names:
-            raise ConnectorError(f"Unknown Connector tool: {tool_name}")
+        try:
+            self.registry.resolve_tool(tool_name)
+            self.registry.validate_arguments(tool_name, args)
+        except CapabilityRegistryError as exc:
+            raise ConnectorError(str(exc)) from exc
 
         if tool_name == "doctor.capabilities":
             return self.capabilities()

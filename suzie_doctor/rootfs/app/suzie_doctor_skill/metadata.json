@@ -1,11 +1,14 @@
 {
   "name": "suzie-doctor-skill",
-  "version": "0.1.0-dev",
+  "version": "0.1.1-dev",
   "schema_version": 1,
-  "sha256": "98a4a7b9b7974637ee77e149bb49f2bd1151a0a39737d73ac5bbbe2c37bf6d41",
+  "sha256": "3e9f453657892c47363e634439e319256da5c7b19a43018c05365b7ee2341aae",
   "canonical": true,
   "surfaces": [
     "web",
     "api"
-  ]
+  ],
+  "connector_interface_version": 1,
+  "contains_master_kb": false,
+  "contains_source_evidence": false
 }

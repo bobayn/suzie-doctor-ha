@@ -6,17 +6,19 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: `0.2.36-dev`
+- App: `0.2.37-dev`
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
-- Suite: `0.1.0-dev`
-- Connector Core: `0.1.0-dev` (interface v1)
-- Skill Core: `0.1.0-dev` (schema v1)
+- Suite: `0.1.1-dev`
+- Connector Core: `0.1.1-dev` (interface v1)
+- Skill Core: `0.1.1-dev` (schema v1)
 
 The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 
 - Ingress UI and persistent SQLite storage in `/data`;
 - one canonical Suzie Doctor Connector Core is bundled with the App and exposed through Web and API surface adapters with the same tool contract;
+- Connector Core now uses a validated adapter/capability registry; unavailable future families are explicit stubs with reasons rather than fake tools or shell fallbacks;
+- capability metadata distinguishes availability from permission and carries risk, exact-target policy, confirmation class, checkpoint and rollback support;
 - one canonical versioned Suzie Doctor Skill Core is bundled with the App; it contains operating methodology, not the proprietary Master Knowledge Base;
 - Suite compatibility is checked at runtime and blocks all treatment fail-closed while leaving diagnostics available if App/Connector/Skill/Protocol/Bridge/Server-API contracts drift;
 - Health Guard, hourly checks, first-run/full/daily audit engine;
@@ -36,6 +38,8 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - native Supervisor mount recovery for confirmed `inactive` mounts with one reload attempt per incident episode and repeat diagnosis;
 - Developer mount-recovery regression exercises success, failure and one-attempt guard without touching live mounts or the production Doctor database;
 - Developer release gate aggregates safe readonly/trigger/mount/recurrence/retention/recommendation-executor/generated-protocol/server-client regressions, Pack consistency and active background-error checks;
+- Developer release gate additionally reports connector_registry, capability_discovery, connector_security, skill_loaded, skill_connector_compatibility, suite_manifest, suite_version_gate and existing_protocol_regression;
+- developer adapter contract is documented in docs/CONNECTOR_ADAPTER_CONTRACT.md; Protocol capability coverage tooling/report live under tools/audit_protocol_connector_coverage.py and docs/PROTOCOL_CONNECTOR_COVERAGE_2026-09-19.md;
 - one-attempt-per-episode recovery guard;
 - recurrence episodes across the daily-audit boundary;
 - real targeted Health Guard audits instead of full-audit aliases;

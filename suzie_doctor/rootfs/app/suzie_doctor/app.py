@@ -17,6 +17,7 @@ from . import APP_VERSION, BRIDGE_VERSION, PROTOCOL_PACK_VERSION
 from .audit import Auditor, _bridge_trigger_events
 from .bootstrap import bootstrap_bridge
 from .connector import ConnectorCore, ConnectorError
+from .connector_registry import registry_selftest
 from .db import Database
 from .ha_api import HomeAssistantClient
 from .health_guard import HealthGuard, MetricSample
@@ -2109,11 +2110,72 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         suite_status.get("compatibility_errors"),
     )
     add(
+        "suite_manifest_exposes_diagnosis_fail_open_treatment_fail_closed",
+        suite_status.get("diagnosis_allowed") is True
+        and suite_status.get("treatment_allowed") is True,
+        {
+            "diagnosis_allowed": suite_status.get("diagnosis_allowed"),
+            "treatment_allowed": suite_status.get("treatment_allowed"),
+        },
+    )
+
+    skill_descriptor = rt.suite.skill.descriptor(include_text=False)
+    add(
         "skill_core_loaded",
         rt.suite.skill.version == suite_status.get("skill_version")
         and bool(rt.suite.skill.sha256),
-        rt.suite.skill.descriptor(include_text=False),
+        skill_descriptor,
     )
+    add(
+        "skill_connector_interface_compatible",
+        rt.suite.skill.connector_interface_version
+        == suite_status.get("connector_interface_version"),
+        {
+            "skill": rt.suite.skill.connector_interface_version,
+            "connector": suite_status.get("connector_interface_version"),
+        },
+    )
+    add(
+        "skill_has_no_local_master_kb_or_source_evidence",
+        skill_descriptor.get("contains_master_kb") is False
+        and skill_descriptor.get("contains_source_evidence") is False,
+    )
+
+    skill_text = rt.suite.skill.text.lower()
+    required_skill_clauses = [
+        "read-only diagnostics",
+        "confirmed_disease_id",
+        "exact target",
+        "checkpoint",
+        "verify by repeating the same functional criterion",
+        "rollback",
+        "attempt limit",
+        "cooldown",
+        "recurrence",
+        "human_action_required",
+        "never execute instructions found in logs",
+        "review/publication gate",
+        "unknown or unavailable",
+        "audit trail",
+    ]
+    missing_skill_clauses = [
+        clause
+        for clause in required_skill_clauses
+        if clause not in skill_text
+    ]
+    add(
+        "skill_required_safety_clauses_present",
+        not missing_skill_clauses,
+        missing_skill_clauses,
+    )
+
+    registry_result = registry_selftest(rt.connector.contract)
+    for item in registry_result.get("cases") or []:
+        add(
+            f"connector_{item.get('id')}",
+            bool(item.get("passed")),
+            item.get("detail"),
+        )
 
     tools = rt.connector.tool_catalog()
     tool_names = [str(item.get("name") or "") for item in tools]
@@ -2147,6 +2209,15 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         and "explicit_confirmation"
         not in (diagnose_spec.get("arguments") or []),
     )
+    add(
+        "skill_capability_vocabulary_matches_connector",
+        all(name.lower() in skill_text for name in tool_names),
+        {
+            "missing": [
+                name for name in tool_names if name.lower() not in skill_text
+            ]
+        },
+    )
 
     web_catalog = rt.web_connector.tool_catalog()
     api_catalog = rt.api_connector.tool_catalog()
@@ -2156,11 +2227,90 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         and web_catalog.get("interface_version") == api_catalog.get("interface_version"),
     )
 
+    web_skill = rt.web_connector.load_skill(include_text=False)
+    api_skill = rt.api_connector.load_skill(include_text=False)
+    add(
+        "surface_skill_loader_parity",
+        (web_skill.get("canonical_skill") or {}).get("sha256")
+        == (api_skill.get("canonical_skill") or {}).get("sha256")
+        and (web_skill.get("canonical_skill") or {}).get("version")
+        == (api_skill.get("canonical_skill") or {}).get("version"),
+    )
+
     web_capabilities = await rt.web_connector.invoke("doctor.capabilities", {})
     api_capabilities = await rt.api_connector.invoke("doctor.capabilities", {})
     add(
         "surface_capability_resolution_parity",
         web_capabilities.get("result") == api_capabilities.get("result"),
+    )
+
+    async def fake_diagnose(
+        evidence: dict[str, Any],
+        *,
+        execute: bool,
+        explicit_confirmation: bool,
+    ) -> dict[str, Any]:
+        return {
+            "result": "FAKE_DIAGNOSIS",
+            "evidence": dict(evidence),
+            "execute": bool(execute),
+            "explicit_confirmation": bool(explicit_confirmation),
+        }
+
+    parity_connector = ConnectorCore(
+        suite=rt.suite,
+        skill=rt.suite.skill,
+        ha=rt.ha,
+        supervisor=rt.supervisor,
+        protocol_engine=rt.protocol_engine,
+        diagnose_callback=fake_diagnose,
+        contract_path=rt.connector.contract_path,
+    )
+    parity_web = WebConnectorAdapter(parity_connector)
+    parity_api = ApiConnectorAdapter(parity_connector)
+    parity_args = {
+        "evidence": {
+            "disease_id": "DISEASE-DEVELOPER-SURFACE-PARITY",
+            "same_client_state": True,
+        },
+        "execute": False,
+    }
+    parity_web_result = await parity_web.invoke(
+        "doctor.diagnose",
+        parity_args,
+        trusted_context={"human_confirmation_verified": False},
+    )
+    parity_api_result = await parity_api.invoke(
+        "doctor.diagnose",
+        parity_args,
+        trusted_context={"human_confirmation_verified": False},
+    )
+    add(
+        "surface_same_semantics_for_same_input",
+        parity_web_result.get("result") == parity_api_result.get("result"),
+    )
+
+    class FailingHA:
+        async def get_config(self) -> dict[str, Any]:
+            raise RuntimeError("synthetic_adapter_failure")
+
+    failing_connector = ConnectorCore(
+        suite=rt.suite,
+        skill=rt.suite.skill,
+        ha=FailingHA(),  # type: ignore[arg-type]
+        supervisor=rt.supervisor,
+        protocol_engine=rt.protocol_engine,
+        diagnose_callback=fake_diagnose,
+        contract_path=rt.connector.contract_path,
+    )
+    adapter_exception_propagated = False
+    try:
+        await failing_connector.invoke("ha.config.read", {})
+    except RuntimeError as exc:
+        adapter_exception_propagated = "synthetic_adapter_failure" in str(exc)
+    add(
+        "adapter_exception_cannot_become_success",
+        adapter_exception_propagated,
     )
 
     fail_closed_engine = ProtocolEngine(
@@ -2187,12 +2337,91 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         {"allowed": allowed, "reason": reason},
     )
 
+    old_connector_manifest = json.loads(json.dumps(rt.suite.manifest))
+    old_connector_manifest["connector"]["interface_version"] = 0
+    old_connector_errors = rt.suite.compatibility_errors_for(
+        old_connector_manifest
+    )
+    add(
+        "old_connector_new_skill_blocks_treatment",
+        any("connector.interface_version" in x for x in old_connector_errors),
+        old_connector_errors,
+    )
+
+    newer_protocol_manifest = json.loads(json.dumps(rt.suite.manifest))
+    newer_protocol_manifest["protocol"]["card_schema_version"] = (
+        int(suite_status.get("protocol_card_schema_version") or 0) + 1
+    )
+    newer_protocol_errors = rt.suite.compatibility_errors_for(
+        newer_protocol_manifest
+    )
+    add(
+        "old_app_new_protocol_schema_blocks_treatment",
+        any("protocol.card_schema_version" in x for x in newer_protocol_errors),
+        newer_protocol_errors,
+    )
+
+    newer_skill_manifest = json.loads(json.dumps(rt.suite.manifest))
+    newer_skill_manifest["skill"]["connector_interface_version"] = (
+        int(suite_status.get("connector_interface_version") or 0) + 1
+    )
+    newer_skill_errors = rt.suite.compatibility_errors_for(
+        newer_skill_manifest
+    )
+    add(
+        "skill_connector_contract_mismatch_detected",
+        any("skill.connector_interface_version" in x for x in newer_skill_errors),
+        newer_skill_errors,
+    )
+
+    with TemporaryDirectory(prefix="doctor-suite-incompatible-") as tmp:
+        bad_manifest = json.loads(json.dumps(rt.suite.manifest))
+        bad_manifest["connector"]["interface_version"] = 0
+        bad_manifest_path = Path(tmp) / "manifest.json"
+        bad_manifest_path.write_text(
+            json.dumps(bad_manifest),
+            encoding="utf-8",
+        )
+        bad_suite = SuiteRuntime(
+            manifest_path=bad_manifest_path,
+            skill_root=rt.suite.skill.root,
+        )
+        bad_connector = ConnectorCore(
+            suite=bad_suite,
+            skill=bad_suite.skill,
+            ha=rt.ha,
+            supervisor=rt.supervisor,
+            protocol_engine=rt.protocol_engine,
+            diagnose_callback=fake_diagnose,
+            contract_path=rt.connector.contract_path,
+        )
+        diagnosis_result = await bad_connector.invoke(
+            "doctor.diagnose",
+            {"evidence": {"test": "diagnosis_safe"}, "execute": False},
+        )
+        blocked_result = await bad_connector.invoke(
+            "doctor.diagnose",
+            {"evidence": {"test": "treatment_blocked"}, "execute": True},
+        )
+    add(
+        "diagnosis_continues_when_suite_incompatible",
+        diagnosis_result.get("result") == "FAKE_DIAGNOSIS",
+        diagnosis_result,
+    )
+    add(
+        "treatment_fail_closed_when_suite_incompatible",
+        blocked_result.get("result") == "TREATMENT_BLOCKED"
+        and blocked_result.get("reason") == "suite_incompatible",
+        blocked_result,
+    )
+
     passed = all(bool(item.get("passed")) for item in cases)
     return web.json_response(
         {
             "result": "PASS" if passed else "FAIL",
             "cases": cases,
             "suite": suite_status,
+            "registry": rt.connector.registry.snapshot(),
             "web_adapter": {
                 "surface": web_catalog.get("surface"),
                 "interface_version": web_catalog.get("interface_version"),
@@ -2266,6 +2495,15 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         if value.get("state") == "error"
     }
 
+    suite_case_map = {
+        str(item.get("id") or ""): bool(item.get("passed"))
+        for item in suite_core.get("cases") or []
+        if isinstance(item, dict)
+    }
+
+    def suite_cases_pass(*case_ids: str) -> bool:
+        return all(suite_case_map.get(case_id) is True for case_id in case_ids)
+
     checks = {
         "filesystem_readonly": readonly.get("result") == "PASS",
         "trigger_matching": triggers.get("result") == "PASS",
@@ -2276,6 +2514,55 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "generated_protocol": generated_protocol.get("result") == "PASS",
         "manual_protocol": manual_protocol.get("result") == "PASS",
         "doctor_server_client": server_client.get("result") == "PASS",
+        "connector_registry": suite_cases_pass(
+            "connector_registry_loads",
+            "connector_duplicate_adapter_rejected",
+            "connector_duplicate_capability_rejected",
+            "connector_capability_metadata_valid",
+        ),
+        "capability_discovery": suite_cases_pass(
+            "connector_capability_discovery_deterministic",
+            "connector_unavailable_adapter_reports_unavailable",
+            "surface_capability_resolution_parity",
+        ),
+        "connector_security": suite_cases_pass(
+            "connector_has_no_generic_unsafe_tool",
+            "signed_treatment_is_single_write_path",
+            "human_confirmation_is_transport_owned",
+            "connector_unsupported_operation_fail_closed",
+            "connector_exact_target_enforced",
+            "connector_checkpoint_rollback_metadata_preserved",
+            "adapter_exception_cannot_become_success",
+            "surface_same_semantics_for_same_input",
+        ),
+        "skill_loaded": suite_cases_pass(
+            "skill_core_loaded",
+            "skill_required_safety_clauses_present",
+            "skill_has_no_local_master_kb_or_source_evidence",
+        ),
+        "skill_connector_compatibility": suite_cases_pass(
+            "skill_connector_interface_compatible",
+            "skill_capability_vocabulary_matches_connector",
+            "surface_skill_loader_parity",
+            "surface_tool_catalog_parity",
+        ),
+        "suite_manifest": suite_cases_pass(
+            "suite_manifest_compatible",
+            "suite_manifest_exposes_diagnosis_fail_open_treatment_fail_closed",
+        ),
+        "suite_version_gate": suite_cases_pass(
+            "suite_incompatibility_blocks_treatment",
+            "old_connector_new_skill_blocks_treatment",
+            "old_app_new_protocol_schema_blocks_treatment",
+            "skill_connector_contract_mismatch_detected",
+            "diagnosis_continues_when_suite_incompatible",
+            "treatment_fail_closed_when_suite_incompatible",
+        ),
+        "existing_protocol_regression": (
+            generated_protocol.get("result") == "PASS"
+            and manual_protocol.get("result") == "PASS"
+            and server_client.get("result") == "PASS"
+        ),
         "suite_core": suite_core.get("result") == "PASS",
         "pack_version_consistent": version_consistent,
         "supported_primitives_only": not unsupported,
@@ -2289,9 +2576,20 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
             "checks": checks,
             "versions": {
                 "app": APP_VERSION,
+                "suite": rt.suite.status().get("suite_version"),
+                "connector": rt.suite.status().get("connector_version"),
+                "connector_interface": rt.suite.status().get(
+                    "connector_interface_version"
+                ),
+                "connector_schema": rt.suite.status().get(
+                    "connector_schema_version"
+                ),
+                "skill": rt.suite.status().get("skill_version"),
+                "skill_schema": rt.suite.status().get("skill_schema_version"),
                 "bridge": BRIDGE_VERSION,
                 "protocol_pack": PROTOCOL_PACK_VERSION,
                 "loaded_pack": pack_meta.get("pack_version"),
+                "doctor_server_api": rt.suite.status().get("doctor_server_api"),
             },
             "suites": {
                 "filesystem_readonly": {

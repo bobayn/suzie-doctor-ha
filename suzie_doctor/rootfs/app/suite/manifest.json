@@ -1,16 +1,18 @@
 {
   "suite_name": "Suzie Doctor Suite",
-  "suite_version": "0.1.0-dev",
-  "app_version": "0.2.36-dev",
+  "suite_version": "0.1.1-dev",
+  "app_version": "0.2.37-dev",
   "connector": {
-    "version": "0.1.0-dev",
+    "version": "0.1.1-dev",
     "interface_version": 1,
-    "canonical_core": true
+    "canonical_core": true,
+    "schema_version": 1
   },
   "skill": {
-    "version": "0.1.0-dev",
+    "version": "0.1.1-dev",
     "schema_version": 1,
-    "canonical_core": true
+    "canonical_core": true,
+    "connector_interface_version": 1
   },
   "protocol": {
     "card_schema_version": 1,
