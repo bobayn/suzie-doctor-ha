@@ -1,3 +1,8 @@
+## 0.2.46-dev
+
+- Fix long-lived Home Assistant WebSocket event subscription through Supervisor by authenticating the proxy request with SUPERVISOR_TOKEN, matching the existing proven one-shot WS path.
+- No Bridge/Core restart required; Bridge remains 0.2.5-dev.
+
 ## 0.2.45-dev
 
 - Add event-driven Home Assistant runtime ERROR/CRITICAL wake path.

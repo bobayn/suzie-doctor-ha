@@ -104,7 +104,8 @@ class HomeAssistantClient:
     async def subscribe_events(self, event_type: str, callback: Any) -> None:
         """Subscribe to one HA event type until the socket disconnects."""
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=None)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        ws_headers = {"Authorization": f"Bearer {self.token}"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=ws_headers) as session:
             async with session.ws_connect("ws://supervisor/core/websocket", heartbeat=20) as ws:
                 first = await asyncio.wait_for(ws.receive_json(), timeout=5)
                 if not isinstance(first, dict) or first.get("type") != "auth_required":
