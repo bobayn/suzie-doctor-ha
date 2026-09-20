@@ -1,3 +1,9 @@
+## 0.2.49-dev
+
+- Classify MCP/tooling and rejected Supervisor API ERROR records as non-actionable observations instead of system incidents.
+- Event delivery still wakes the App, but only actionable runtime faults escalate to Doctor Server/Web Suzie.
+- Automation/runtime component errors remain actionable.
+
 ## 0.2.48-dev
 
 - Align Release Gate connector-security aggregation with the autonomous treatment policy test name (`autonomous_risk_decision_is_doctor_owned`).

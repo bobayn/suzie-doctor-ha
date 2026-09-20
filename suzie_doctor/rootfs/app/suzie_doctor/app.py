@@ -368,6 +368,31 @@ class Runtime:
             cutoff = now - 3600.0
             self._ha_error_recent = {k: v for k, v in self._ha_error_recent.items() if v >= cutoff}
 
+        message = str(payload.get("message") or "")
+        logger_lower = logger_name.lower()
+        non_actionable = (
+            logger_lower.startswith("ha_mcp.")
+            or (
+                logger_lower == "homeassistant.components.hassio"
+                and message.startswith("Failed to to call /")
+            )
+        )
+        if non_actionable:
+            self.db.add_observation(
+                f"ha_error_noise:{fingerprint}",
+                "ha_runtime_error_non_actionable",
+                {
+                    "level": level,
+                    "logger": logger_name[:500],
+                    "message": message[:2000],
+                    "source": str(payload.get("source") or "")[:500],
+                    "fingerprint": fingerprint,
+                    "classification": "operational_api_error",
+                },
+            )
+            self.record_background_ok("ha_error_events")
+            return
+
         for attempt in range(3):
             result = await self.run_audit(
                 "targeted",
