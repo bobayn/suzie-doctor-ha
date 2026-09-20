@@ -547,15 +547,57 @@ class Runtime:
                 "execution_results": remote.get("execution_results") or [],
             })
 
-        generic_findings = [
+        all_generic_findings = [
             item
             for item in (result.get("findings") or [])
             if isinstance(item, dict) and item.get("kind") != "disease"
         ][:5]
+        runtime_primary = next(
+            (
+                item
+                for item in all_generic_findings
+                if str(item.get("kind") or "") == "ha_runtime_error"
+            ),
+            None,
+        )
+        if isinstance(runtime_primary, dict):
+            primary = dict(runtime_primary)
+            related = []
+            for item in all_generic_findings:
+                if item is runtime_primary:
+                    continue
+                related.append(
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "kind", "severity", "problem_key", "domain",
+                            "issue_id", "category", "state", "reason",
+                        )
+                        if key in item
+                    }
+                )
+            if related:
+                primary["related_findings"] = related
+            generic_findings = [primary]
+        else:
+            generic_findings = all_generic_findings
+
         for finding in generic_findings:
+            canonical_problem_key = str(finding.get("problem_key") or "")
+            related_findings = finding.get("related_findings")
+            if isinstance(related_findings, list):
+                for related in related_findings:
+                    if (
+                        isinstance(related, dict)
+                        and str(related.get("kind") or "") == "repair"
+                        and str(related.get("problem_key") or "")
+                    ):
+                        canonical_problem_key = str(related["problem_key"])
+                        break
             remote = await self.doctor_server_diagnose(
                 {
                     "request_id": str(uuid4()),
+                    "problem_key": canonical_problem_key,
                     "component": str(finding.get("kind") or ""),
                     "symptoms": str(
                         finding.get("title")
@@ -570,6 +612,7 @@ class Runtime:
                             "category", "state", "reason",
                             "error_level", "logger", "message", "source",
                             "exception", "fingerprint", "event_timestamp",
+                            "related_findings",
                         )
                         if key in finding
                     },

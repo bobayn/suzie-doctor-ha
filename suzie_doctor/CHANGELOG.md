@@ -1,3 +1,8 @@
+## 0.2.47-dev
+
+- Coalesce event-driven runtime ERROR evidence with related HA Repair findings before Doctor Server consultation.
+- Pass a canonical problem_key so different detection paths can refresh one open Case instead of spawning duplicate doctors.
+
 ## 0.2.46-dev
 
 - Fix long-lived Home Assistant WebSocket event subscription through Supervisor by authenticating the proxy request with SUPERVISOR_TOKEN, matching the existing proven one-shot WS path.
