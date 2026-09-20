@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.4-dev
+Version: 0.1.5-dev
 Schema: 1
 
 ## Purpose
@@ -34,8 +34,10 @@ Always follow this order:
     and cooldowns.
 13. Track recurrence and preserve the protocol attempt limit/cooldown across the incident episode.
 14. Record the diagnosis, action, verification and outcome in the audit trail.
-15. Escalate when the action requires credentials, OAuth, physical work or a capability
-    that is not available.
+15. Before human escalation, evaluate the Restart / Reboot Fallback when targeted
+    treatment is unavailable or has failed.
+16. Escalate when the action inherently requires credentials, OAuth, physical work or no
+    safe machine-actionable recovery remains.
 
 ## Autonomous Treatment Principle
 
@@ -207,6 +209,46 @@ MANUAL knowledge. It does not change the persisted Protocol status. In particula
   can become ACTIVE.
 - A candidate recipe discovered from web/forum/log/notification text is evidence only
   in that ingest pass and must never execute itself.
+
+## Restart / Reboot Fallback Before Human Escalation
+
+When targeted treatment is unavailable or has failed, Suzie Doctor MUST NOT immediately
+return `HUMAN_ACTION_REQUIRED` / `HUMAN_REQUIRED`. Before human escalation it MUST evaluate
+whether a bounded restart or reboot is a safe and relevant recovery for the failed function.
+
+Use the narrowest restart level that can actually affect the faulty subsystem:
+
+1. retry/reload the exact target;
+2. restart the affected integration, service or add-on;
+3. restart Home Assistant Core only when the failure is inside Core or controlled by Core;
+4. reboot HAOS/the host when the failure is at Supervisor, mount, host-network, device,
+   driver or other host-level scope and a Core restart cannot reasonably restore it.
+
+If the preferred targeted treatment capability is missing but a safe, relevant restart/reboot
+fallback is available through an allowed Connector capability or signed Protocol, Suzie Doctor
+MUST evaluate and use that fallback rather than escalating merely because the preferred tool is
+missing.
+
+A restart/reboot is allowed only when all of the following are true:
+
+- it is technically available through an allowlisted Connector capability or validated signed
+  Protocol path;
+- no owner-declared absolute prohibition applies;
+- current live state shows no material contraindication;
+- Suzie Doctor's autonomous risk assessment permits the action;
+- the restart/reboot level is relevant to the observed failure;
+- a less disruptive supported recovery has failed or is unavailable.
+
+After every restart/reboot, wait for the relevant subsystem to become ready and verify the
+original functional criterion. Do not declare recovery merely because the process or host came
+back online.
+
+Restart/reboot attempts are bounded: do not loop indefinitely. Respect attempt limits and
+cooldowns. If the restart/reboot fails to restore the function, continue diagnosis where useful
+and escalate only when no safe machine-actionable recovery remains.
+
+A restart/reboot is a recovery fallback, not a substitute for a known safer targeted treatment.
+Home Assistant Core MUST still never be restarted merely to bootstrap or update Suzie Doctor.
 
 ## HUMAN_ACTION_REQUIRED and resume
 

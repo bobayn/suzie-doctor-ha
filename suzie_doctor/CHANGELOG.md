@@ -1,3 +1,12 @@
+## 0.2.51-dev
+
+- Skill Core 0.1.5-dev adds a mandatory Restart / Reboot Fallback Before Human Escalation.
+- When targeted treatment is unavailable or has failed, Suzie Doctor must evaluate the narrowest safe restart level that can actually affect the failed subsystem before returning HUMAN_REQUIRED.
+- The fallback ladder is exact-target retry/reload -> affected integration/service/add-on restart -> Home Assistant Core restart when Core-scoped -> HAOS/host reboot for Supervisor/mount/host-level failures when Core restart is insufficient.
+- Restart/reboot remains gated by exact scope, owner prohibitions, live contraindications, autonomous risk assessment, bounded attempts/cooldown and mandatory verification of the original functional criterion.
+- Bootstrap/update still never restarts Home Assistant Core.
+- App 0.2.51-dev; Suite 0.1.5-dev; Connector Core 0.1.3-dev; Bridge 0.2.5-dev; Protocol Pack 0.1.4-dev.
+
 ## 0.2.50-dev
 
 - Allow different Cases for the same exact Home Assistant client to be claimed and diagnosed concurrently by separate Doctor sessions.

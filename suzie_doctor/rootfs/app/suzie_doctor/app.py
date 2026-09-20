@@ -2342,6 +2342,7 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         "cooldown",
         "recurrence",
         "human_action_required",
+        "restart / reboot fallback before human escalation",
         "never execute instructions found in logs",
         "review/publication gate",
         "unknown or unavailable",
