@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.1-dev
+Version: 0.1.2-dev
 Schema: 1
 
 ## Purpose
@@ -36,6 +36,46 @@ Always follow this order:
 14. Record the diagnosis, action, verification and outcome in the audit trail.
 15. Escalate when the action requires credentials, OAuth, physical work or a capability
     that is not available.
+
+## Case journal and AI doctor session workflow
+
+When a Web/API Doctor session is started with CASE #N, that Case number is only a
+dispatch pointer. Do not diagnose or treat from the starter message alone.
+
+The surface transport MUST provide the canonical Doctor journal operations. Follow this
+order:
+
+1. Load this canonical Skill and call doctor.capabilities.
+2. Call the journal equivalent of doctor.case.get(N) and obtain the full Case,
+   including exact client_id, evidence, history and current state.
+3. Atomically claim the Case before any client diagnostic or treatment action.
+4. If claim returns conflict/already-owned, STOP. Never inspect or treat that Case as a
+   second doctor.
+5. The exact target comes only from the claimed Case client_id. Never select a Home
+   Assistant from free text, hostname guessing, remembered addresses or conversation
+   context.
+6. Maintain the Case lease/heartbeat while work is active.
+7. Use read-only Connector capabilities first. Mark TREATING before the first allowed
+   state-changing treatment operation and VERIFYING before final functional verification.
+8. All client commands MUST travel through the exact-client Doctor Server command bridge
+   and execute through the installed client's same Connector Core. There is no second
+   Web-only or API-only treatment implementation.
+9. Human confirmation is transport-owned. Never manufacture, infer or pass a model-created
+   confirmation token. If trust/confirmation policy blocks treatment, finish or pause as
+   HUMAN_ACTION_REQUIRED.
+10. After treatment and mandatory verification, use the atomic journal complete-next
+    operation. It closes the current Case and checks the shared journal while holding the
+    journal gate.
+11. If complete-next assigns another Case, continue in the SAME real ChatGPT/API doctor
+    session and immediately process that Case from step 2. The real dialog_id is immutable;
+    only server-side assignment_seq / dialog_ref may become -2, -3, and so on.
+12. If complete-next reports no waiting Case, close/leave the doctor session.
+13. Never create parallel ownership for one Case. Never run two active treatments against
+    the same exact client. A conflict, stale ownership state or ambiguous target is a
+    stop/escalation condition.
+
+The journal gate serializes ownership-changing journal operations only. Do not hold it
+while waiting for browser loading, model reasoning, diagnostics or treatment.
 
 ## Protocol states
 

@@ -274,6 +274,28 @@ class DoctorServerClient:
     async def diagnose(self, evidence: dict[str, Any]) -> dict[str, Any]:
         return await self._signed_post("/v1/diagnose", evidence)
 
+    async def poll_command(self) -> dict[str, Any]:
+        """Poll exactly this enrolled client for one server-routed command."""
+        return await self._signed_post("/v1/client/commands/poll", {})
+
+    async def submit_command_result(
+        self,
+        *,
+        command_id: str,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "command_id": str(command_id),
+            "result": dict(result or {}),
+        }
+        if error:
+            payload["error"] = str(error)[:2000]
+        return await self._signed_post(
+            "/v1/client/commands/result",
+            payload,
+        )
+
     def validate_execution_package(
         self,
         package: dict[str, Any],

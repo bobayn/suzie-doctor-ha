@@ -1,3 +1,12 @@
+## 0.2.41-dev
+
+- Added the exact-client Doctor Server command bridge. The installed App polls outbound over the existing TLS-pinned, Ed25519-authenticated server channel; commands are bound to client_id and execute only through ConnectorCore.invoke.
+- Command transport never accepts model-supplied human confirmation. Existing ProtocolEngine trust/confirmation gates remain authoritative.
+- Added one-command-at-a-time execution per HA client to avoid conflicting parallel mutations.
+- Skill Core 0.1.2-dev now defines the Web/API Case journal lifecycle: CASE pointer -> get -> atomic claim -> heartbeat/stage -> treatment/verify -> complete-next; duplicate claims and ambiguous targets stop fail-closed.
+- The same real dialog can take another queued Case after completion; dialog_id remains immutable while server-side assignment_seq/dialog_ref advances (-2, -3, ...).
+- App 0.2.41-dev; Suite/Connector/Skill 0.1.2-dev; Bridge 0.2.4-dev; Emergency Pack 0.1.4-dev.
+
 # Changelog
 
 ## 0.2.40-dev

@@ -546,6 +546,66 @@ class Runtime:
                 "consultations": consultations,
             }
 
+    async def server_command_loop(self) -> None:
+        """Execute exact-client Doctor Server commands through Connector Core."""
+        await asyncio.sleep(3)
+        while True:
+            try:
+                if self.doctor_server is None:
+                    self.record_background_ok("doctor_server_commands")
+                    await asyncio.sleep(300)
+                    continue
+
+                payload = await self.doctor_server.poll_command()
+                if str(payload.get("result") or "") != "COMMAND":
+                    self.record_background_ok("doctor_server_commands")
+                    await asyncio.sleep(1)
+                    continue
+
+                command = payload.get("command")
+                if not isinstance(command, dict):
+                    raise RuntimeError("Doctor Server COMMAND has no command object")
+
+                command_id = str(command.get("command_id") or "")
+                tool_name = str(command.get("tool_name") or "")
+                arguments = command.get("arguments")
+                if not command_id or not tool_name or not isinstance(arguments, dict):
+                    raise RuntimeError("Doctor Server command envelope invalid")
+
+                # Never accept model/operator claims of human confirmation through
+                # this transport. Human confirmation remains transport-owned.
+                trusted_context = {
+                    "source": "doctor_server_command_bridge",
+                    "case_id": int(command.get("case_id") or 0),
+                    "human_confirmation_verified": False,
+                }
+
+                try:
+                    result = await self.connector.invoke(
+                        tool_name,
+                        arguments,
+                        trusted_context=trusted_context,
+                    )
+                    await self.doctor_server.submit_command_result(
+                        command_id=command_id,
+                        result=result,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await self.doctor_server.submit_command_result(
+                        command_id=command_id,
+                        result={},
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+
+                self.record_background_ok("doctor_server_commands")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.record_background_error("doctor_server_commands", exc)
+                await asyncio.sleep(2)
+
     async def server_watch_loop(self) -> None:
         while True:
             try:
@@ -2984,6 +3044,10 @@ async def on_startup(app: web.Application) -> None:
         asyncio.create_task(rt.bridge_watch_loop(), name="bridge_watch"),
         asyncio.create_task(rt.recommendation_loop(), name="recommendations"),
         asyncio.create_task(rt.server_watch_loop(), name="doctor_server_watch"),
+        asyncio.create_task(
+            rt.server_command_loop(),
+            name="doctor_server_commands",
+        ),
     ]
 
 

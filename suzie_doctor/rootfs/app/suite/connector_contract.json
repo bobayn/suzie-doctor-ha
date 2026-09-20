@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.1-dev",
+  "version": "0.1.2-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose->signed_execution_package->ProtocolEngine",
@@ -368,7 +368,7 @@
   "adapters": [
     {
       "adapter_id": "doctor.core",
-      "adapter_version": "0.1.1-dev",
+      "adapter_version": "0.1.2-dev",
       "family": "doctor",
       "available": true,
       "health": "ready",
@@ -394,7 +394,7 @@
     },
     {
       "adapter_id": "ha.native",
-      "adapter_version": "0.1.1-dev",
+      "adapter_version": "0.1.2-dev",
       "family": "ha",
       "available": true,
       "health": "configured_not_probed",
@@ -417,7 +417,7 @@
     },
     {
       "adapter_id": "supervisor.native",
-      "adapter_version": "0.1.1-dev",
+      "adapter_version": "0.1.2-dev",
       "family": "supervisor",
       "available": true,
       "health": "configured_not_probed",
@@ -657,5 +657,14 @@
         "interface_version": 1
       }
     }
-  ]
+  ],
+  "remote_command_bridge": {
+    "version": 1,
+    "direction": "client_pull",
+    "exact_client": true,
+    "signed_client_requests": "ed25519",
+    "server_responses": "ed25519",
+    "concurrent_commands_per_client": 1,
+    "model_supplied_human_confirmation": false
+  }
 }
