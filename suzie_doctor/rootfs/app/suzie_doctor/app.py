@@ -2725,7 +2725,7 @@ async def api_dev_release_gate(request: web.Request) -> web.Response:
         "connector_security": suite_cases_pass(
             "connector_has_no_generic_unsafe_tool",
             "signed_treatment_is_single_write_path",
-            "human_confirmation_is_transport_owned",
+            "autonomous_risk_decision_is_doctor_owned",
             "connector_unsupported_operation_fail_closed",
             "connector_exact_target_enforced",
             "connector_checkpoint_rollback_metadata_preserved",

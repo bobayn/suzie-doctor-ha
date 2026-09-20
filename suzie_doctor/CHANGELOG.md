@@ -1,3 +1,8 @@
+## 0.2.48-dev
+
+- Align Release Gate connector-security aggregation with the autonomous treatment policy test name (`autonomous_risk_decision_is_doctor_owned`).
+- Test-only aggregation fix; no treatment behavior change.
+
 ## 0.2.47-dev
 
 - Coalesce event-driven runtime ERROR evidence with related HA Repair findings before Doctor Server consultation.
