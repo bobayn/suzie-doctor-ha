@@ -1,3 +1,8 @@
+## 0.2.44-dev
+
+- Fix Release Gate incompatible-Suite regression test to supply the new Suzie Doctor autonomous risk assessment before exercising the Suite fail-closed gate.
+- No treatment-policy relaxation; this is a test-contract alignment release.
+
 ## 0.2.43-dev
 
 - Align Home Assistant UI translations and README with the autonomous Suzie Doctor risk policy; trust_mode no longer describes human approval.

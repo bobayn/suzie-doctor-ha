@@ -2496,7 +2496,17 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         )
         blocked_result = await bad_connector.invoke(
             "doctor.diagnose",
-            {"evidence": {"test": "treatment_blocked"}, "execute": True},
+            {
+                "evidence": {"test": "treatment_blocked"},
+                "execute": True,
+                "risk_assessment": {
+                    "harm_probability": "LOW",
+                    "irreversibility": "REVERSIBLE",
+                    "harm_magnitude": "LOW",
+                    "decision": "PROCEED",
+                    "rationale": "Regression test must reach Suite compatibility gate.",
+                },
+            },
         )
     add(
         "diagnosis_continues_when_suite_incompatible",
