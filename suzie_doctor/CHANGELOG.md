@@ -1,3 +1,11 @@
+## 0.2.50-dev
+
+- Allow different Cases for the same exact Home Assistant client to be claimed and diagnosed concurrently by separate Doctor sessions.
+- Keep state-changing exact-client commands serialized by the existing Doctor Server command bridge / installed Connector Core.
+- Skill Core 0.1.4-dev makes the concurrency rule explicit and fixes `doctor.case.complete_next` outcomes to the canonical enum: SUCCESS, RESOLVED, HUMAN_REQUIRED, UNSAFE_TO_TREAT, FAILED.
+- Doctor Server 0.1.9-dev adds a same-client parallel-claim regression test while preserving same-Case exclusive ownership.
+- App 0.2.50-dev; Suite 0.1.4-dev; Connector Core 0.1.3-dev; Bridge 0.2.5-dev.
+
 ## 0.2.49-dev
 
 - Classify MCP/tooling and rejected Supervisor API ERROR records as non-actionable observations instead of system incidents.

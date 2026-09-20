@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.3-dev
+Version: 0.1.4-dev
 Schema: 1
 
 ## Purpose
@@ -109,14 +109,18 @@ order:
    combination, do not execute that treatment; seek a safer treatment first.
 10. After treatment and mandatory verification, use the atomic journal complete-next
     operation. It closes the current Case and checks the shared journal while holding the
-    journal gate.
+    journal gate. The outcome MUST be one of: SUCCESS, RESOLVED, HUMAN_REQUIRED,
+    UNSAFE_TO_TREAT, FAILED. Do not invent outcome labels.
 11. If complete-next assigns another Case, continue in the SAME real ChatGPT/API doctor
     session and immediately process that Case from step 2. The real dialog_id is immutable;
     only server-side assignment_seq / dialog_ref may become -2, -3, and so on.
 12. If complete-next reports no waiting Case, close/leave the doctor session.
-13. Never create parallel ownership for one Case. Never run two active treatments against
-    the same exact client. A conflict, stale ownership state or ambiguous target is a
-    stop/escalation condition.
+13. Never create parallel ownership for one Case. Different Cases for the same exact client
+    MAY be claimed and diagnosed concurrently by different Doctor sessions. State-changing
+    client commands for that exact client remain serialized by the Doctor Server command
+    bridge and the installed client's Connector Core; no surface adapter may bypass that
+    serialization. A same-Case ownership conflict, stale ownership state or ambiguous target
+    is a stop/escalation condition.
 
 The journal gate serializes ownership-changing journal operations only. Do not hold it
 while waiting for browser loading, model reasoning, diagnostics or treatment.
