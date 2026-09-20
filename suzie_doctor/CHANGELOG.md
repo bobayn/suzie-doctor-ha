@@ -1,3 +1,8 @@
+## 0.2.43-dev
+
+- Align Home Assistant UI translations and README with the autonomous Suzie Doctor risk policy; trust_mode no longer describes human approval.
+- No treatment-policy change from 0.2.42-dev; Suite/Connector/Skill remain 0.1.3-dev.
+
 ## 0.2.42-dev
 
 - Skill Core 0.1.3-dev adds the Autonomous Treatment Principle: Suzie Doctor itself judges harm probability, irreversibility and harm magnitude for each state-changing treatment.

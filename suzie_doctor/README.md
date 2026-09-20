@@ -6,7 +6,7 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: 0.2.42-dev
+- App: 0.2.43-dev
 - Integration bridge: `0.2.4-dev`
 - Protocol Pack: `0.1.4-dev`
 - Suite: 0.1.3-dev
@@ -19,7 +19,7 @@ The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 - one canonical Suzie Doctor Connector Core is bundled with the App and exposed through Web and API surface adapters with the same tool contract;
 - Connector Core now uses a validated adapter/capability registry; unavailable future families are explicit stubs with reasons rather than fake tools or shell fallbacks;
 - capability metadata distinguishes availability from permission and carries risk, exact-target policy, confirmation class, checkpoint and rollback support;
-- one canonical versioned Suzie Doctor Skill Core is bundled with the App; it contains operating methodology, not the proprietary Master Knowledge Base;\n- Doctor Server can route an exact-client command to the installed App over the existing TLS-pinned/Ed25519 client channel; the App pulls only its own client_id commands and executes them through the same Connector Core, with one command at a time per client and no model-supplied human-confirmation bypass;\n- Skill Core includes the shared Case journal lifecycle: get -> atomic claim -> diagnose/treat -> verify -> complete-next, reuse the same real dialog for queued follow-up Cases, and stop on duplicate claim or target conflict;
+- one canonical versioned Suzie Doctor Skill Core is bundled with the App; it contains operating methodology, not the proprietary Master Knowledge Base;\n- Doctor Server can route an exact-client command to the installed App over the existing TLS-pinned/Ed25519 client channel; the App pulls only its own client_id commands and executes them through the same Connector Core, with one command at a time per client and treatment risk is decided by Suzie Doctor through structured risk_assessment; transport/server human-confirmation is not the decision gate;\n- Skill Core includes the shared Case journal lifecycle: get -> atomic claim -> diagnose/treat -> verify -> complete-next, reuse the same real dialog for queued follow-up Cases, and stop on duplicate claim or target conflict;
 - Suite compatibility is checked at runtime and blocks all treatment fail-closed while leaving diagnostics available if App/Connector/Skill/Protocol/Bridge/Server-API contracts drift;
 - Health Guard, hourly checks, first-run/full/daily audit engine;
 - local background-loop error observability for Health Guard, hourly, daily and bridge-watch tasks;
