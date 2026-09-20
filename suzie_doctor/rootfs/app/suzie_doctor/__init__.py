@@ -1,8 +1,8 @@
 """Suzie Doctor App package."""
 
-APP_VERSION = "0.2.44-dev"
+APP_VERSION = "0.2.45-dev"
 PROTOCOL_PACK_VERSION = "0.1.4-dev"
-BRIDGE_VERSION = "0.2.4-dev"
+BRIDGE_VERSION = "0.2.5-dev"
 
 SUITE_VERSION = "0.1.3-dev"
 CONNECTOR_VERSION = "0.1.3-dev"

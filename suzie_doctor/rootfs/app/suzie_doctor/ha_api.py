@@ -101,6 +101,41 @@ class HomeAssistantClient:
         finally:
             await self.delete_state(entity_id)
 
+    async def subscribe_events(self, event_type: str, callback: Any) -> None:
+        """Subscribe to one HA event type until the socket disconnects."""
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=None)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.ws_connect("ws://supervisor/core/websocket", heartbeat=20) as ws:
+                first = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if not isinstance(first, dict) or first.get("type") != "auth_required":
+                    raise RuntimeError("Unexpected Home Assistant WebSocket greeting")
+                await ws.send_json({"type": "auth", "access_token": self.token})
+                auth = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if not isinstance(auth, dict) or auth.get("type") != "auth_ok":
+                    raise RuntimeError("Home Assistant WebSocket authentication failed")
+                await ws.send_json({"id": 1, "type": "subscribe_events", "event_type": str(event_type)})
+                subscribed = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                if (
+                    not isinstance(subscribed, dict)
+                    or subscribed.get("id") != 1
+                    or subscribed.get("type") != "result"
+                    or not subscribed.get("success", False)
+                ):
+                    raise RuntimeError(f"Home Assistant event subscription failed: {subscribed}")
+                while True:
+                    message = await ws.receive_json()
+                    if not isinstance(message, dict) or message.get("type") != "event":
+                        continue
+                    event = message.get("event")
+                    if not isinstance(event, dict):
+                        continue
+                    payload = event.get("data")
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    result = callback(dict(payload))
+                    if asyncio.iscoroutine(result):
+                        await result
+
     async def ws_command(self, command_type: str, **data: Any) -> Any:
         """Run one authenticated one-shot Home Assistant WebSocket command."""
         timeout = aiohttp.ClientTimeout(total=20)

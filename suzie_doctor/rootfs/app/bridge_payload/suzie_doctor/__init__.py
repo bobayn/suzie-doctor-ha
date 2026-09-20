@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+import hashlib
+import logging
+from pathlib import Path
+import threading
+import time
 from typing import Any
 
 from aiohttp import web
@@ -12,6 +17,63 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import entity_registry as er
 
 from .const import BRIDGE_VERSION, DOMAIN, PLATFORMS
+
+EVENT_DOCTOR_ERROR = "suzie_doctor_error"
+
+
+class DoctorErrorHandler(logging.Handler):
+    """Forward HA ERROR/CRITICAL records onto the internal HA event bus."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(level=logging.ERROR)
+        self.hass = hass
+        self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if record.levelno < logging.ERROR:
+                return
+            logger_name = str(record.name or "")
+            if "suzie_doctor" in logger_name.lower():
+                return
+            message = str(record.getMessage() or "")[:4000]
+            source = f"{Path(str(record.pathname or '')).name}:{int(record.lineno or 0)}"
+            raw = f"{logger_name}|{record.levelname}|{source}|{message}"
+            fingerprint = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
+            now = time.monotonic()
+            with self._lock:
+                previous = self._seen.get(fingerprint, 0.0)
+                if now - previous < 5.0:
+                    return
+                self._seen[fingerprint] = now
+                if len(self._seen) > 512:
+                    cutoff = now - 3600.0
+                    self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
+            exception = ""
+            if record.exc_info:
+                try:
+                    exception = logging.Formatter().formatException(record.exc_info)[:6000]
+                except Exception:
+                    exception = ""
+            payload = {
+                "level": str(record.levelname or "ERROR").upper(),
+                "logger": logger_name[:500],
+                "message": message,
+                "source": source[:500],
+                "exception": exception,
+                "fingerprint": fingerprint,
+                "bridge_version": BRIDGE_VERSION,
+                "timestamp": time.time(),
+            }
+            self.hass.loop.call_soon_threadsafe(
+                self.hass.bus.async_fire,
+                EVENT_DOCTOR_ERROR,
+                payload,
+            )
+        except Exception:
+            # A logging handler must never break Home Assistant logging.
+            return
 
 
 def _serialize_issue(domain: str, issue_id: str, issue: Any) -> dict[str, Any]:
@@ -105,6 +167,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(SnapshotView)
         hass.http.register_view(ReloadEntryView)
         hass.data[DOMAIN]["views_registered"] = True
+    if not hass.data[DOMAIN].get("error_handler"):
+        handler = DoctorErrorHandler(hass)
+        logging.getLogger().addHandler(handler)
+        hass.data[DOMAIN]["error_handler"] = handler
     hass.data[DOMAIN][entry.entry_id] = {"ready": True}
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -113,5 +179,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        domain_data = hass.data.get(DOMAIN, {})
+        domain_data.pop(entry.entry_id, None)
+        handler = domain_data.pop("error_handler", None)
+        if isinstance(handler, logging.Handler):
+            logging.getLogger().removeHandler(handler)
     return unloaded

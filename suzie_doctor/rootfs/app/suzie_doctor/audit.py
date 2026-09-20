@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
 
@@ -363,14 +364,22 @@ class Auditor:
         targeted_category = None
         if audit_type == "targeted" and reason and reason.startswith("health_guard:"):
             targeted_category = reason.split(":", 1)[1]
+        elif audit_type == "targeted" and reason == "ha_error_event":
+            targeted_category = "ha_runtime_error"
 
         if targeted_category is not None:
-            calls: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-                ("host", self.supervisor.host_info),
-                ("core_stats", self.supervisor.core_stats),
-            ]
-            if targeted_category == "storage":
-                calls.append(("backups", self.supervisor.backups_info))
+            if targeted_category == "ha_runtime_error":
+                calls = [
+                    ("ha_config", self.ha.get_config),
+                    ("bridge", self.ha.bridge_snapshot),
+                ]
+            else:
+                calls = [
+                    ("host", self.supervisor.host_info),
+                    ("core_stats", self.supervisor.core_stats),
+                ]
+                if targeted_category == "storage":
+                    calls.append(("backups", self.supervisor.backups_info))
             results = await asyncio.gather(*(_safe(call) for _, call in calls))
             names = [name for name, _ in calls]
         else:
@@ -393,6 +402,47 @@ class Auditor:
 
         current_problem_keys: set[str] = set()
         findings: list[dict[str, Any]] = []
+
+        if targeted_category == "ha_runtime_error":
+            event = dict(target_context or {})
+            level = str(event.get("level") or "ERROR").upper()
+            fingerprint = str(event.get("fingerprint") or "").strip()[:64]
+            logger_name = str(event.get("logger") or "homeassistant").strip()[:500]
+            message = str(event.get("message") or "Home Assistant runtime error").strip()[:4000]
+            source = str(event.get("source") or "").strip()[:500]
+            exception = str(event.get("exception") or "").strip()[:6000]
+            if not fingerprint:
+                raw_fingerprint = f"{logger_name}|{source}|{message}"
+                fingerprint = hashlib.sha256(
+                    raw_fingerprint.encode("utf-8", "replace")
+                ).hexdigest()[:24]
+            problem_key = f"ha_error:{fingerprint}"
+            current_problem_keys.add(problem_key)
+            incident_id = self.db.upsert_incident(
+                problem_key=problem_key,
+                incident_type="ha_runtime_error",
+                severity="CRITICAL" if level == "CRITICAL" else "PROBLEM",
+                title=f"Home Assistant runtime error: {logger_name}",
+                detail=f"{message} | source={source}",
+                simulated=simulated,
+            )
+            findings.append(
+                {
+                    "problem_key": problem_key,
+                    "incident_id": incident_id,
+                    "kind": "ha_runtime_error",
+                    "severity": "CRITICAL" if level == "CRITICAL" else "PROBLEM",
+                    "error_level": level,
+                    "logger": logger_name,
+                    "message": message,
+                    "source": source,
+                    "exception": exception,
+                    "fingerprint": fingerprint,
+                    "event_timestamp": event.get("timestamp"),
+                    "bridge_version": event.get("bridge_version"),
+                    "simulated": simulated,
+                }
+            )
 
         target_health_checks = {
             "thermal": ("cpu_temperature_c", 80.0),

@@ -1,3 +1,10 @@
+## 0.2.45-dev
+
+- Add event-driven Home Assistant runtime ERROR/CRITICAL wake path.
+- Bridge 0.2.5-dev forwards bounded ERROR/CRITICAL records as internal `suzie_doctor_error` events.
+- Doctor App subscribes continuously, deduplicates repeated fingerprints, runs a bounded targeted audit immediately, records `ha_runtime_error`, and consults Doctor Server for escalation.
+- Periodic Health Guard/hourly/daily scans remain as fallback; Doctor self-errors are excluded to prevent loops.
+
 ## 0.2.44-dev
 
 - Fix Release Gate incompatible-Suite regression test to supply the new Suzie Doctor autonomous risk assessment before exercising the Suite fail-closed gate.

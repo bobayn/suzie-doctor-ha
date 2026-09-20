@@ -85,6 +85,7 @@ class Runtime:
         self.api_connector = ApiConnectorAdapter(self.connector)
         self.legacy_knowledge_cleanup = self._remove_legacy_local_knowledge()
         self._audit_lock = asyncio.Lock()
+        self._ha_error_recent: dict[str, float] = {}
 
     def _remove_legacy_local_knowledge(self) -> dict[str, Any]:
         removed: list[str] = []
@@ -348,6 +349,52 @@ class Runtime:
                 self.record_background_error("bridge_watch", exc)
             await asyncio.sleep(60)
 
+    async def _handle_ha_error_event(self, payload: dict[str, Any]) -> None:
+        level = str(payload.get("level") or "").upper()
+        if level not in {"ERROR", "CRITICAL"}:
+            return
+        logger_name = str(payload.get("logger") or "")
+        if "suzie_doctor" in logger_name.lower():
+            return
+        fingerprint = str(payload.get("fingerprint") or "").strip()
+        if not fingerprint:
+            return
+        now = asyncio.get_running_loop().time()
+        previous = self._ha_error_recent.get(fingerprint, 0.0)
+        if now - previous < 300.0:
+            return
+        self._ha_error_recent[fingerprint] = now
+        if len(self._ha_error_recent) > 512:
+            cutoff = now - 3600.0
+            self._ha_error_recent = {k: v for k, v in self._ha_error_recent.items() if v >= cutoff}
+
+        for attempt in range(3):
+            result = await self.run_audit(
+                "targeted",
+                "ha_error_event",
+                target_context=dict(payload),
+            )
+            if result.get("result") != "BUSY":
+                self.record_background_ok("ha_error_events")
+                return
+            await asyncio.sleep(2 + attempt)
+        raise RuntimeError("HA error event could not acquire Doctor audit lock")
+
+    async def ha_error_event_loop(self) -> None:
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await self.ha.subscribe_events(
+                    "suzie_doctor_error",
+                    self._handle_ha_error_event,
+                )
+                raise RuntimeError("Home Assistant error event stream ended")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.record_background_error("ha_error_events", exc)
+                await asyncio.sleep(3)
+
     async def hourly_loop(self) -> None:
         await asyncio.sleep(60)
         while True:
@@ -521,6 +568,8 @@ class Runtime:
                         for key in (
                             "kind", "severity", "problem_key",
                             "category", "state", "reason",
+                            "error_level", "logger", "message", "source",
+                            "exception", "fingerprint", "event_timestamp",
                         )
                         if key in finding
                     },
@@ -3087,6 +3136,7 @@ async def on_startup(app: web.Application) -> None:
         asyncio.create_task(rt.hourly_loop(), name="hourly"),
         asyncio.create_task(rt.daily_loop(), name="daily"),
         asyncio.create_task(rt.bridge_watch_loop(), name="bridge_watch"),
+        asyncio.create_task(rt.ha_error_event_loop(), name="ha_error_events"),
         asyncio.create_task(rt.recommendation_loop(), name="recommendations"),
         asyncio.create_task(rt.server_watch_loop(), name="doctor_server_watch"),
         asyncio.create_task(
