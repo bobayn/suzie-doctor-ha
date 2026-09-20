@@ -66,8 +66,7 @@ Doctor Server
 → allowlisted primitives
 → verify/rollback
 
-Human confirmation is transport/session-owned context. A model/tool argument
-cannot manufacture explicit_confirmation.
+Treatment-risk judgment belongs to Suzie Doctor. execute=true carries a structured risk_assessment through the canonical tool arguments; transport/session context cannot substitute a human confirmation flag or server-side risk verdict.
 
 ## Existing HA/Supervisor treatment primitives
 

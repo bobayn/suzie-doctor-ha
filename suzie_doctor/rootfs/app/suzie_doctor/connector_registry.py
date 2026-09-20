@@ -25,6 +25,7 @@ _ALLOWED_CONFIRMATION_CLASSES = {
     "transport_verified",
     "protocol_defined",
     "human_required",
+    "autonomous_risk_review",
 }
 
 

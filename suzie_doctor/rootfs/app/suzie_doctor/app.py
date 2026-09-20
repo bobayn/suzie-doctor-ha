@@ -390,7 +390,7 @@ class Runtime:
         evidence: dict[str, Any],
         *,
         execute: bool = False,
-        explicit_confirmation: bool = False,
+        risk_assessment: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.doctor_server is None:
             raise DoctorServerError("Doctor Server is disabled")
@@ -434,7 +434,7 @@ class Runtime:
                             card,
                             context=execution_context,
                             trust_mode=self.options.trust_mode,
-                            explicit_confirmation=explicit_confirmation,
+                            risk_assessment=risk_assessment,
                             simulated=False,
                             developer_override=False,
                         )
@@ -489,8 +489,9 @@ class Runtime:
                         "doctor_app_version": APP_VERSION,
                         "protocol_pack_version": PROTOCOL_PACK_VERSION,
                     },
+                    "suzie_review_required": True,
                 },
-                execute=True,
+                execute=False,
             )
             consultations.append({
                 "disease_id": disease_id,
@@ -572,12 +573,11 @@ class Runtime:
                 if not command_id or not tool_name or not isinstance(arguments, dict):
                     raise RuntimeError("Doctor Server command envelope invalid")
 
-                # Never accept model/operator claims of human confirmation through
-                # this transport. Human confirmation remains transport-owned.
+                # Transport authenticates Case/client ownership only. Treatment risk
+                # judgment is supplied explicitly by Suzie Doctor in tool arguments.
                 trusted_context = {
                     "source": "doctor_server_command_bridge",
                     "case_id": int(command.get("case_id") or 0),
-                    "human_confirmation_verified": False,
                 }
 
                 try:
@@ -873,12 +873,20 @@ async def api_dev_server_diagnose(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="JSON body must be an object")
     execute = bool(body.pop("execute", False))
-    explicit_confirmation = bool(body.pop("explicit_confirmation", False))
+    if "explicit_confirmation" in body:
+        raise web.HTTPBadRequest(
+            text="explicit_confirmation is obsolete; use risk_assessment"
+        )
+    risk_assessment = body.pop("risk_assessment", None)
     try:
         result = await rt.doctor_server_diagnose(
             body,
             execute=execute,
-            explicit_confirmation=explicit_confirmation,
+            risk_assessment=(
+                dict(risk_assessment)
+                if isinstance(risk_assessment, dict)
+                else None
+            ),
         )
     except Exception as exc:
         return web.json_response(
@@ -1069,7 +1077,6 @@ async def api_dev_server_client_test(request: web.Request) -> web.Response:
                     "disease_id": manual_disease_id,
                 },
                 trust_mode="full_trust",
-                explicit_confirmation=True,
                 simulated=True,
                 developer_override=False,
             )
@@ -1945,7 +1952,13 @@ async def api_dev_generated_protocol_test(request: web.Request) -> web.Response:
                     "disease_id": "DISEASE-DEVELOPER-GENERATED-001",
                 },
                 trust_mode="safe_auto",
-                explicit_confirmation=True,
+                risk_assessment={
+                    "harm_probability": "LOW",
+                    "irreversibility": "REVERSIBLE",
+                    "harm_magnitude": "LOW",
+                    "decision": "PROCEED",
+                    "rationale": "Developer FakeHA test is reversible and has no live effect.",
+                },
                 simulated=True,
                 developer_override=False,
             )
@@ -1973,7 +1986,7 @@ async def api_dev_generated_protocol_test(request: web.Request) -> web.Response:
             "detail": calls,
         },
         {
-            "id": "generated_confirm_required_obeyed",
+            "id": "generated_autonomous_risk_review_obeyed",
             "pass": result.get("treatment_allowed") is True,
         },
     ]
@@ -2095,7 +2108,6 @@ async def api_dev_manual_protocol_test(request: web.Request) -> web.Response:
                     "disease_id": "DISEASE-DEVELOPER-MANUAL-001",
                 },
                 trust_mode="full_trust",
-                explicit_confirmation=True,
                 simulated=True,
             )
             env = {
@@ -2263,9 +2275,10 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         {},
     )
     add(
-        "human_confirmation_is_transport_owned",
-        diagnose_spec.get("confirmation_source")
-        == "trusted_adapter_context_only"
+        "autonomous_risk_decision_is_doctor_owned",
+        diagnose_spec.get("decision_source")
+        == "suzie_doctor_autonomous_risk_assessment"
+        and "risk_assessment" in (diagnose_spec.get("arguments") or [])
         and "explicit_confirmation"
         not in (diagnose_spec.get("arguments") or []),
     )
@@ -2308,13 +2321,13 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         evidence: dict[str, Any],
         *,
         execute: bool,
-        explicit_confirmation: bool,
+        risk_assessment: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return {
             "result": "FAKE_DIAGNOSIS",
             "evidence": dict(evidence),
             "execute": bool(execute),
-            "explicit_confirmation": bool(explicit_confirmation),
+            "risk_assessment": dict(risk_assessment or {}),
         }
 
     parity_connector = ConnectorCore(
@@ -2338,12 +2351,12 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
     parity_web_result = await parity_web.invoke(
         "doctor.diagnose",
         parity_args,
-        trusted_context={"human_confirmation_verified": False},
+        trusted_context={"source": "surface_parity_selftest"},
     )
     parity_api_result = await parity_api.invoke(
         "doctor.diagnose",
         parity_args,
-        trusted_context={"human_confirmation_verified": False},
+        trusted_context={"source": "surface_parity_selftest"},
     )
     add(
         "surface_same_semantics_for_same_input",
@@ -2388,7 +2401,13 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
             "automation_class": "CONFIRM_REQUIRED",
         },
         trust_mode="full_trust",
-        explicit_confirmation=True,
+        risk_assessment={
+            "harm_probability": "LOW",
+            "irreversibility": "REVERSIBLE",
+            "harm_magnitude": "LOW",
+            "decision": "PROCEED",
+            "rationale": "Compatibility test only.",
+        },
         developer_override=True,
     )
     add(
@@ -2396,6 +2415,22 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         allowed is False and reason == "suite_incompatible",
         {"allowed": allowed, "reason": reason},
     )
+
+    risk_card = {"protocol": {"status": "ACTIVE"}, "automation_class": "CONFIRM_REQUIRED"}
+    ok_low, why_low = rt.protocol_engine._treatment_allowed(
+        risk_card, trust_mode="safe_auto", developer_override=False,
+        risk_assessment={"harm_probability":"LOW","irreversibility":"REVERSIBLE","harm_magnitude":"MODERATE","decision":"PROCEED","rationale":"bounded reversible test"},
+    )
+    add("doctor_autonomous_reversible_risk_can_proceed", ok_low and why_low == "doctor_autonomous_risk_accepted", {"allowed": ok_low, "reason": why_low})
+    ok_high, why_high = rt.protocol_engine._treatment_allowed(
+        risk_card, trust_mode="full_trust", explicit_confirmation=True, developer_override=False,
+        risk_assessment={"harm_probability":"HIGH","irreversibility":"IRREVERSIBLE","harm_magnitude":"SUBSTANTIAL","decision":"PROCEED","rationale":"synthetic high-risk test"},
+    )
+    add("unacceptable_irreversible_risk_blocks_even_full_trust", (not ok_high) and why_high == "doctor_assessed_unacceptable_irreversible_risk", {"allowed": ok_high, "reason": why_high})
+    no_risk, why_none = rt.protocol_engine._treatment_allowed(
+        risk_card, trust_mode="full_trust", explicit_confirmation=True, developer_override=False, risk_assessment=None,
+    )
+    add("doctor_risk_assessment_is_required", (not no_risk) and why_none == "doctor_risk_assessment_required", {"allowed": no_risk, "reason": why_none})
 
     old_connector_manifest = json.loads(json.dumps(rt.suite.manifest))
     old_connector_manifest["connector"]["interface_version"] = 0

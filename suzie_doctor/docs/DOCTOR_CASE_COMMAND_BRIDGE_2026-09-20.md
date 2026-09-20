@@ -10,4 +10,4 @@ Only one command is active inside one client App at a time. Claimed commands are
 
 After verified completion, complete-next may assign the next waiting Case to the same real dialog. dialog_id never changes; assignment_seq/dialog_ref provides -2, -3 style references.
 
-Safety: exact client only, no arbitrary shell/eval, no auto Core restart, signed treatment path remains authoritative, and safe_auto still blocks CONFIRM_REQUIRED treatment without trusted confirmation.
+Safety: exact client only, no arbitrary shell/eval, no auto Core restart, signed treatment path remains authoritative, and every state-changing treatment requires Suzie Doctor autonomous risk_assessment. CONFIRM_REQUIRED no longer means human approval.

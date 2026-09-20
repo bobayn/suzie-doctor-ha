@@ -18,7 +18,7 @@ Doctor Server /health reported:
   - MANUAL_GUIDANCE: 82
   - MANUAL_PARTIAL_MAPPING: 8
 - unsupported primitives: 0
-- all ACTIVE: CONFIRM_REQUIRED
+- all ACTIVE: CONFIRM_REQUIRED (legacy class name; now requires Suzie Doctor autonomous risk review, not human approval)
 
 The live aggregate is consistent with the accepted baseline.
 

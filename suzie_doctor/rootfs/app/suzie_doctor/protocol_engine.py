@@ -1630,7 +1630,8 @@ class ProtocolEngine:
         card: dict[str, Any],
         *,
         trust_mode: str,
-        explicit_confirmation: bool,
+        explicit_confirmation: bool = False,
+        risk_assessment: dict[str, Any] | None = None,
         developer_override: bool,
     ) -> tuple[bool, str]:
         status = str(card["protocol"]["status"])
@@ -1652,11 +1653,41 @@ class ProtocolEngine:
             return False, "diagnostic_only"
         if trust_mode == "manual":
             return False, "manual_trust_mode"
-        if automation_class == "CONFIRM_REQUIRED" and not (
-            trust_mode == "full_trust" or explicit_confirmation
+
+        risk = dict(risk_assessment or {})
+        if not risk:
+            return False, "doctor_risk_assessment_required"
+        probability = str(risk.get("harm_probability") or "").upper()
+        irreversibility = str(risk.get("irreversibility") or "").upper()
+        magnitude = str(risk.get("harm_magnitude") or "").upper()
+        decision = str(risk.get("decision") or "").upper()
+        rationale = str(risk.get("rationale") or "").strip()
+
+        valid = (
+            probability in {"LOW", "MEDIUM", "HIGH"}
+            and irreversibility in {
+                "REVERSIBLE",
+                "PARTIALLY_REVERSIBLE",
+                "IRREVERSIBLE",
+            }
+            and magnitude in {"LOW", "MODERATE", "SUBSTANTIAL", "CATASTROPHIC"}
+            and decision in {"PROCEED", "AVOID"}
+            and bool(rationale)
+        )
+        if not valid:
+            return False, "doctor_risk_assessment_invalid"
+        if decision != "PROCEED":
+            return False, "doctor_decision_avoid"
+        if (
+            irreversibility == "IRREVERSIBLE"
+            and probability == "HIGH"
+            and magnitude in {"SUBSTANTIAL", "CATASTROPHIC"}
         ):
-            return False, "confirmation_required"
-        return True, "allowed"
+            return False, "doctor_assessed_unacceptable_irreversible_risk"
+
+        # explicit_confirmation is intentionally ignored. Human confirmation is not
+        # a substitute for Suzie Doctor's autonomous risk judgment.
+        return True, "doctor_autonomous_risk_accepted"
 
     async def diagnose_card(
         self,
@@ -1723,6 +1754,7 @@ class ProtocolEngine:
         incident_id: str | None = None,
         trust_mode: str = "safe_auto",
         explicit_confirmation: bool = False,
+        risk_assessment: dict[str, Any] | None = None,
         simulated: bool = False,
         developer_override: bool = False,
     ) -> dict[str, Any]:
@@ -1737,6 +1769,8 @@ class ProtocolEngine:
             "automation_class": card["automation_class"],
             "simulated": simulated,
         }
+        if isinstance(risk_assessment, dict):
+            response["doctor_risk_assessment"] = dict(risk_assessment)
         if str(card["protocol"]["status"]) == "MANUAL":
             response["manual_guidance"] = card.get("manual") or {}
 
@@ -1769,6 +1803,7 @@ class ProtocolEngine:
                 card,
                 trust_mode=trust_mode,
                 explicit_confirmation=explicit_confirmation,
+                risk_assessment=risk_assessment,
                 developer_override=developer_override,
             )
             response["treatment_allowed"] = allowed

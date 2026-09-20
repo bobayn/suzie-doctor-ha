@@ -1,15 +1,15 @@
 {
   "suite_name": "Suzie Doctor Suite",
-  "suite_version": "0.1.2-dev",
-  "app_version": "0.2.41-dev",
+  "suite_version": "0.1.3-dev",
+  "app_version": "0.2.42-dev",
   "connector": {
-    "version": "0.1.2-dev",
+    "version": "0.1.3-dev",
     "interface_version": 1,
     "canonical_core": true,
     "schema_version": 1
   },
   "skill": {
-    "version": "0.1.2-dev",
+    "version": "0.1.3-dev",
     "schema_version": 1,
     "canonical_core": true,
     "connector_interface_version": 1
@@ -33,7 +33,9 @@
     "treatment_fail_closed_on_incompatibility": true,
     "master_knowledge_base_local": false,
     "arbitrary_shell": false,
-    "arbitrary_eval": false
+    "arbitrary_eval": false,
+    "autonomous_risk_decision": "suzie_doctor",
+    "human_confirmation_for_risk": false
   },
   "doctor_server_command_bridge": {
     "version": 1,

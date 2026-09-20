@@ -22,6 +22,30 @@ class ConnectorError(RuntimeError):
     pass
 
 
+def normalize_doctor_risk_assessment(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ConnectorError(
+            "state-changing doctor.diagnose requires Suzie Doctor risk_assessment"
+        )
+    allowed = {
+        "harm_probability": {"LOW", "MEDIUM", "HIGH"},
+        "irreversibility": {"REVERSIBLE", "PARTIALLY_REVERSIBLE", "IRREVERSIBLE"},
+        "harm_magnitude": {"LOW", "MODERATE", "SUBSTANTIAL", "CATASTROPHIC"},
+        "decision": {"PROCEED", "AVOID"},
+    }
+    normalized: dict[str, str] = {}
+    for key, choices in allowed.items():
+        item = str(value.get(key) or "").strip().upper()
+        if item not in choices:
+            raise ConnectorError(f"risk_assessment.{key} is invalid")
+        normalized[key] = item
+    rationale = str(value.get("rationale") or "").strip()
+    if not rationale:
+        raise ConnectorError("risk_assessment.rationale is required")
+    normalized["rationale"] = rationale[:2000]
+    return normalized
+
+
 DiagnoseCallback = Callable[..., Awaitable[dict[str, Any]]]
 
 
@@ -136,11 +160,14 @@ class ConnectorCore:
             execute = bool(args.get("execute", False))
             if "explicit_confirmation" in args:
                 raise ConnectorError(
-                    "explicit_confirmation is transport-owned and must not be supplied "
-                    "as a model tool argument"
+                    "explicit_confirmation is obsolete; Suzie Doctor must supply "
+                    "risk_assessment instead"
                 )
-            explicit_confirmation = bool(
-                trusted.get("human_confirmation_verified", False)
+            risk_raw = args.get("risk_assessment")
+            risk_assessment = (
+                normalize_doctor_risk_assessment(risk_raw)
+                if execute or risk_raw is not None
+                else None
             )
             if execute and not self.suite.compatible:
                 return {
@@ -151,7 +178,7 @@ class ConnectorCore:
             return await self.diagnose_callback(
                 evidence,
                 execute=execute,
-                explicit_confirmation=explicit_confirmation,
+                risk_assessment=risk_assessment,
             )
 
         if tool_name == "ha.config.read":

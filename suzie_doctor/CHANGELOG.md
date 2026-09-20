@@ -1,3 +1,13 @@
+## 0.2.42-dev
+
+- Skill Core 0.1.3-dev adds the Autonomous Treatment Principle: Suzie Doctor itself judges harm probability, irreversibility and harm magnitude for each state-changing treatment.
+- Suzie Doctor does not execute a treatment it assesses as IRREVERSIBLE + HIGH probability + SUBSTANTIAL/CATASTROPHIC harm; it seeks a safer/reversible path instead.
+- CONFIRM_REQUIRED is now legacy metadata for explicit autonomous Doctor risk review, not a human approval gate. full_trust or legacy confirmation cannot replace risk_assessment.
+- doctor.diagnose execute=true now carries structured risk_assessment through the same Connector Core on Web and API surfaces.
+- Confirmed server protocols discovered by background audit are routed to Suzie Doctor for risk review instead of being locally executed without Doctor judgment.
+- Owner absolute prohibitions and hard mechanical invariants remain binding. HUMAN_ACTION_REQUIRED is reserved for physical work, credentials/OAuth, or unavailable capabilities.
+- App 0.2.42-dev; Suite/Connector/Skill 0.1.3-dev; Bridge 0.2.4-dev; Emergency Pack 0.1.4-dev.
+
 ## 0.2.41-dev
 
 - Added the exact-client Doctor Server command bridge. The installed App polls outbound over the existing TLS-pinned, Ed25519-authenticated server channel; commands are bound to client_id and execute only through ConnectorCore.invoke.
