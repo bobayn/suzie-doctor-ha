@@ -557,7 +557,7 @@ class Database:
 
     def incidents(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT * FROM incidents WHERE status != 'DISCARDED' AND simulated=0 ORDER BY opened_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM incidents WHERE status != 'DISCARDED' AND simulated=0 ORDER BY updated_at DESC, opened_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
 

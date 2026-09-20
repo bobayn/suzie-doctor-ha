@@ -1,3 +1,12 @@
+## 0.2.52-dev
+
+- Incident UI renders persisted UTC timestamps in `Europe/Kyiv` local time.
+- Incident rows show both opened and last-updated times.
+- Incident list is ordered by `updated_at` (last activity), with `opened_at` as a stable secondary key.
+- Audit rows show localized started/finished times.
+- Recurrence/episode semantics and incident persistence logic are unchanged.
+- Suite remains 0.1.5-dev; Skill Core 0.1.5-dev; Connector Core 0.1.3-dev; Bridge 0.2.5-dev.
+
 ## 0.2.51-dev
 
 - Skill Core 0.1.5-dev adds a mandatory Restart / Reboot Fallback Before Human Escalation.
