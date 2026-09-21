@@ -163,12 +163,24 @@ class ConnectorCore:
                     "explicit_confirmation is obsolete; Suzie Doctor must supply "
                     "risk_assessment instead"
                 )
+            actor = str(trusted.get("execution_actor") or "field_suzie").strip().lower()
+            if actor not in {"field_suzie", "family_doctor"}:
+                raise ConnectorError("trusted execution_actor is invalid")
             risk_raw = args.get("risk_assessment")
-            risk_assessment = (
-                normalize_doctor_risk_assessment(risk_raw)
-                if execute or risk_raw is not None
-                else None
-            )
+            if actor == "field_suzie":
+                risk_assessment = (
+                    normalize_doctor_risk_assessment(risk_raw)
+                    if execute or risk_raw is not None
+                    else None
+                )
+            else:
+                # Family Doctor receives execution authority only from trusted
+                # server/internal context.  It cannot be selected by tool args.
+                risk_assessment = (
+                    normalize_doctor_risk_assessment(risk_raw)
+                    if risk_raw is not None
+                    else None
+                )
             if execute and not self.suite.compatible:
                 return {
                     "result": "TREATMENT_BLOCKED",
@@ -179,6 +191,7 @@ class ConnectorCore:
                 evidence,
                 execute=execute,
                 risk_assessment=risk_assessment,
+                execution_actor=actor,
             )
 
         if tool_name == "ha.config.read":
