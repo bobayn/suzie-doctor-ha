@@ -1521,6 +1521,23 @@ async def api_dev_mount_recovery_test(request: web.Request) -> web.Response:
                 in test_db.open_problem_keys(("supervisor_mount:",))
             )
 
+            rejected_supervisor = FakeSupervisor(
+                "dev_mount_rejected",
+                after_state="inactive",
+                reload_accepted=False,
+            )
+            rejected_auditor = Auditor(
+                test_db,
+                rejected_supervisor,
+                fake_ha,
+                rt.protocol_engine,
+            )
+            rejected_result = await rejected_auditor.run(
+                "developer_mount_recovery",
+                "simulated_mount_rejected",
+            )
+            rejected_finding = mount_finding(rejected_result)
+
             cases = [
                 {
                     "id": "success_reload_once",
@@ -1569,8 +1586,8 @@ async def api_dev_mount_recovery_test(request: web.Request) -> web.Response:
                 },
                 {
                     "id": "failure_preserves_supervisor_reason",
-                    "pass": (failure_first_finding.get("reload_result") or {}).get("error") == "Mount is not reachable",
-                    "actual": (failure_first_finding.get("reload_result") or {}).get("error"),
+                    "pass": (rejected_finding.get("reload_result") or {}).get("error") == "Mount is not reachable",
+                    "actual": (rejected_finding.get("reload_result") or {}).get("error"),
                     "expected": "Mount is not reachable",
                 },
                 {

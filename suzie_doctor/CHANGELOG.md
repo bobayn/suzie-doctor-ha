@@ -1,3 +1,8 @@
+## 0.2.55-dev
+
+- Mount-recovery regression now separately covers an accepted reload that stays inactive and a Supervisor-rejected reload with a preserved reason.
+- Runtime behavior from 0.2.54-dev is unchanged.
+
 ## 0.2.54-dev
 
 - Supervisor mount recovery records the exact Home Assistant Repair-equivalent action (`supervisor.mount.reload`).
