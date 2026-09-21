@@ -558,9 +558,18 @@ class Auditor:
                     "MOUNT_RELOAD_ATTEMPT",
                     {"mount_name": mount_name, "state": "inactive"},
                 )
-                reloaded = await self.supervisor.reload_mount(mount_name)
+                detailed_reload = getattr(self.supervisor, "reload_mount_detailed", None)
+                if callable(detailed_reload):
+                    reload_result = await detailed_reload(mount_name)
+                    reloaded = bool(reload_result.get("ok"))
+                else:
+                    reloaded = await self.supervisor.reload_mount(mount_name)
+                    reload_result = {"ok": reloaded}
                 finding["reload_attempted"] = True
                 finding["reload_accepted"] = reloaded
+                finding["recovery_action"] = "supervisor.mount.reload"
+                finding["recovery_source"] = "ha_repair_reload_equivalent"
+                finding["reload_result"] = reload_result
                 if reloaded:
                     await asyncio.sleep(1.0)
                     verify_mounts, verify_error = await _safe(self.supervisor.mounts_info)

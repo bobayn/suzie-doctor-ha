@@ -1438,13 +1438,17 @@ async def api_dev_mount_recovery_test(request: web.Request) -> web.Response:
                 ]
             }
 
-        async def reload_mount(self, name: str) -> bool:
+        async def reload_mount_detailed(self, name: str) -> dict[str, Any]:
             if name != self.mount_name:
-                return False
+                return {"ok": False, "error": "unknown_mount"}
             self.reload_calls += 1
             if self.reload_accepted:
                 self.state = self.after_state
-            return self.reload_accepted
+                return {"ok": True, "status": 200, "detail": "accepted"}
+            return {"ok": False, "status": 400, "error": "Mount is not reachable"}
+
+        async def reload_mount(self, name: str) -> bool:
+            return bool((await self.reload_mount_detailed(name)).get("ok"))
 
     class FakeHA:
         async def get_config(self) -> dict[str, Any]:
@@ -1547,6 +1551,27 @@ async def api_dev_mount_recovery_test(request: web.Request) -> web.Response:
                     "pass": failure_first_finding.get("repeat_diagnosis_state") == "inactive",
                     "actual": failure_first_finding.get("repeat_diagnosis_state"),
                     "expected": "inactive",
+                },
+                {
+                    "id": "failure_records_repair_equivalent_action",
+                    "pass": (
+                        failure_first_finding.get("recovery_action") == "supervisor.mount.reload"
+                        and failure_first_finding.get("recovery_source") == "ha_repair_reload_equivalent"
+                    ),
+                    "actual": {
+                        "action": failure_first_finding.get("recovery_action"),
+                        "source": failure_first_finding.get("recovery_source"),
+                    },
+                    "expected": {
+                        "action": "supervisor.mount.reload",
+                        "source": "ha_repair_reload_equivalent",
+                    },
+                },
+                {
+                    "id": "failure_preserves_supervisor_reason",
+                    "pass": (failure_first_finding.get("reload_result") or {}).get("error") == "Mount is not reachable",
+                    "actual": (failure_first_finding.get("reload_result") or {}).get("error"),
+                    "expected": "Mount is not reachable",
                 },
                 {
                     "id": "failure_first_attempt_once",

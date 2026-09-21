@@ -1,3 +1,11 @@
+## 0.2.54-dev
+
+- Supervisor mount recovery records the exact Home Assistant Repair-equivalent action (`supervisor.mount.reload`).
+- Rejected mount reloads preserve the Supervisor status/error instead of collapsing to a bare false result.
+- This makes it explicit when local Doctor already pulled HA's safe Reload thread and why it failed.
+- Existing one-attempt-per-incident-episode bound is unchanged; destructive actions remain excluded.
+- Suite 0.1.6-dev; Skill Core 0.1.6-dev; Connector Core 0.1.3-dev; Bridge 0.2.5-dev.
+
 ## 0.2.53-dev
 
 - Skill Core 0.1.6-dev makes reversibility an explicit treatment-order invariant.

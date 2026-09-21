@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from typing import Any
 from urllib.parse import quote
 
@@ -107,15 +108,35 @@ class SupervisorClient:
     async def mounts_info(self) -> dict[str, Any]:
         return await self._request("GET", "/mounts") or {}
 
-    async def reload_mount(self, name: str) -> bool:
+    async def reload_mount_detailed(self, name: str) -> dict[str, Any]:
         safe_name = str(name).strip()
         if not safe_name or "/" in safe_name or "\x00" in safe_name:
-            return False
+            return {"ok": False, "error": "invalid_mount_name"}
+        path = f"/mounts/{quote(safe_name, safe='')}/reload"
+        timeout = aiohttp.ClientTimeout(total=30)
         try:
-            await self._request("POST", f"/mounts/{quote(safe_name, safe='')}/reload", json={})
-            return True
-        except aiohttp.ClientResponseError:
-            return False
+            async with aiohttp.ClientSession(timeout=timeout, headers=self.headers) as session:
+                async with session.post(self.base + path, json={}) as response:
+                    raw = await response.text()
+                    detail = raw[:1000]
+                    try:
+                        payload = json.loads(raw) if raw else {}
+                    except Exception:
+                        payload = {}
+                    if isinstance(payload, dict):
+                        detail = str(payload.get("message") or payload.get("error") or detail)[:1000]
+                    if 200 <= response.status < 300:
+                        return {"ok": True, "status": response.status, "detail": detail}
+                    return {
+                        "ok": False,
+                        "status": response.status,
+                        "error": detail or response.reason or "mount_reload_rejected",
+                    }
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1000]}
+
+    async def reload_mount(self, name: str) -> bool:
+        return bool((await self.reload_mount_detailed(name)).get("ok"))
 
     async def addons(self) -> dict[str, Any]:
         return await self._request("GET", "/addons") or {}
