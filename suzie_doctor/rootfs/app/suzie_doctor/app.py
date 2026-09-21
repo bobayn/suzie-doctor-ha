@@ -463,6 +463,7 @@ class Runtime:
         *,
         execute: bool = False,
         risk_assessment: dict[str, Any] | None = None,
+        execution_actor: str = "field_suzie",
     ) -> dict[str, Any]:
         if self.doctor_server is None:
             raise DoctorServerError("Doctor Server is disabled")
@@ -507,6 +508,7 @@ class Runtime:
                             context=execution_context,
                             trust_mode=self.options.trust_mode,
                             risk_assessment=risk_assessment,
+                            execution_actor=execution_actor,
                             simulated=False,
                             developer_override=False,
                         )
@@ -561,9 +563,10 @@ class Runtime:
                         "doctor_app_version": APP_VERSION,
                         "protocol_pack_version": PROTOCOL_PACK_VERSION,
                     },
-                    "suzie_review_required": True,
+                    "routing_intent": "FAMILY_DOCTOR_PROTOCOL_OR_PATIENT_JOURNAL",
                 },
-                execute=False,
+                execute=True,
+                execution_actor="family_doctor",
             )
             consultations.append({
                 "disease_id": disease_id,
@@ -644,6 +647,7 @@ class Runtime:
                     "system": {
                         "doctor_app_version": APP_VERSION,
                     },
+                    "routing_intent": "PATIENT_JOURNAL_HOUSE_REVIEW",
                 },
                 execute=False,
             )
@@ -695,6 +699,9 @@ class Runtime:
                 trusted_context = {
                     "source": "doctor_server_command_bridge",
                     "case_id": int(command.get("case_id") or 0),
+                    "execution_actor": str(
+                        command.get("execution_actor") or "field_suzie"
+                    ),
                 }
 
                 try:
