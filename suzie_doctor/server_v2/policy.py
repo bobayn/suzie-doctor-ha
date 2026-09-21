@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-HOUSE_PROJECT_ID = "g-p-6ab184e457cc8191afad64d3cc104b3a"  # corrected below
 HOUSE_PROJECT_ID = "g-p-6ab184e457cc819182e5230e09fdfc18"
 WILSON_PROJECT_ID = "g-p-6ab1850655508191afad64d3cc104b3a"
 
