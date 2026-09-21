@@ -694,8 +694,10 @@ class Runtime:
                 if not command_id or not tool_name or not isinstance(arguments, dict):
                     raise RuntimeError("Doctor Server command envelope invalid")
 
-                # Transport authenticates Case/client ownership only. Treatment risk
-                # judgment is supplied explicitly by Suzie Doctor in tool arguments.
+                # Transport authenticates exact Case/client routing. The signed server
+                # command also supplies the trusted execution role. Field Suzie still
+                # supplies contextual risk in tool arguments; Family Doctor can use only
+                # the published ACTIVE deterministic path allowed by ProtocolEngine.
                 trusted_context = {
                     "source": "doctor_server_command_bridge",
                     "case_id": int(command.get("case_id") or 0),
@@ -2599,6 +2601,46 @@ async def api_dev_suite_test(request: web.Request) -> web.Response:
         risk_card, trust_mode="full_trust", explicit_confirmation=True, developer_override=False, risk_assessment=None,
     )
     add("doctor_risk_assessment_is_required", (not no_risk) and why_none == "doctor_risk_assessment_required", {"allowed": no_risk, "reason": why_none})
+
+    family_auto_card = {"protocol": {"status": "ACTIVE"}, "automation_class": "AUTO_SAFE"}
+    family_auto, family_auto_reason = rt.protocol_engine._treatment_allowed(
+        family_auto_card,
+        trust_mode="safe_auto",
+        execution_actor="family_doctor",
+        developer_override=False,
+        risk_assessment=None,
+    )
+    add(
+        "family_doctor_active_auto_safe_without_ai_review",
+        family_auto and family_auto_reason == "family_doctor_approved_active_auto_safe",
+        {"allowed": family_auto, "reason": family_auto_reason},
+    )
+    family_confirm_safe, family_confirm_safe_reason = rt.protocol_engine._treatment_allowed(
+        risk_card,
+        trust_mode="safe_auto",
+        execution_actor="family_doctor",
+        developer_override=False,
+        risk_assessment=None,
+    )
+    add(
+        "family_doctor_confirm_required_needs_field_review_in_safe_auto",
+        (not family_confirm_safe)
+        and family_confirm_safe_reason == "family_doctor_field_review_required",
+        {"allowed": family_confirm_safe, "reason": family_confirm_safe_reason},
+    )
+    family_confirm_full, family_confirm_full_reason = rt.protocol_engine._treatment_allowed(
+        risk_card,
+        trust_mode="full_trust",
+        execution_actor="family_doctor",
+        developer_override=False,
+        risk_assessment=None,
+    )
+    add(
+        "family_doctor_confirm_required_runs_in_full_trust_without_field_ai",
+        family_confirm_full
+        and family_confirm_full_reason == "family_doctor_approved_active_full_trust",
+        {"allowed": family_confirm_full, "reason": family_confirm_full_reason},
+    )
 
     old_connector_manifest = json.loads(json.dumps(rt.suite.manifest))
     old_connector_manifest["connector"]["interface_version"] = 0
