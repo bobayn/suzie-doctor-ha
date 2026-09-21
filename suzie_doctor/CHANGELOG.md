@@ -1,3 +1,11 @@
+## 0.2.53-dev
+
+- Skill Core 0.1.6-dev makes reversibility an explicit treatment-order invariant.
+- Safe retry/reload/restart/reboot must be considered before destructive repair when relevant.
+- Delete/wipe/reset/remove/recreate operations are never generic recovery fallbacks.
+- Destructive treatment requires an exact signed Protocol path, checkpoint/recovery path and normal autonomous-risk/owner-prohibition gates.
+- Suite 0.1.6-dev; Connector Core 0.1.3-dev; Bridge 0.2.5-dev.
+
 ## 0.2.52-dev
 
 - Incident UI renders persisted UTC timestamps in `Europe/Kyiv` local time.
