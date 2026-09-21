@@ -45,6 +45,10 @@ jobs:
           print("SKILL_HASH_PASS", actual)
           PY
 
+      - name: Doctor v2 policy regression
+        working-directory: suzie_doctor/server_migration_v2
+        run: python test_policy.py
+
       - name: Doctor v2 state regression
         working-directory: suzie_doctor/server_migration_v2
         run: python test_doctor_v2_store.py
