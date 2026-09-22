@@ -1,0 +1,14 @@
+{
+  "bind": "192.168.0.105",
+  "port": 8790,
+  "database_path": "/var/lib/suzie-doctor-server/server.sqlite3",
+  "call_lab_url": "http://127.0.0.1:8795",
+  "cdp_list_url": "http://127.0.0.1:9223/json/list",
+  "max_ai_doctors": 4,
+  "web_dispatch_enabled": true,
+  "api_transport_enabled": false,
+  "auto_escalate_to_suzie": true,
+  "doctor_v2_dispatch_enabled": true,
+  "field_project_url": "https://chatgpt.com/g/g-p-REPLACE_FIELD_PROJECT",
+  "wilson_nightly_hour_local": 5
+}

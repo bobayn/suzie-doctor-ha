@@ -1,3 +1,4 @@
+from pathlib import Path
 from policy import (
     RoleQuota,
     HOUSE_PROJECT_ID,
@@ -35,7 +36,20 @@ def main() -> None:
     assert family_doctor_or_house(approved_active_protocol=True) == "FAMILY_DOCTOR"
     assert family_doctor_or_house(approved_active_protocol=False) == "PATIENT_JOURNAL_HOUSE"
 
-    print("PASS doctor_server_v2_policy")
+    # Existing CI already runs this policy test. Compile the verified live Web runtime
+# here as well so runtime syntax stays covered without requiring a workflow-file update.
+import py_compile
+repo_root = Path(__file__).resolve().parents[2]
+runtime_files = [
+    *sorted((repo_root / "suzie_doctor/live_runtime/doctor_server").glob("*.py")),
+    repo_root / "suzie_doctor/live_runtime/doctor_mcp/server.py",
+    repo_root / "suzie_doctor/live_runtime/suzie_home_mcp/server.py",
+    repo_root / "suzie_doctor/live_runtime/call_lab/server.py",
+]
+for runtime_file in runtime_files:
+    py_compile.compile(str(runtime_file), doraise=True)
+
+print("PASS doctor_server_v2_policy")
 
 if __name__ == "__main__":
     main()
