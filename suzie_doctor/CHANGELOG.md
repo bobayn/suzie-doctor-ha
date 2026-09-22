@@ -1,3 +1,9 @@
+## 0.2.58-dev — 2026-09-22
+
+- Customer Journal now starts at feature introduction instead of retroactively turning historical RESOLVED technical rows into Family Doctor achievements.
+- Removes the temporary 0.2.57 historical backfill entries on startup.
+- Filters controlled Web E2E and migration smoke House events using the durable event source/fingerprint and controlled markers.
+
 ## 0.2.57-dev — 2026-09-22
 
 - Reworked the customer-facing Incidents tab into a Customer Journal. Raw technical OPEN/error rows no longer present themselves as unresolved customer problems.

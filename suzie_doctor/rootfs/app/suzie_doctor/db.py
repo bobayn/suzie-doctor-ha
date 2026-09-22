@@ -144,16 +144,13 @@ class Database:
         if "disease_id" not in incident_columns:
             self.conn.execute("ALTER TABLE incidents ADD COLUMN disease_id TEXT")
 
-        for row in self.conn.execute(
-            """SELECT * FROM incidents
-               WHERE status='RESOLVED' AND resolved_at IS NOT NULL AND simulated=0
-               ORDER BY resolved_at ASC"""
-        ).fetchall():
-            self._record_family_resolution(
-                row,
-                "Historical resolved incident imported into Customer Journal.",
-                str(row["resolved_at"]),
-            )
+        # Customer Journal starts when the feature exists. Do not turn old
+        # technical RESOLVED rows into retroactive Doctor achievements. Remove
+        # the one-time 0.2.57 development backfill if that build created it.
+        self.conn.execute(
+            "DELETE FROM customer_journal WHERE source_json LIKE ?",
+            ("%Historical resolved incident imported into Customer Journal.%",),
+        )
 
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
