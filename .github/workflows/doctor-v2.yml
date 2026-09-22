@@ -1,0 +1,75 @@
+name: Doctor v2 migration checks
+
+on:
+  pull_request:
+    paths:
+      - "suzie_doctor/**"
+      - ".github/workflows/doctor-v2.yml"
+  push:
+    branches:
+      - "doctor-house-wilson-v2-20260921"
+    paths:
+      - "suzie_doctor/**"
+      - ".github/workflows/doctor-v2.yml"
+
+jobs:
+  doctor-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile modified Python
+        run: |
+          python -m py_compile             suzie_doctor/rootfs/app/suzie_doctor/__init__.py             suzie_doctor/rootfs/app/suzie_doctor/app.py             suzie_doctor/rootfs/app/suzie_doctor/connector.py             suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py             suzie_doctor/rootfs/app/suzie_doctor/suite.py             suzie_doctor/server_migration_v2/doctor_v2_store.py             suzie_doctor/server_migration_v2/doctor_v2_migrate.py             suzie_doctor/server_migration_v2/test_doctor_v2_store.py
+
+      - name: Validate JSON files
+        run: |
+          python -m json.tool suzie_doctor/rootfs/app/suite/manifest.json >/dev/null
+          python -m json.tool suzie_doctor/rootfs/app/suzie_doctor_skill/metadata.json >/dev/null
+          python -m json.tool suzie_doctor/server_migration_v2/doctor_v2_policy.json >/dev/null
+
+      - name: Verify canonical Skill hash
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          skill = Path("suzie_doctor/rootfs/app/suzie_doctor_skill/SKILL.md")
+          meta = json.loads(Path("suzie_doctor/rootfs/app/suzie_doctor_skill/metadata.json").read_text())
+          actual = hashlib.sha256(skill.read_bytes()).hexdigest()
+          assert actual == meta["sha256"], (actual, meta["sha256"])
+          assert meta["version"] == "0.1.7-dev"
+          print("SKILL_HASH_PASS", actual)
+          PY
+
+      - name: Doctor v2 policy regression
+        working-directory: suzie_doctor/server_migration_v2
+        run: python test_policy.py
+
+      - name: Doctor v2 state regression
+        working-directory: suzie_doctor/server_migration_v2
+        run: python test_doctor_v2_store.py
+
+      - name: Manifest policy assertions
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path("suzie_doctor/rootfs/app/suite/manifest.json").read_text())
+          a = m["doctor_architecture"]
+          assert a["roles"] == {
+              "total_ai_slots": 6,
+              "field_suzie_max": 4,
+              "house_reserved": 1,
+              "wilson_reserved": 1,
+          }
+          assert a["web_policy"]["session_max_minutes"] == 10
+          assert a["web_policy"]["dialog_max_sessions"] == 10
+          assert a["web_policy"]["natural_completion_closes_dialog"] is True
+          assert a["protocol_admission"]["legacy_statuses_grandfathered"] is True
+          assert a["protocol_admission"]["new_protocol_internal_confirmations_required"] == 3
+          print("DOCTOR_V2_MANIFEST_PASS")
+          PY

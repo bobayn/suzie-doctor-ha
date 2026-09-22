@@ -1,7 +1,7 @@
 {
   "suite_name": "Suzie Doctor Suite",
-  "suite_version": "0.1.6-dev",
-  "app_version": "0.2.55-dev",
+  "suite_version": "0.1.7-dev",
+  "app_version": "0.2.56-dev",
   "connector": {
     "version": "0.1.3-dev",
     "interface_version": 1,
@@ -9,7 +9,7 @@
     "schema_version": 1
   },
   "skill": {
-    "version": "0.1.6-dev",
+    "version": "0.1.7-dev",
     "schema_version": 1,
     "canonical_core": true,
     "connector_interface_version": 1
@@ -34,12 +34,49 @@
     "master_knowledge_base_local": false,
     "arbitrary_shell": false,
     "arbitrary_eval": false,
-    "autonomous_risk_decision": "suzie_doctor",
-    "human_confirmation_for_risk": false
+    "autonomous_risk_decision": "field_suzie",
+    "human_confirmation_for_risk": false,
+    "approved_active_family_doctor_ai_review_required": false,
+    "experimental_protocol_family_doctor_allowed": false
   },
   "doctor_server_command_bridge": {
     "version": 1,
     "direction": "client_pull",
     "exact_client": true
+  },
+  "doctor_architecture": {
+    "version": 2,
+    "roles": {
+      "total_ai_slots": 6,
+      "field_suzie_max": 4,
+      "house_reserved": 1,
+      "wilson_reserved": 1
+    },
+    "web_policy": {
+      "session_max_minutes": 10,
+      "dialog_max_sessions": 10,
+      "natural_completion_closes_dialog": true
+    },
+    "routing": {
+      "unknown_or_no_protocol_to_patient_journal": true,
+      "house_is_semantic_dispatcher": true,
+      "server_is_infrastructure_dispatcher": true,
+      "field_suzie_requires_house_dispatch": true
+    },
+    "protocol_admission": {
+      "legacy_statuses_grandfathered": true,
+      "new_protocol_internal_confirmations_required": 3,
+      "external_evidence_counts_as_internal_confirmation": false
+    },
+    "projects": {
+      "house": {
+        "project_id": "g-p-6ab184e457cc819182e5230e09fdfc18",
+        "url": "https://chatgpt.com/g/g-p-6ab184e457cc819182e5230e09fdfc18-doktor-khaus"
+      },
+      "wilson": {
+        "project_id": "g-p-6ab1850655508191afad64d3cc104b3a",
+        "url": "https://chatgpt.com/g/g-p-6ab1850655508191afad64d3cc104b3a-doktor-vilson"
+      }
+    }
   }
 }

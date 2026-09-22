@@ -3,6 +3,20 @@
 - Mount-recovery regression now separately covers an accepted reload that stays inactive and a Supervisor-rejected reload with a preserved reason.
 - Runtime behavior from 0.2.54-dev is unchanged.
 
+## 0.2.56-dev / Suite 0.1.7-dev / Skill 0.1.7-dev — 2026-09-21
+
+- Introduced Doctor architecture v2 role semantics: Family Doctor, House, Field Suzie and Wilson.
+- Added machine-readable 4+1+1 AI role quota and 10/10 Web session/dialog policy to Suite manifest/status.
+- Registered canonical House and Wilson ChatGPT Project targets.
+- Split treatment authorization by trusted execution actor:
+  - Family Doctor may run signed published ACTIVE deterministic treatment under trust-mode/automation-class gates without waking Field AI.
+  - Field Suzie still requires contextual risk assessment for state-changing treatment.
+- Confirmed Disease audit path now requests the Family Doctor protocol path; unknown/generic findings are marked for Patient Journal + House review.
+- Updated canonical Suzie Skill: Field role, House dispatch, Wilson governance, 3/3 new-Protocol admission, no next-Case reuse after natural dialog completion.
+- Added regression checks for Family Doctor AUTO_SAFE/CONFIRM_REQUIRED behavior.
+- Existing ACTIVE/WATCH/MANUAL knowledge is grandfathered; no retroactive 3/3 migration.
+- Central Doctor Server migration is specified in `docs/DOCTOR_ARCHITECTURE_V2_2026-09-21.md` and must be deployed before this branch is production-ready.
+
 ## 0.2.54-dev
 
 - Supervisor mount recovery records the exact Home Assistant Repair-equivalent action (`supervisor.mount.reload`).

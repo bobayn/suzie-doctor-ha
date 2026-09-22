@@ -1,0 +1,34 @@
+{
+  "architecture_version": 2,
+  "roles": {
+    "total_ai_slots": 6,
+    "field_suzie_max": 4,
+    "house_reserved": 1,
+    "wilson_reserved": 1
+  },
+  "web_policy": {
+    "session_max_minutes": 10,
+    "dialog_max_sessions": 10,
+    "natural_completion_closes_dialog": true
+  },
+  "projects": {
+    "house": {
+      "project_id": "g-p-6ab184e457cc819182e5230e09fdfc18",
+      "project_url": "https://chatgpt.com/g/g-p-6ab184e457cc819182e5230e09fdfc18-doktor-khaus"
+    },
+    "wilson": {
+      "project_id": "g-p-6ab1850655508191afad64d3cc104b3a",
+      "project_url": "https://chatgpt.com/g/g-p-6ab1850655508191afad64d3cc104b3a-doktor-vilson"
+    }
+  },
+  "routing": {
+    "unknown_or_no_protocol_to_patient_journal": true,
+    "house_is_semantic_dispatcher": true,
+    "field_suzie_requires_house_dispatch": true
+  },
+  "protocol_admission": {
+    "legacy_statuses_grandfathered": true,
+    "new_protocol_internal_confirmations_required": 3,
+    "external_evidence_counts_as_internal_confirmation": false
+  }
+}

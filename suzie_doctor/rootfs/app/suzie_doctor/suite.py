@@ -165,5 +165,6 @@ class SuiteRuntime:
             "treatment_allowed": self.compatible,
             "compatibility_errors": list(self.errors),
             "skill_sha256": self.skill.sha256,
+            "doctor_architecture": self.manifest.get("doctor_architecture") or {},
             "surfaces": ["web", "api"],
         }

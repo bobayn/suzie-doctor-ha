@@ -1632,6 +1632,7 @@ class ProtocolEngine:
         trust_mode: str,
         explicit_confirmation: bool = False,
         risk_assessment: dict[str, Any] | None = None,
+        execution_actor: str = "field_suzie",
         developer_override: bool,
     ) -> tuple[bool, str]:
         status = str(card["protocol"]["status"])
@@ -1653,6 +1654,25 @@ class ProtocolEngine:
             return False, "diagnostic_only"
         if trust_mode == "manual":
             return False, "manual_trust_mode"
+
+        actor = str(execution_actor or "field_suzie").strip().lower()
+        if actor not in {"field_suzie", "family_doctor"}:
+            return False, "unknown_execution_actor"
+
+        # Family Doctor may execute only already-published ACTIVE deterministic
+        # treatment.  This avoids waking strong AI for routine medicine while
+        # preserving the user's trust-mode boundary.  AUTO_SAFE is allowed in
+        # safe_auto/full_trust; legacy CONFIRM_REQUIRED is allowed without AI
+        # only in full_trust.  All preconditions/checkpoint/verify/rollback
+        # gates below still apply.
+        if actor == "family_doctor":
+            if automation_class == "AUTO_SAFE":
+                return True, "family_doctor_approved_active_auto_safe"
+            if automation_class == "CONFIRM_REQUIRED":
+                if trust_mode == "full_trust":
+                    return True, "family_doctor_approved_active_full_trust"
+                return False, "family_doctor_field_review_required"
+            return False, "family_doctor_automation_class_blocked"
 
         risk = dict(risk_assessment or {})
         if not risk:
@@ -1755,6 +1775,7 @@ class ProtocolEngine:
         trust_mode: str = "safe_auto",
         explicit_confirmation: bool = False,
         risk_assessment: dict[str, Any] | None = None,
+        execution_actor: str = "field_suzie",
         simulated: bool = False,
         developer_override: bool = False,
     ) -> dict[str, Any]:
@@ -1767,6 +1788,7 @@ class ProtocolEngine:
             "protocol_version": card["protocol"]["version"],
             "protocol_status": card["protocol"]["status"],
             "automation_class": card["automation_class"],
+            "execution_actor": str(execution_actor or "field_suzie"),
             "simulated": simulated,
         }
         if isinstance(risk_assessment, dict):
@@ -1804,6 +1826,7 @@ class ProtocolEngine:
                 trust_mode=trust_mode,
                 explicit_confirmation=explicit_confirmation,
                 risk_assessment=risk_assessment,
+                execution_actor=execution_actor,
                 developer_override=developer_override,
             )
             response["treatment_allowed"] = allowed
