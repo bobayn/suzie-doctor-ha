@@ -46,6 +46,44 @@ class DoctorV2Runtime:
         row=self.conn.execute("select house_job_id,status from doctor_v2_house_jobs where trigger_event_id=?",(event_id,)).fetchone()
         return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None}
 
+    def customer_feed(self, patient_id: str, limit: int=80) -> dict[str,Any]:
+        rows=self.conn.execute(
+            """select d.*,j.trigger_event_id,e.payload_json as event_payload_json,e.created_at as event_created_at,
+                      q.status as field_status,c.outcome as case_outcome
+               from doctor_v2_house_decisions d
+               join doctor_v2_house_jobs j on j.house_job_id=d.house_job_id
+               left join doctor_v2_patient_events e on e.event_id=j.trigger_event_id
+               left join doctor_v2_field_queue q on q.source_house_decision_id=d.decision_id
+               left join doctor_cases c on c.case_id=q.legacy_case_id
+               where d.patient_id=? order by d.decision_id desc limit ?""",
+            (str(patient_id),max(1,min(200,int(limit)))),
+        ).fetchall()
+        entries=[]
+        for row in rows:
+            x=dict(row); payload=self._loads(x.get("event_payload_json"))
+            ev=payload.get("evidence") if isinstance(payload.get("evidence"),dict) else {}
+            fp=str(ev.get("fingerprint") or "")
+            if fp.startswith("CONTROLLED_") or bool(payload.get("simulated")): continue
+            subject=("incident:"+str(ev.get("problem_key"))) if ev.get("problem_key") else ("fingerprint:"+fp if fp else f"house-event:{x.get('trigger_event_id')}")
+            decision=str(x.get("decision") or "")
+            outcome=str(x.get("case_outcome") or "")
+            field=str(x.get("field_status") or "")
+            status,title,message,verified,action=("OBSERVING","Наблюдаю за ситуацией","House проверил данные: подтверждённой неисправности пока нет.",False,False)
+            if decision=="IGNORE_AS_NOISE": status,title,message,verified=("NO_ACTION_NEEDED","Проверено — действий не требуется","House проверил событие и не подтвердил проблему, требующую действий.",True)
+            elif decision=="RECHECK_LATER": message="House пока не подтверждает неисправность. Состояние будет проверено повторно."
+            elif decision=="HUMAN_ACTION_REQUIRED": status,title,message,action=("ACTION_NEEDED","Нужно ваше внимание","House подтвердил, что для безопасного продолжения требуется действие владельца.",True)
+            elif decision=="DISPATCH_SUZIE":
+                if field=="DONE" and outcome in {"SUCCESS","RESOLVED"}: status,title,message,verified=("REVIEW_COMPLETE","Дополнительная проверка завершена","Углублённая проверка завершена; вмешательство владельца не требуется.",True)
+                elif field=="DONE" and outcome=="HUMAN_REQUIRED": status,title,message,action=("ACTION_NEEDED","Нужно ваше внимание","После дополнительной проверки требуется действие владельца.",True)
+                else: status,title,message=("CHECKING","Проверяю подробнее","House передал случай на углублённую диагностику. Это ещё не подтверждённая неисправность.")
+            created=str(x.get("created_at") or "").replace(" ","T",1)
+            if created and not (created.endswith("Z") or "+" in created[10:]): created+="+00:00"
+            state_at=str(x.get("event_created_at") or "").replace(" ","T",1)
+            if state_at and not (state_at.endswith("Z") or "+" in state_at[10:]): state_at+="+00:00"
+            entries.append({"id":f"house:{x['decision_id']}","subject_key":subject,"actor":"HOUSE","status_code":status,"title":title,"message":message,"verified":verified,"user_action_required":action,"significance":str(x.get("significance") or "LOW"),"created_at":created,"state_at":state_at or created,"technical_ref":f"house-decision:{x['decision_id']}","source":{"decision":decision,"finding_class":str(x.get("finding_class") or "")}})
+        pending=int(self.conn.execute("select count(*) from doctor_v2_house_jobs where patient_id=? and status in ('WAITING','CLAIMED')",(str(patient_id),)).fetchone()[0])
+        return {"entries":entries,"pending_count":pending}
+
     def next_house_waiting(self) -> dict[str,Any]|None:
         r=self.conn.execute("select * from doctor_v2_house_jobs where status='WAITING' order by priority desc,house_job_id limit 1").fetchone()
         return dict(r) if r else None

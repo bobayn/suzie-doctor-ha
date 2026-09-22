@@ -1,3 +1,12 @@
+## 0.2.57-dev — 2026-09-22
+
+- Reworked the customer-facing Incidents tab into a Customer Journal. Raw technical OPEN/error rows no longer present themselves as unresolved customer problems.
+- Family Doctor writes positive verified outcomes only after repeat verification; self-recovery is described separately from Doctor-applied treatment.
+- House decisions are exposed through a signed client-bound customer feed and rendered as observe/recheck/no-action/deeper-check/human-action states without exposing internal reasoning as a diagnosis.
+- Home dashboard now reports reviewed, restored/verified and owner-attention counts instead of raw found/fixed/open incident counters.
+- Technical incidents and audits remain available under expandable diagnostic details.
+- Added Customer Journal schema v4, safe backfill for resolved non-simulated incidents, HTML escaping, and CI regression assertions.
+
 ## 0.2.55-dev
 
 - Mount-recovery regression now separately covers an accepted reload that stays inactive and a Supervisor-rejected reload with a preserved reason.
