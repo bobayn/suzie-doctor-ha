@@ -48,6 +48,8 @@ def main() -> None:
     assert "def customer_feed(" in live_source
     assert "event_fingerprint" in live_source
     assert "migration_smoke" in live_source
+    assert "Камера счётчика газа временно недоступна" in live_source
+    assert "Интерфейс Home Assistant сообщил техническое событие" in live_source
     assert "Техническое событие само по себе не считается проблемой" in app_source
     assert "Открытых проблем</div>" not in app_source
     assert "Найдено за 24 часа</div>" not in app_source

@@ -66,17 +66,31 @@ class DoctorV2Runtime:
             event_source=str(x.get("event_source") or "").upper()
             if fp.startswith("CONTROLLED_") or fp.startswith("migration-") or "CONTROLLED" in event_source or "SMOKE" in event_source or bool(payload.get("simulated")) or bool(payload.get("controlled")) or bool(payload.get("migration_smoke")): continue
             subject=("incident:"+str(ev.get("problem_key"))) if ev.get("problem_key") else ("fingerprint:"+fp if fp else f"house-event:{x.get('trigger_event_id')}")
+            logger=str(ev.get("logger") or "").lower()
+            raw_message=str(ev.get("message") or "").lower()
+            if "gas-meter-cam" in raw_message or "192_168_0_120" in raw_message or "diagnostika_gaz" in logger:
+                event_title="Камера счётчика газа временно недоступна"
+            elif logger.startswith("homeassistant.components.broadlink"):
+                event_title="Устройство Broadlink временно не ответило"
+            elif "frontend" in logger or "button-card" in raw_message:
+                event_title="Интерфейс Home Assistant сообщил техническое событие"
+            elif "bluetooth" in logger:
+                event_title="Bluetooth сообщил техническое событие"
+            elif "scheduler" in logger or "scheduler" in raw_message:
+                event_title="Расписание Home Assistant сообщило техническое событие"
+            else:
+                event_title="Home Assistant сообщил техническое событие"
             decision=str(x.get("decision") or "")
             outcome=str(x.get("case_outcome") or "")
             field=str(x.get("field_status") or "")
-            status,title,message,verified,action=("OBSERVING","Наблюдаю за ситуацией","House проверил данные: подтверждённой неисправности пока нет.",False,False)
-            if decision=="IGNORE_AS_NOISE": status,title,message,verified=("NO_ACTION_NEEDED","Проверено — действий не требуется","House проверил событие и не подтвердил проблему, требующую действий.",True)
+            status,title,message,verified,action=("OBSERVING",event_title,"House проверил данные: подтверждённой неисправности пока нет.",False,False)
+            if decision=="IGNORE_AS_NOISE": status,message,verified=("NO_ACTION_NEEDED","House проверил событие и не подтвердил проблему, требующую действий.",True)
             elif decision=="RECHECK_LATER": message="House пока не подтверждает неисправность. Состояние будет проверено повторно."
-            elif decision=="HUMAN_ACTION_REQUIRED": status,title,message,action=("ACTION_NEEDED","Нужно ваше внимание","House подтвердил, что для безопасного продолжения требуется действие владельца.",True)
+            elif decision=="HUMAN_ACTION_REQUIRED": status,message,action=("ACTION_NEEDED","House подтвердил, что для безопасного продолжения требуется действие владельца.",True)
             elif decision=="DISPATCH_SUZIE":
-                if field=="DONE" and outcome in {"SUCCESS","RESOLVED"}: status,title,message,verified=("REVIEW_COMPLETE","Дополнительная проверка завершена","Углублённая проверка завершена; вмешательство владельца не требуется.",True)
-                elif field=="DONE" and outcome=="HUMAN_REQUIRED": status,title,message,action=("ACTION_NEEDED","Нужно ваше внимание","После дополнительной проверки требуется действие владельца.",True)
-                else: status,title,message=("CHECKING","Проверяю подробнее","House передал случай на углублённую диагностику. Это ещё не подтверждённая неисправность.")
+                if field=="DONE" and outcome in {"SUCCESS","RESOLVED"}: status,message,verified=("REVIEW_COMPLETE","Углублённая проверка завершена; вмешательство владельца не требуется.",True)
+                elif field=="DONE" and outcome=="HUMAN_REQUIRED": status,message,action=("ACTION_NEEDED","После дополнительной проверки требуется действие владельца.",True)
+                else: status,message=("CHECKING","House передал случай на углублённую диагностику. Это ещё не подтверждённая неисправность.")
             created=str(x.get("created_at") or "").replace(" ","T",1)
             if created and not (created.endswith("Z") or "+" in created[10:]): created+="+00:00"
             state_at=str(x.get("event_created_at") or "").replace(" ","T",1)
