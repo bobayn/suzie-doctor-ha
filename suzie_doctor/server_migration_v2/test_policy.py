@@ -46,6 +46,8 @@ def main() -> None:
     assert 'actor="FAMILY_DOCTOR"' in db_source
     assert '"/v1/customer-feed"' in server_client_source
     assert "def customer_feed(" in live_source
+    assert "event_fingerprint" in live_source
+    assert "migration_smoke" in live_source
     assert "Техническое событие само по себе не считается проблемой" in app_source
     assert "Открытых проблем</div>" not in app_source
     assert "Найдено за 24 часа</div>" not in app_source

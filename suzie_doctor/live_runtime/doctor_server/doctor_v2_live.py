@@ -48,7 +48,7 @@ class DoctorV2Runtime:
 
     def customer_feed(self, patient_id: str, limit: int=80) -> dict[str,Any]:
         rows=self.conn.execute(
-            """select d.*,j.trigger_event_id,e.payload_json as event_payload_json,e.created_at as event_created_at,
+            """select d.*,j.trigger_event_id,e.payload_json as event_payload_json,e.created_at as event_created_at,e.source as event_source,e.fingerprint as event_fingerprint,
                       q.status as field_status,c.outcome as case_outcome
                from doctor_v2_house_decisions d
                join doctor_v2_house_jobs j on j.house_job_id=d.house_job_id
@@ -62,8 +62,9 @@ class DoctorV2Runtime:
         for row in rows:
             x=dict(row); payload=self._loads(x.get("event_payload_json"))
             ev=payload.get("evidence") if isinstance(payload.get("evidence"),dict) else {}
-            fp=str(ev.get("fingerprint") or "")
-            if fp.startswith("CONTROLLED_") or bool(payload.get("simulated")): continue
+            fp=str(ev.get("fingerprint") or x.get("event_fingerprint") or "")
+            event_source=str(x.get("event_source") or "").upper()
+            if fp.startswith("CONTROLLED_") or fp.startswith("migration-") or "CONTROLLED" in event_source or "SMOKE" in event_source or bool(payload.get("simulated")) or bool(payload.get("controlled")) or bool(payload.get("migration_smoke")): continue
             subject=("incident:"+str(ev.get("problem_key"))) if ev.get("problem_key") else ("fingerprint:"+fp if fp else f"house-event:{x.get('trigger_event_id')}")
             decision=str(x.get("decision") or "")
             outcome=str(x.get("case_outcome") or "")
