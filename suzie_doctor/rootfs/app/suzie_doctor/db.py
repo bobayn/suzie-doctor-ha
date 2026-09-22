@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -44,6 +44,25 @@ CREATE TABLE IF NOT EXISTS incident_events (
     payload_json TEXT NOT NULL,
     FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS customer_journal (
+    id TEXT PRIMARY KEY,
+    subject_key TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    status_code TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0,
+    user_action_required INTEGER NOT NULL DEFAULT 0,
+    significance TEXT NOT NULL DEFAULT 'LOW',
+    created_at TEXT NOT NULL,
+    technical_ref TEXT,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    source_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_customer_journal_created
+ON customer_journal(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_journal_subject
+ON customer_journal(subject_key, created_at DESC);
 CREATE TABLE IF NOT EXISTS observations (
     observation_key TEXT PRIMARY KEY,
     category TEXT NOT NULL,
@@ -124,6 +143,17 @@ class Database:
         }
         if "disease_id" not in incident_columns:
             self.conn.execute("ALTER TABLE incidents ADD COLUMN disease_id TEXT")
+
+        for row in self.conn.execute(
+            """SELECT * FROM incidents
+               WHERE status='RESOLVED' AND resolved_at IS NOT NULL AND simulated=0
+               ORDER BY resolved_at ASC"""
+        ).fetchall():
+            self._record_family_resolution(
+                row,
+                "Historical resolved incident imported into Customer Journal.",
+                str(row["resolved_at"]),
+            )
 
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
@@ -318,6 +348,126 @@ class Database:
         )
         self.conn.commit()
 
+    def record_customer_entry(
+        self,
+        *,
+        subject_key: str,
+        actor: str,
+        status_code: str,
+        title: str,
+        message: str,
+        verified: bool,
+        user_action_required: bool,
+        significance: str = "LOW",
+        technical_ref: str | None = None,
+        dedupe_key: str,
+        source: dict[str, Any] | None = None,
+        created_at: str | None = None,
+    ) -> str | None:
+        entry_id = str(uuid4())
+        cur = self.conn.execute(
+            """INSERT OR IGNORE INTO customer_journal(
+                   id,subject_key,actor,status_code,title,message,verified,
+                   user_action_required,significance,created_at,technical_ref,
+                   dedupe_key,source_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                entry_id,
+                str(subject_key),
+                str(actor),
+                str(status_code),
+                str(title),
+                str(message),
+                int(bool(verified)),
+                int(bool(user_action_required)),
+                str(significance or "LOW"),
+                created_at or utcnow(),
+                technical_ref,
+                str(dedupe_key),
+                json.dumps(source or {}, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+        return entry_id if int(cur.rowcount or 0) > 0 else None
+
+    def customer_entries(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM customer_journal ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(500, int(limit))),),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["verified"] = bool(item.get("verified"))
+            item["user_action_required"] = bool(item.get("user_action_required"))
+            try:
+                item["source"] = json.loads(item.pop("source_json"))
+            except Exception:
+                item["source"] = {}
+                item.pop("source_json", None)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _customer_resolution_title(row: sqlite3.Row) -> str:
+        incident_type = str(row["incident_type"] or "")
+        title = str(row["title"] or "").strip()
+        if incident_type == "config_entry" and title.startswith("Интеграция "):
+            name = title[len("Интеграция "):].split(":", 1)[0].strip()
+            if name:
+                return f"Интеграция {name} снова работает"
+        if incident_type == "supervisor_mount":
+            name = title.rsplit(":", 1)[-1].strip()
+            return f"Хранилище {name} снова доступно" if name else "Хранилище снова доступно"
+        if incident_type == "ha_runtime_error":
+            return "Техническое событие Home Assistant больше не повторяется"
+        if incident_type.startswith("health"):
+            return "Показатели системы вернулись в норму"
+        if incident_type == "disease" and title:
+            return f"{title} — состояние нормализовано"
+        return "Состояние восстановлено и проверено"
+
+    def _record_family_resolution(self, row: sqlite3.Row, note: str, resolved_at: str) -> None:
+        if bool(row["simulated"]):
+            return
+        protocol_success = self.conn.execute(
+            """SELECT 1 FROM protocol_runs
+               WHERE incident_id=? AND result='SUCCESS' AND simulated=0
+               ORDER BY finished_at DESC LIMIT 1""",
+            (row["id"],),
+        ).fetchone() is not None
+        if protocol_success:
+            status_code = "RESOLVED_VERIFIED"
+            message = (
+                "Семейный доктор применил известный протокол и после лечения "
+                "проверил, что исходный симптом больше не наблюдается."
+            )
+        else:
+            status_code = "RECOVERED_VERIFIED"
+            message = (
+                "Состояние восстановилось. Семейный доктор повторно проверил "
+                "систему; вмешательство не потребовалось."
+            )
+        self.record_customer_entry(
+            subject_key=f"incident:{row['problem_key']}",
+            actor="FAMILY_DOCTOR",
+            status_code=status_code,
+            title=self._customer_resolution_title(row),
+            message=message,
+            verified=True,
+            user_action_required=False,
+            significance="LOW",
+            technical_ref=str(row["id"]),
+            dedupe_key=f"family-resolution:{row['id']}:{resolved_at}",
+            source={
+                "incident_type": str(row["incident_type"] or ""),
+                "disease_id": row["disease_id"],
+                "resolution_note": str(note or "")[:1000],
+                "protocol_success": protocol_success,
+            },
+            created_at=resolved_at,
+        )
+
     def incident_event_count(self, incident_id: str, event_type: str) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS c FROM incident_events WHERE incident_id=? AND event_type=?",
@@ -327,7 +477,7 @@ class Database:
 
     def resolve_problem(self, problem_key: str, note: str = "Symptoms absent on repeat diagnostic") -> bool:
         row = self.conn.execute(
-            "SELECT id FROM incidents WHERE problem_key=? AND resolved_at IS NULL", (problem_key,)
+            "SELECT * FROM incidents WHERE problem_key=? AND resolved_at IS NULL", (problem_key,)
         ).fetchone()
         if not row:
             return False
@@ -341,6 +491,7 @@ class Database:
             (row["id"], now, "RESOLVED", json.dumps({"note": note}, ensure_ascii=False)),
         )
         self.conn.commit()
+        self._record_family_resolution(row, note, now)
         return True
 
     def discard_problem(self, problem_key: str, note: str = "Reclassified as non-incident") -> bool:

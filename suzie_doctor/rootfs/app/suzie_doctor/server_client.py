@@ -274,6 +274,12 @@ class DoctorServerClient:
     async def diagnose(self, evidence: dict[str, Any]) -> dict[str, Any]:
         return await self._signed_post("/v1/diagnose", evidence)
 
+    async def customer_feed(self, limit: int = 80) -> dict[str, Any]:
+        return await self._signed_post(
+            "/v1/customer-feed",
+            {"limit": max(1, min(200, int(limit)))},
+        )
+
     async def poll_command(self) -> dict[str, Any]:
         """Poll exactly this enrolled client for one server-routed command."""
         return await self._signed_post("/v1/client/commands/poll", {})

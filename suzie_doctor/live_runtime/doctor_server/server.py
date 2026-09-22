@@ -1687,6 +1687,12 @@ class DoctorServer:
         )
         return self.signed(payload)
 
+    async def customer_feed(self, request: web.Request) -> web.Response:
+        body, client = await self.authenticated_body(request)
+        limit = max(1, min(200, int(body.get("limit") or 80)))
+        payload = self.v2_ext.runtime.customer_feed(str(client["client_id"]), limit)
+        return self.signed(payload)
+
     async def reload_knowledge(self, request: web.Request) -> web.Response:
         body, client = await self.authenticated_body(request)
         if str(client.get("status")) != "licensed":
@@ -1761,6 +1767,7 @@ class DoctorServer:
         app.router.add_post("/v1/enroll", self.enroll)
         app.router.add_post("/v1/license", self.license_status)
         app.router.add_post("/v1/diagnose", self.diagnose)
+        app.router.add_post("/v1/customer-feed", self.customer_feed)
         app.router.add_post("/v1/knowledge/reload", self.reload_knowledge)
 
         # Suzie Doctor Connector-facing journal contract.

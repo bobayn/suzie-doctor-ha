@@ -842,9 +842,79 @@ async def api_doctor_invoke(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _customer_entry_time(entry: dict[str, Any]) -> datetime:
+    raw = str(entry.get("state_at") or entry.get("created_at") or "")
+    if not raw:
+        return datetime.min.replace(tzinfo=UTC)
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    except Exception:
+        return datetime.min.replace(tzinfo=UTC)
+
+
+async def _customer_view(rt: Runtime) -> dict[str, Any]:
+    entries = list(rt.db.customer_entries(160))
+    pending_house = 0
+    house_state = "disabled" if rt.doctor_server is None else "ok"
+    if rt.doctor_server is not None:
+        try:
+            remote = await rt.doctor_server.customer_feed(120)
+            entries.extend(list(remote.get("entries") or []))
+            pending_house = int(remote.get("pending_count") or 0)
+        except Exception:
+            house_state = "unavailable"
+
+    entries.sort(key=_customer_entry_time, reverse=True)
+    latest_by_subject: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        subject = str(entry.get("subject_key") or entry.get("id") or "")
+        if subject and subject not in latest_by_subject:
+            latest_by_subject[subject] = entry
+    current = list(latest_by_subject.values())
+    current.sort(key=_customer_entry_time, reverse=True)
+
+    attention = [e for e in current if str(e.get("status_code")) == "ACTION_NEEDED"]
+    checking = [e for e in current if str(e.get("status_code")) == "CHECKING"]
+    observing = [e for e in current if str(e.get("status_code")) == "OBSERVING"]
+    since = datetime.now(UTC) - timedelta(hours=24)
+    recent = [e for e in current if _customer_entry_time(e) >= since]
+    restored_codes = {"RESOLVED_VERIFIED", "RECOVERED_VERIFIED", "REVIEW_COMPLETE"}
+    restored = [e for e in recent if str(e.get("status_code")) in restored_codes]
+    no_action = [e for e in recent if str(e.get("status_code")) == "NO_ACTION_NEEDED"]
+
+    if attention:
+        state = "ATTENTION"
+        message = "Есть подтверждённая ситуация, где требуется ваше действие."
+    elif checking:
+        state = "CHECKING"
+        message = "Doctor проверяет новые технические события. Пока они не считаются подтверждёнными проблемами."
+    elif observing:
+        state = "OBSERVING"
+        message = "Есть наблюдения. Подтверждённых неисправностей, требующих вашего действия, нет."
+    else:
+        state = "NORMAL"
+        message = "Подтверждённых проблем, требующих вашего действия, нет."
+
+    return {
+        "entries": current[:100],
+        "pending_house": pending_house,
+        "house_state": house_state,
+        "summary": {
+            "state": state,
+            "message": message,
+            "reviewed_24h": len(recent),
+            "restored_24h": len(restored),
+            "no_action_24h": len(no_action),
+            "needs_attention": len(attention),
+        },
+    }
+
+
 async def api_dashboard(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
     data = rt.db.dashboard()
+    customer = await _customer_view(rt)
     data.update(
         {
             "doctor_status": "running",
@@ -865,6 +935,7 @@ async def api_dashboard(request: web.Request) -> web.Response:
                 if value.get("state") == "error"
             },
             "settings": asdict(rt.options),
+            "customer": customer["summary"],
         }
     )
     return web.json_response(data)
@@ -872,7 +943,14 @@ async def api_dashboard(request: web.Request) -> web.Response:
 
 async def api_incidents(request: web.Request) -> web.Response:
     rt: Runtime = request.app["runtime"]
-    return web.json_response({"incidents": rt.db.incidents(200), "audits": rt.db.audits(30)})
+    customer = await _customer_view(rt)
+    return web.json_response({
+        "entries": customer["entries"],
+        "house_pending": customer["pending_house"],
+        "house_state": customer["house_state"],
+        "technical_incidents": rt.db.incidents(200),
+        "audits": rt.db.audits(30),
+    })
 
 
 async def api_settings(request: web.Request) -> web.Response:
@@ -3245,15 +3323,15 @@ main{max-width:980px;margin:auto;padding:18px}.top{display:flex;gap:8px;align-it
 h1{font-size:24px;margin:4px 0}.tabs{display:flex;gap:8px;margin:16px 0}.tabs button,.btn{border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
 .card{background:#ffffff0d;border:1px solid #ffffff1f;border-radius:16px;padding:16px;margin:12px 0}.hero{font-size:28px;font-weight:700}.muted{opacity:.68}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}.metric{font-size:23px;font-weight:650}.good{color:#63d391}.warn{color:#ffcf66}.bad{color:#ff7b7b}
-.row{padding:10px 0;border-bottom:1px solid #ffffff16}.row:last-child{border:0}.hidden{display:none}code{font-size:12px}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#ffffff17}
+.row{padding:12px 0;border-bottom:1px solid #ffffff16}.row:last-child{border:0}.hidden{display:none}code{font-size:12px}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#ffffff17}.entry-title{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.source{font-size:12px;opacity:.7}.status-good{color:#63d391}.status-watch{color:#ffcf66}.status-action{color:#ff7b7b}details{margin-top:14px}summary{cursor:pointer}.journal-note{line-height:1.45;margin-top:5px}
 </style></head><body><main>
 <div class="top"><div><h1>Suzie Doctor DEV</h1><div class="muted" id="version"></div></div><span class="pill" id="status">загрузка…</span></div>
 <div class="tabs"><button onclick="show('home')">Главная</button><button onclick="show('incidents')">Инциденты</button><button onclick="show('settings')">Настройки</button></div>
 <section id="home"><div class="card"><div class="hero" id="healthTitle">Проверяю систему…</div><div class="muted" id="auditText"></div></div>
-<div class="grid"><div class="card"><div class="muted">За 24 часа исправлено</div><div class="metric" id="fixed24">—</div></div><div class="card"><div class="muted">Найдено за 24 часа</div><div class="metric" id="found24">—</div></div><div class="card"><div class="muted">Открытых проблем</div><div class="metric" id="openCount">—</div></div></div>
+<div class="grid"><div class="card"><div class="muted">Проверено Doctor за 24 часа</div><div class="metric" id="reviewed24">—</div></div><div class="card"><div class="muted">Восстановлено и проверено</div><div class="metric" id="restored24">—</div></div><div class="card"><div class="muted">Нужно ваше внимание</div><div class="metric" id="attentionCount">—</div></div></div>
 <div class="card"><b>Health Guard</b><div id="metrics" class="grid"></div></div><div class="card"><b>Установка bridge</b><pre id="bootstrap" class="muted"></pre></div>
 <div class="card" id="devCard"><b>Developer mode</b><p class="muted">Служебные тесты для разработки. Симуляции не учитываются в пользовательской статистике.</p><button class="btn" onclick="devAudit()">Запустить полный аудит</button> <button class="btn" onclick="devTreatmentTest('setup-retry')">Тест setup_retry</button> <button class="btn" onclick="devTreatmentTest('setup-error')">Тест setup_error</button> <button class="btn" onclick="devRecurrenceTest()">Тест recurrence</button> <button class="btn" onclick="devFailedTreatmentTest()">Тест FAILED</button> <button class="btn" onclick="devTargetedTest()">Тест targeted</button> <button class="btn" onclick="devProtocolTest()">Тест protocol</button> <button class="btn" onclick="devReadonlyTest()">Тест readonly</button> <button class="btn" onclick="devTriggerTest()">Тест triggers</button> <button class="btn" onclick="devMountTest()">Тест mount</button> <button class="btn" onclick="devRetentionTest()">Тест retention</button> <button class="btn" onclick="devReleaseGate()">Release gate</button><span id="devResult"></span></div></section>
-<section id="incidents" class="hidden"><div class="card"><b>Инциденты</b><div id="incidentList"></div></div><div class="card"><b>Последние аудиты</b><div id="auditList"></div></div></section>
+<section id="incidents" class="hidden"><div class="card"><b>Журнал Doctor</b><p class="muted">Здесь только понятные итоги проверок. Техническое событие само по себе не считается проблемой.</p><div id="housePending" class="muted"></div><div id="incidentList"></div><details><summary>Технические подробности</summary><p class="muted">Служебный журнал для диагностики. Записи ниже не равны неисправностям.</p><div id="technicalList"></div></details><details><summary>Последние аудиты</summary><div id="auditList"></div></details></div></section>
 <section id="settings" class="hidden"><div class="card"><b>Настройки</b><pre id="settingsText"></pre><p class="muted">В DEV-сборке меняются в Configuration приложения Home Assistant.</p></div></section>
 <script>
 const BASE=__INGRESS_BASE__;
@@ -3262,9 +3340,13 @@ function show(id){for(const s of ['home','incidents','settings'])document.getEle
 function fmt(v,s=''){return v===undefined||v===null?'—':`${v}${s}`}
 const LOCAL_TZ='Europe/Kyiv';
 function fmtLocal(ts){if(!ts)return '—';const d=new Date(ts);if(Number.isNaN(d.getTime()))return ts;return new Intl.DateTimeFormat('ru-RU',{timeZone:LOCAL_TZ,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d)}
-async function refresh(){const d=await fetch(api('/api/dashboard')).then(r=>r.json());document.getElementById('status').textContent='Doctor работает';document.getElementById('version').textContent=`App ${d.app_version} · Bridge ${d.bridge_version} · Pack ${d.protocol_pack_version}`;document.getElementById('fixed24').textContent=d.fixed_24h;document.getElementById('found24').textContent=d.found_24h;document.getElementById('openCount').textContent=d.open_incidents;document.getElementById('healthTitle').textContent=d.open_incidents?`Есть проблем: ${d.open_incidents}`:(d.last_audit&&d.last_audit.result==='OBSERVE'?'Есть наблюдения':'Система в норме');document.getElementById('auditText').textContent=d.last_audit?`Последний аудит: ${d.last_audit.audit_type} · ${d.last_audit.result}`:'Первичный аудит ещё не завершён';
+function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
+function statusLabel(s){return ({RESOLVED_VERIFIED:'Исправлено и проверено',RECOVERED_VERIFIED:'Восстановилось, проверено',NO_ACTION_NEEDED:'Проверено — действий не нужно',OBSERVING:'Наблюдаю',CHECKING:'Проверяю подробнее',REVIEW_COMPLETE:'Дополнительная проверка завершена',ACTION_NEEDED:'Нужно ваше внимание'})[s]||'Проверено'}
+function statusClass(s){return s==='ACTION_NEEDED'?'status-action':(['OBSERVING','CHECKING'].includes(s)?'status-watch':'status-good')}
+function actorLabel(a){return a==='HOUSE'?'House':'Семейный доктор'}
+async function refresh(){const d=await fetch(api('/api/dashboard')).then(r=>r.json());const c=d.customer||{};document.getElementById('status').textContent='Doctor работает';document.getElementById('version').textContent=`App ${d.app_version} · Bridge ${d.bridge_version} · Pack ${d.protocol_pack_version}`;document.getElementById('reviewed24').textContent=fmt(c.reviewed_24h);document.getElementById('restored24').textContent=fmt(c.restored_24h);document.getElementById('attentionCount').textContent=fmt(c.needs_attention);const titles={ATTENTION:'Нужно ваше внимание',CHECKING:'Doctor проверяет ситуацию',OBSERVING:'Есть наблюдения',NORMAL:'Система в норме'};document.getElementById('healthTitle').textContent=titles[c.state]||'Система в норме';document.getElementById('auditText').textContent=c.message||'Doctor работает в штатном режиме.';
 const h=d.health||{};const items=[['Температура CPU',h.cpu_temperature_c,' °C'],['CPU',h.host_cpu_percent,' %'],['RAM',h.host_memory_percent,' %'],['Load 5m',h.load_5m,''],['Диск',h.storage_used_percent,' %'],['Ресурс диска использован',h.disk_life_time_percent,' %']];document.getElementById('metrics').innerHTML=items.map(x=>`<div><div class="muted">${x[0]}</div><div class="metric">${fmt(x[1],x[2])}</div></div>`).join('');document.getElementById('bootstrap').textContent=JSON.stringify(d.bootstrap,null,2);document.getElementById('settingsText').textContent=JSON.stringify(d.settings,null,2);document.getElementById('devCard').style.display=d.settings.developer_mode?'block':'none'}
-async function loadIncidents(){const d=await fetch(api('/api/incidents')).then(r=>r.json());document.getElementById('incidentList').innerHTML=d.incidents.length?d.incidents.map(i=>`<div class="row"><b>${i.title}</b> <span class="pill">${i.status}</span><div class="muted">${i.severity} · открыт ${fmtLocal(i.opened_at)} · обновлён ${fmtLocal(i.updated_at)}</div><div>${i.detail||''}</div></div>`).join(''):'<p class="muted">Инцидентов нет.</p>';document.getElementById('auditList').innerHTML=d.audits.map(a=>`<div class="row"><b>${a.audit_type}</b> · ${a.result||'RUNNING'}<div class="muted">начат ${fmtLocal(a.started_at)}${a.finished_at?` · завершён ${fmtLocal(a.finished_at)}`:''} · найдено ${a.found_count}</div></div>`).join('')}
+async function loadIncidents(){const d=await fetch(api('/api/incidents')).then(r=>r.json());const entries=d.entries||[];document.getElementById('housePending').textContent=d.house_pending?'House проверяет новые технические события. Пока они не считаются подтверждёнными проблемами.':'';document.getElementById('incidentList').innerHTML=entries.length?entries.map(i=>`<div class="row"><div class="entry-title"><b>${esc(i.title)}</b><span class="pill ${statusClass(i.status_code)}">${esc(statusLabel(i.status_code))}</span></div><div class="source">${esc(actorLabel(i.actor))} · ${fmtLocal(i.created_at)}</div><div class="journal-note">${esc(i.message)}</div></div>`).join(''):'<p class="muted">Нет записей, требующих отдельного сообщения.</p>';const tech=d.technical_incidents||[];document.getElementById('technicalList').innerHTML=tech.length?tech.map(i=>`<div class="row"><b>${esc(i.title)}</b> <span class="pill">${esc(i.status)}</span><div class="muted">служебная запись · ${fmtLocal(i.updated_at)}</div><pre class="muted" style="white-space:pre-wrap">${esc(i.detail||'')}</pre></div>`).join(''):'<p class="muted">Технических записей нет.</p>';document.getElementById('auditList').innerHTML=(d.audits||[]).map(a=>`<div class="row"><b>${esc(a.audit_type)}</b> · ${esc(a.result||'RUNNING')}<div class="muted">${fmtLocal(a.started_at)}${a.finished_at?` · ${fmtLocal(a.finished_at)}`:''}</div></div>`).join('')}
 async function devAudit(){document.getElementById('devResult').textContent=' выполняется…';const r=await fetch(api('/api/dev/audit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'developer_full',reason:'ui'})});const d=await r.json();document.getElementById('devResult').textContent=` ${d.result}`;await refresh()}
 async function devTreatmentTest(path){document.getElementById('devResult').textContent=' тест лечения…';const r=await fetch(api('/api/dev/test/'+path),{method:'POST'});const d=await r.json();const f=(d.findings||[])[0]||{};document.getElementById('devResult').textContent=` ${d.result} · ${f.treatment_result||'NO_RESULT'} · repeat=${f.repeat_diagnosis_state||'—'}`;await refresh()}
 async function devRecurrenceTest(){document.getElementById('devResult').textContent=' тест recurrence…';const r=await fetch(api('/api/dev/test/recurrence'),{method:'POST'});const d=await r.json();document.getElementById('devResult').textContent=` recurrence ${d.result}`;await refresh()}

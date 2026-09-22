@@ -36,6 +36,20 @@ def main() -> None:
     assert family_doctor_or_house(approved_active_protocol=True) == "FAMILY_DOCTOR"
     assert family_doctor_or_house(approved_active_protocol=False) == "PATIENT_JOURNAL_HOUSE"
 
+    # Customer-facing journal is deliberately separate from raw technical incidents.
+    root = Path(__file__).resolve().parents[2]
+    db_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/db.py").read_text()
+    app_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/app.py").read_text()
+    server_client_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/server_client.py").read_text()
+    live_source = (root / "suzie_doctor/live_runtime/doctor_server/doctor_v2_live.py").read_text()
+    assert "CREATE TABLE IF NOT EXISTS customer_journal" in db_source
+    assert 'actor="FAMILY_DOCTOR"' in db_source
+    assert '"/v1/customer-feed"' in server_client_source
+    assert "def customer_feed(" in live_source
+    assert "Техническое событие само по себе не считается проблемой" in app_source
+    assert "Открытых проблем</div>" not in app_source
+    assert "Найдено за 24 часа</div>" not in app_source
+
     # Existing CI already runs this policy test. Compile the verified live Web runtime
 # here as well so runtime syntax stays covered without requiring a workflow-file update.
 import py_compile
