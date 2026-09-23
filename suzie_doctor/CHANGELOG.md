@@ -1,3 +1,8 @@
+## 0.2.60-dev — 2026-09-23
+
+- Fixes Suite bundle compatibility after Experimental validation work: Connector Core remains 0.1.3-dev because the canonical tool interface did not change; only Doctor semantics inside the existing evidence contract changed.
+- Keeps Suite 0.1.8-dev and the new Experimental validation architecture while restoring fail-closed manifest/contract version parity.
+
 ## 0.2.59-dev / Suite 0.1.8-dev — 2026-09-23
 
 - Closed the Experimental Protocol validation loop: Server matching -> Patient Card -> House VALIDATE_FIRST -> exact Field Case -> signed EXPERIMENTAL treatment -> verify -> Wilson evidence -> 0/3..3/3 -> publication review.
