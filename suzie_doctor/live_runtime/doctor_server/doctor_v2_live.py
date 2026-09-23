@@ -139,8 +139,29 @@ class DoctorV2Runtime:
     @staticmethod
     def _experimental_tokens(value: Any) -> set[str]:
         import re
-        text=DoctorV2Runtime._experimental_text(value)
-        return {x for x in re.findall(r"[\w.-]+",text,flags=re.UNICODE) if len(x)>=4}
+        stop={
+            "this","that","with","from","have","has","been","were","will",
+            "into","when","then","than","true","false","null","none",
+            "error","problem","message","source","severity","evidence",
+            "title","symptoms","checks","component","fingerprint",
+            "request","routing","intent","result","kind","logger",
+        }
+        texts=[]
+        def collect(item:Any)->None:
+            if isinstance(item,dict):
+                for child in item.values(): collect(child)
+            elif isinstance(item,(list,tuple,set)):
+                for child in item: collect(child)
+            elif item is not None:
+                texts.append(str(item).lower())
+        collect(value)
+        tokens=set()
+        for text in texts:
+            for token in re.findall(r"[\w.-]+",text,flags=re.UNICODE):
+                token=token.strip("._-")
+                if len(token)>=4 and token not in stop:
+                    tokens.add(token)
+        return tokens
 
     @staticmethod
     def _collect_disease_ids(value: Any) -> set[str]:

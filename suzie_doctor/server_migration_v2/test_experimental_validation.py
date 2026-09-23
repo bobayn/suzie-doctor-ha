@@ -58,7 +58,15 @@ def main():
             rt.store.ensure_patient(patient,{'health':'normal'})
             unrelated_event=rt.store.append_event(
                 patient_id=patient,event_type='OBSERVATION',source='test-unrelated',
-                payload={'symptom':'totally unrelated current trigger'},create_house_job=True,
+                payload={
+                    'diagnosis_result':'NO_MATCH',
+                    'evidence':{
+                        'kind':'ha_runtime_error',
+                        'logger':'frontend.js.modern',
+                        'message':"Error: this registry already contains the name button-card-action-handler",
+                        'severity':'PROBLEM',
+                    },
+                },create_house_job=True,
             )
             unrelated_job=rt.conn.execute(
                 'select house_job_id from doctor_v2_house_jobs where trigger_event_id=?',(unrelated_event,)

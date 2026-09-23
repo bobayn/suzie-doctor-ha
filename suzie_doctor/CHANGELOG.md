@@ -1,3 +1,9 @@
+## Experimental matcher token hardening — 2026-09-23
+
+- Candidate matching tokenizes structured values only, not JSON field names.
+- Common transport/log words such as `evidence`, `message`, `source`, `error`, `this` and related stopwords no longer create Experimental matches.
+- Added a frontend-error regression proving a candidate cannot match on generic schema/log vocabulary.
+
 ## House priority from current event severity — 2026-09-23
 
 - Doctor V2 now derives House queue priority from the current event severity instead of assigning every Patient Card priority 50.
