@@ -104,7 +104,7 @@ Family Doctor package:
 Legacy ACTIVE/WATCH/MANUAL remain grandfathered.
 
 New candidate lifecycle:
-CANDIDATE -> FIELD_TESTING -> VALIDATED_1_3 -> VALIDATED_2_3 -> VALIDATED_3_3 -> APPROVED_ACTIVE
+CANDIDATE -> FIELD_TESTING -> VALIDATED_1_3 -> VALIDATED_2_3 -> VALIDATED_3_3 -> PUBLICATION REVIEW -> APPROVED_ACTIVE
 
 Only independent internally verified episodes may increment validation.
 External evidence is always 0/3.
@@ -114,3 +114,8 @@ Every state-changing client command must have an immutable command_id/idempotenc
 Checkpoint stores do_not_repeat and latest action/result refs.
 A continuation after timeout/dialog rotation reconstructs from:
 latest checkpoint + persisted events after checkpoint.
+
+
+## Experimental validation routing
+
+0/3-2/3 candidates are matched by Doctor Server into House context. House may dispatch a real Field Case with `house_directive=VALIDATE_FIRST`; a match alone never dispatches. Experimental execution is Field-only through the signed exact-client treatment path. Positive and negative Field validation evidence is reviewed by Wilson. Only successful verified INTERNAL episodes count toward 3/3. `VALIDATED_3_3` is not ACTIVE and is queued for separate publication review.

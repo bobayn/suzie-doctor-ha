@@ -29,11 +29,15 @@ def main() -> None:
             job = store.claim_house_job("house-dialog-1")
             assert job and job["patient_id"] == "patient-A"
             decision_id = store.submit_house_decision(int(job["house_job_id"]), {
-                "finding_class":"CASE","significance":"HIGH","decision":"DISPATCH_SUZIE","field_priority":"HIGH"
+                "finding_class":"CASE","significance":"HIGH","decision":"DISPATCH_SUZIE","field_priority":"HIGH",
+                "house_directive":"VALIDATE_FIRST","experimental_protocol_id":"p-house","validation_stage":"0/3"
             })
             assert decision_id > 0
-            q = store.conn.execute("SELECT status FROM doctor_v2_field_queue").fetchone()
+            q = store.conn.execute("SELECT * FROM doctor_v2_field_queue").fetchone()
             assert q and q["status"] == "WAITING"
+            assert q["house_directive"] == "VALIDATE_FIRST"
+            assert q["experimental_protocol_id"] == "p-house"
+            assert q["validation_stage"] == "0/3"
 
             ids=[]
             for i in range(4):
@@ -60,16 +64,26 @@ def main() -> None:
             r=store.end_session("d2",a.ordinal,"NATURAL")
             assert r["dialog_closed"] and not r["rotate"]
 
-            store.conn.execute(
-                "INSERT INTO doctor_v2_protocol_candidates(protocol_id,origin,state,candidate_json) VALUES('p1','INTERNAL_FIELD','FIELD_TESTING','{}')"
+            store.upsert_protocol_candidate(
+                protocol_id="p1",origin="INTERNAL_FIELD",disease_id="D1",
+                candidate={"protocol_id":"p1","disease_id":"D1"},
             )
-            store.conn.commit()
+            neg=store.record_protocol_validation(
+                protocol_id="p1",episode_key="negative-1",success=False,verified=True,evidence={"verify":"FAIL"}
+            )
+            assert neg["verified_successes"] == 0
+            assert neg["negative_episodes"] == 1
+            assert neg["validation_stage"] == "0/3"
             for n in range(1,4):
                 v=store.record_protocol_validation(
                     protocol_id="p1",episode_key=f"episode-{n}",success=True,verified=True,evidence={"n":n}
                 )
                 assert v["verified_successes"] == n
             assert v["state"] == "VALIDATED_3_3"
+            assert v["publication_ready"] is True
+            publication=store.enqueue_publication_review("p1",99,{"test":True})
+            assert publication["status"] == "WAITING"
+            assert store.protocol_candidate("p1")["state"] == "VALIDATED_3_3"
             duplicate=store.record_protocol_validation(
                 protocol_id="p1",episode_key="episode-3",success=True,verified=True,evidence={"duplicate":True}
             )

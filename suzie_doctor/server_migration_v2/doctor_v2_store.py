@@ -46,6 +46,18 @@ class DoctorV2Store:
 
     def install_schema(self) -> None:
         self.conn.executescript(self.schema_path.read_text(encoding="utf-8"))
+        field_columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(doctor_v2_field_queue)")
+        }
+        field_migrations = {
+            "house_directive": "ALTER TABLE doctor_v2_field_queue ADD COLUMN house_directive TEXT",
+            "experimental_protocol_id": "ALTER TABLE doctor_v2_field_queue ADD COLUMN experimental_protocol_id TEXT",
+            "validation_stage": "ALTER TABLE doctor_v2_field_queue ADD COLUMN validation_stage TEXT",
+        }
+        for name, ddl in field_migrations.items():
+            if name not in field_columns:
+                self.conn.execute(ddl)
         with self.conn:
             self.conn.executemany(
                 """
@@ -236,10 +248,16 @@ class DoctorV2Store:
                 self.conn.execute(
                     """
                     INSERT INTO doctor_v2_field_queue(
-                        patient_id,source_house_decision_id,priority
-                    ) VALUES(?,?,?)
+                        patient_id,source_house_decision_id,priority,house_directive,
+                        experimental_protocol_id,validation_stage
+                    ) VALUES(?,?,?,?,?,?)
                     """,
-                    (job["patient_id"], decision_id, priority_map.get(field_priority,50)),
+                    (
+                        job["patient_id"], decision_id, priority_map.get(field_priority,50),
+                        result.get("house_directive"),
+                        result.get("experimental_protocol_id"),
+                        result.get("validation_stage"),
+                    ),
                 )
             return decision_id
 
@@ -395,12 +413,16 @@ class DoctorV2Store:
             )
             row = self.conn.execute(
                 """
-                SELECT COUNT(*) AS n FROM doctor_v2_protocol_validation_episodes
-                WHERE protocol_id=? AND success=1 AND verified=1
+                SELECT
+                    SUM(CASE WHEN success=1 AND verified=1 THEN 1 ELSE 0 END) AS successes,
+                    SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS negatives
+                FROM doctor_v2_protocol_validation_episodes
+                WHERE protocol_id=?
                 """,
                 (protocol_id,),
             ).fetchone()
-            n = int(row["n"])
+            n = int(row["successes"] or 0)
+            negatives = int(row["negatives"] or 0)
             state = "FIELD_TESTING"
             if n == 1: state = "VALIDATED_1_3"
             elif n == 2: state = "VALIDATED_2_3"
@@ -409,4 +431,92 @@ class DoctorV2Store:
                 "UPDATE doctor_v2_protocol_candidates SET state=?,updated_at=CURRENT_TIMESTAMP WHERE protocol_id=? AND state!='APPROVED_ACTIVE'",
                 (state,protocol_id),
             )
-            return {"verified_successes": n, "state": state}
+            return {
+                "verified_successes": n,
+                "negative_episodes": negatives,
+                "state": state,
+                "validation_stage": f"{min(n,3)}/3",
+                "publication_ready": state == "VALIDATED_3_3",
+            }
+
+    def upsert_protocol_candidate(
+        self,
+        *,
+        protocol_id: str,
+        origin: str,
+        disease_id: str | None,
+        candidate: dict[str, Any],
+    ) -> dict[str, Any]:
+        origin=str(origin or "INTERNAL_FIELD").upper()
+        if origin not in {"INTERNAL_FIELD","EXTERNAL_WILSON","LEGACY"}:
+            raise DoctorV2StateError("invalid candidate origin")
+        initial_state="CANDIDATE" if origin=="EXTERNAL_WILSON" else "FIELD_TESTING"
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO doctor_v2_protocol_candidates(
+                       protocol_id,origin,state,disease_id,candidate_json
+                   ) VALUES(?,?,?,?,?)
+                   ON CONFLICT(protocol_id) DO UPDATE SET
+                     disease_id=COALESCE(excluded.disease_id,doctor_v2_protocol_candidates.disease_id),
+                     candidate_json=excluded.candidate_json,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    str(protocol_id),origin,initial_state,
+                    str(disease_id) if disease_id else None,
+                    self._json(candidate),
+                ),
+            )
+        item=self.protocol_candidate(str(protocol_id))
+        if item is None:
+            raise DoctorV2StateError("candidate upsert failed")
+        return item
+
+    def protocol_candidate(self, protocol_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM doctor_v2_protocol_candidates WHERE protocol_id=?",
+            (str(protocol_id),),
+        ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        try:
+            item["candidate"] = json.loads(item.pop("candidate_json"))
+        except Exception:
+            item["candidate"] = {}
+            item.pop("candidate_json", None)
+        counts = self.conn.execute(
+            """SELECT
+                   SUM(CASE WHEN success=1 AND verified=1 THEN 1 ELSE 0 END) AS successes,
+                   SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS negatives
+               FROM doctor_v2_protocol_validation_episodes WHERE protocol_id=?""",
+            (str(protocol_id),),
+        ).fetchone()
+        successes = int(counts["successes"] or 0)
+        item["verified_successes"] = successes
+        item["negative_episodes"] = int(counts["negatives"] or 0)
+        item["validation_stage"] = f"{min(successes,3)}/3"
+        return item
+
+    def enqueue_publication_review(
+        self, protocol_id: str, wilson_job_id: int, snapshot: dict[str, Any]
+    ) -> dict[str, Any]:
+        candidate = self.protocol_candidate(protocol_id)
+        if not candidate or str(candidate.get("state")) != "VALIDATED_3_3":
+            raise DoctorV2StateError("publication requires VALIDATED_3_3")
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO doctor_v2_protocol_publication_queue(
+                       protocol_id,status,requested_by_wilson_job_id,snapshot_json
+                   ) VALUES(?, 'WAITING', ?, ?)
+                   ON CONFLICT(protocol_id) DO UPDATE SET
+                     requested_by_wilson_job_id=excluded.requested_by_wilson_job_id,
+                     snapshot_json=excluded.snapshot_json,
+                     updated_at=CURRENT_TIMESTAMP
+                """,
+                (str(protocol_id), int(wilson_job_id), self._json(snapshot)),
+            )
+        row = self.conn.execute(
+            "SELECT * FROM doctor_v2_protocol_publication_queue WHERE protocol_id=?",
+            (str(protocol_id),),
+        ).fetchone()
+        return dict(row) if row else {}

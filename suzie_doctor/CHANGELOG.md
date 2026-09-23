@@ -1,3 +1,12 @@
+## 0.2.59-dev / Suite 0.1.8-dev — 2026-09-23
+
+- Closed the Experimental Protocol validation loop: Server matching -> Patient Card -> House VALIDATE_FIRST -> exact Field Case -> signed EXPERIMENTAL treatment -> verify -> Wilson evidence -> 0/3..3/3 -> publication review.
+- Experimental matches never auto-dispatch; House dispatch remains semantic and requires the Patient Card to merit Field investigation independently.
+- Added Field-only EXPERIMENTAL execution status and exact Case/candidate authorization; Family Doctor cannot execute Experimental packages.
+- VALIDATE_FIRST Cases cannot close without independent diagnosis/applicability and structured Experimental validation evidence. Failed/inapplicable/unsafe validation must continue Case diagnosis.
+- Attempted validation is attested against the exact-client doctor.diagnose command journal.
+- Wilson receives required positive/negative Field evidence, cannot rewrite Field success/verify facts, can suspend/revise candidates, and 3/3 enters publication review without auto-ACTIVE.
+
 ## 0.2.58-dev — 2026-09-22
 
 - Customer Journal now starts at feature introduction instead of retroactively turning historical RESOLVED technical rows into Family Doctor achievements.

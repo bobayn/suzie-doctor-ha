@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 from policy import (
     RoleQuota,
     HOUSE_PROJECT_ID,
@@ -50,24 +52,36 @@ def main() -> None:
     assert "migration_smoke" in live_source
     assert "Камера счётчика газа временно недоступна" in live_source
     assert "Интерфейс Home Assistant сообщил техническое событие" in live_source
+    assert "experimental_protocol_candidates" in live_source
+    assert "VALIDATE_FIRST" in live_source
+    engine_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py").read_text()
+    assert '"EXPERIMENTAL"' in engine_source
+    assert 'experimental_field_only' in engine_source
+    skill_source = (root / "suzie_doctor/rootfs/app/suzie_doctor_skill/SKILL.md").read_text()
+    assert "House Experimental Candidate routing" in skill_source
+    assert "continue the Case:" in skill_source
     assert "Техническое событие само по себе не считается проблемой" in app_source
     assert "Открытых проблем</div>" not in app_source
     assert "Найдено за 24 часа</div>" not in app_source
 
     # Existing CI already runs this policy test. Compile the verified live Web runtime
-# here as well so runtime syntax stays covered without requiring a workflow-file update.
-import py_compile
-repo_root = Path(__file__).resolve().parents[2]
-runtime_files = [
-    *sorted((repo_root / "suzie_doctor/live_runtime/doctor_server").glob("*.py")),
-    repo_root / "suzie_doctor/live_runtime/doctor_mcp/server.py",
-    repo_root / "suzie_doctor/live_runtime/suzie_home_mcp/server.py",
-    repo_root / "suzie_doctor/live_runtime/call_lab/server.py",
-]
-for runtime_file in runtime_files:
-    py_compile.compile(str(runtime_file), doraise=True)
+    # here as well so runtime syntax stays covered without requiring a workflow-file update.
+    import py_compile
+    repo_root = Path(__file__).resolve().parents[2]
+    runtime_files = [
+        *sorted((repo_root / "suzie_doctor/live_runtime/doctor_server").glob("*.py")),
+        repo_root / "suzie_doctor/live_runtime/doctor_mcp/server.py",
+        repo_root / "suzie_doctor/live_runtime/suzie_home_mcp/server.py",
+        repo_root / "suzie_doctor/live_runtime/call_lab/server.py",
+    ]
+    for runtime_file in runtime_files:
+        py_compile.compile(str(runtime_file), doraise=True)
 
-print("PASS doctor_server_v2_policy")
+    subprocess.run(
+        [sys.executable, str(repo_root / "suzie_doctor/server_migration_v2/test_experimental_validation.py")],
+        check=True,
+    )
+    print("PASS doctor_server_v2_policy")
 
 if __name__ == "__main__":
     main()

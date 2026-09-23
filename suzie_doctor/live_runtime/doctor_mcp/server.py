@@ -600,7 +600,7 @@ async def doctor_v2_state() -> dict[str, Any]:
 
 @mcp.tool(
     name="doctor.house.job.get",
-    description="Read one claimed Doctor House job with Patient Card and recent Patient Journal events.",
+    description="Read one claimed Doctor House job with Patient Card, matched Experimental 0/3-2/3 candidates, and recent Patient Journal events.",
     annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
 )
 async def doctor_house_job_get(job_id: int) -> dict[str, Any]:
@@ -609,7 +609,7 @@ async def doctor_house_job_get(job_id: int) -> dict[str, Any]:
 
 @mcp.tool(
     name="doctor.house.decision",
-    description="Complete a claimed House job with OBSERVE/RECHECK_LATER/IGNORE_AS_NOISE/HUMAN_ACTION_REQUIRED/DISPATCH_SUZIE.",
+    description="Complete a claimed House job. Experimental validation dispatch uses DISPATCH_SUZIE plus result.house_directive=VALIDATE_FIRST, experimental_protocol_id and validation_stage.",
     annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
 )
 async def doctor_house_decision(
@@ -669,8 +669,10 @@ async def doctor_wilson_complete(
     description=(
         "Consult Doctor Server from the exact active Case client. execute=false "
         "is diagnostic. execute=true may enter signed treatment only with the "
-        "structured autonomous risk_assessment made by Suzie Doctor. The adapter "
-        "transports that decision and does not make the risk judgment itself."
+        "structured autonomous risk_assessment made by Suzie Doctor. For House "
+        "VALIDATE_FIRST Cases, pass experimental_protocol_id; the MCP binds the "
+        "request to the active field_case_id and Field-only experimental route. "
+        "The adapter transports the decision and does not make the risk judgment itself."
     ),
     annotations=ToolAnnotations(
         readOnlyHint=False,
@@ -689,8 +691,12 @@ async def doctor_diagnose(
         raise RuntimeError("evidence must be an object")
     if execute and not isinstance(risk_assessment, dict):
         raise RuntimeError("execute=true requires Suzie Doctor risk_assessment")
+    state = await _active_handle(doctor_handle)
+    evidence = dict(evidence)
+    if evidence.get("experimental_protocol_id"):
+        evidence["field_case_id"] = int(state["case_id"])
+        evidence["routing_intent"] = "FIELD_EXPERIMENTAL_VALIDATION"
     if execute:
-        state = await _active_handle(doctor_handle)
         await _api(
             "POST",
             f"/v1/doctor/case/{int(state['case_id'])}/stage",

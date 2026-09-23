@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS doctor_v2_field_queue (
     priority INTEGER NOT NULL DEFAULT 50,
     status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING','ASSIGNED','CLAIMED','DONE','CANCELLED')),
     assignment_id TEXT,
+    house_directive TEXT CHECK(house_directive IS NULL OR house_directive='VALIDATE_FIRST'),
+    experimental_protocol_id TEXT,
+    validation_stage TEXT CHECK(validation_stage IS NULL OR validation_stage IN ('0/3','1/3','2/3')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source_house_decision_id),
@@ -159,6 +162,19 @@ CREATE TABLE IF NOT EXISTS doctor_v2_protocol_validation_episodes (
 );
 CREATE INDEX IF NOT EXISTS doctor_v2_validation_protocol_idx
     ON doctor_v2_protocol_validation_episodes(protocol_id, success, verified);
+
+CREATE TABLE IF NOT EXISTS doctor_v2_protocol_publication_queue (
+    publication_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    protocol_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING','REVIEWED','PUBLISHED','REJECTED')),
+    requested_by_wilson_job_id INTEGER,
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(protocol_id) REFERENCES doctor_v2_protocol_candidates(protocol_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS doctor_v2_publication_status_idx
+    ON doctor_v2_protocol_publication_queue(status, publication_id);
 
 CREATE TABLE IF NOT EXISTS doctor_v2_wilson_cursors (
     stream TEXT PRIMARY KEY,

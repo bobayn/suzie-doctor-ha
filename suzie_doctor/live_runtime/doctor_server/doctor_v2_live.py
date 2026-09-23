@@ -110,6 +110,103 @@ class DoctorV2Runtime:
             r=self.conn.execute("select * from doctor_v2_house_jobs where house_job_id=?",(int(job_id),)).fetchone()
             return dict(r) if r else None
 
+    @staticmethod
+    def _experimental_text(value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True).lower()
+        except Exception:
+            return str(value or "").lower()
+
+    @staticmethod
+    def _experimental_tokens(value: Any) -> set[str]:
+        import re
+        text=DoctorV2Runtime._experimental_text(value)
+        return {x for x in re.findall(r"[\w.-]+",text,flags=re.UNICODE) if len(x)>=4}
+
+    @staticmethod
+    def _collect_disease_ids(value: Any) -> set[str]:
+        found:set[str]=set()
+        if isinstance(value,dict):
+            for key,item in value.items():
+                if str(key) in {"disease_id","confirmed_disease_id","candidate_disease_id"} and item:
+                    found.add(str(item))
+                found.update(DoctorV2Runtime._collect_disease_ids(item))
+        elif isinstance(value,list):
+            for item in value:
+                found.update(DoctorV2Runtime._collect_disease_ids(item))
+        return found
+
+    def experimental_candidates_for_patient(self, patient_id: str, limit:int=5) -> list[dict[str,Any]]:
+        card=self.conn.execute(
+            "select * from doctor_v2_patient_cards where patient_id=?",
+            (str(patient_id),),
+        ).fetchone()
+        state=self._loads(card["state_json"]) if card else {}
+        event_payloads=[]
+        for row in self.conn.execute(
+            "select payload_json from doctor_v2_patient_events where patient_id=? order by event_id desc limit 30",
+            (str(patient_id),),
+        ):
+            event_payloads.append(self._loads(row[0]))
+        patient_context={"state":state,"events":event_payloads}
+        disease_ids=self._collect_disease_ids(patient_context)
+        patient_text=self._experimental_text(patient_context)
+        patient_tokens=self._experimental_tokens(patient_context)
+        eligible={"CANDIDATE","FIELD_TESTING","VALIDATED_1_3","VALIDATED_2_3"}
+        matched=[]
+        rows=self.conn.execute(
+            "select * from doctor_v2_protocol_candidates order by updated_at desc"
+        ).fetchall()
+        for row in rows:
+            raw=dict(row)
+            if str(raw.get("state")) not in eligible:
+                continue
+            try: candidate=json.loads(str(raw.get("candidate_json") or "{}"))
+            except Exception: candidate={}
+            disease_id=str(raw.get("disease_id") or candidate.get("disease_id") or "").strip()
+            reasons=[]; score=0
+            if disease_id and disease_id in disease_ids:
+                score+=100; reasons.append("disease_id_exact")
+            elif disease_id and disease_id.lower() in patient_text:
+                score+=80; reasons.append("disease_id_in_patient_context")
+            candidate_scope={
+                "title":candidate.get("title"),
+                "symptoms":candidate.get("symptoms"),
+                "fingerprints":candidate.get("fingerprints"),
+                "evidence":candidate.get("evidence"),
+                "checks":candidate.get("checks"),
+                "component":candidate.get("component"),
+            }
+            overlap=patient_tokens & self._experimental_tokens(candidate_scope)
+            if overlap:
+                score+=min(36,len(overlap)*4)
+                reasons.append("symptom_evidence_overlap")
+            if score < 8:
+                continue
+            snap=self.store.protocol_candidate(str(raw["protocol_id"])) or {}
+            matched.append({
+                "protocol_id":str(raw["protocol_id"]),
+                "origin":str(raw.get("origin") or ""),
+                "state":str(raw.get("state") or ""),
+                "disease_id":disease_id or None,
+                "validation_stage":str(snap.get("validation_stage") or "0/3"),
+                "verified_successes":int(snap.get("verified_successes") or 0),
+                "negative_episodes":int(snap.get("negative_episodes") or 0),
+                "match_score":score,
+                "match_reasons":reasons,
+                "candidate":{
+                    "title":candidate.get("title"),
+                    "symptoms":candidate.get("symptoms"),
+                    "checks":candidate.get("checks"),
+                    "action":candidate.get("action"),
+                    "verify":candidate.get("verify"),
+                    "risk":candidate.get("risk"),
+                    "automation_class":candidate.get("automation_class"),
+                },
+            })
+        matched.sort(key=lambda x:(int(x["match_score"]),-int(x["verified_successes"])),reverse=True)
+        return matched[:max(1,min(20,int(limit)))]
+
     def house_get(self, job_id:int) -> dict[str,Any]|None:
         r=self.conn.execute("select * from doctor_v2_house_jobs where house_job_id=?",(int(job_id),)).fetchone()
         if not r: return None
@@ -117,6 +214,7 @@ class DoctorV2Runtime:
         card=self.conn.execute("select * from doctor_v2_patient_cards where patient_id=?",(d["patient_id"],)).fetchone()
         d["patient_card"]=dict(card) if card else None
         if d["patient_card"]: d["patient_card"]["state"]=self._loads(d["patient_card"].pop("state_json",None))
+        d["experimental_protocol_candidates"]=self.experimental_candidates_for_patient(str(d["patient_id"]))
         d["recent_events"]=[]
         for e in self.conn.execute("select * from doctor_v2_patient_events where patient_id=? order by event_id desc limit 30",(d["patient_id"],)):
             x=dict(e); x["payload"]=self._loads(x.pop("payload_json",None)); d["recent_events"].append(x)
@@ -130,6 +228,102 @@ class DoctorV2Runtime:
     def set_field_legacy_case(self, queue_id:int, case_id:int) -> None:
         with self.conn:
             self.conn.execute("update doctor_v2_field_queue set legacy_case_id=?,status='ASSIGNED',assignment_id=?,updated_at=CURRENT_TIMESTAMP where queue_id=?",(int(case_id),f"case:{int(case_id)}",int(queue_id)))
+
+    def field_validation_requirement(self, case_id:int) -> dict[str,Any]|None:
+        row=self.conn.execute(
+            """select queue_id,patient_id,house_directive,experimental_protocol_id,validation_stage
+               from doctor_v2_field_queue where legacy_case_id=? limit 1""",
+            (int(case_id),),
+        ).fetchone()
+        if not row or str(row["house_directive"] or "")!="VALIDATE_FIRST":
+            return None
+        return dict(row)
+
+    def normalize_field_validation_result(
+        self, case_id:int, client_id:str, result:dict[str,Any]
+    )->dict[str,Any]|None:
+        req=self.field_validation_requirement(int(case_id))
+        if not req:
+            return None
+        raw=result.get("experimental_validation")
+        if not isinstance(raw,dict):
+            raise ValueError("VALIDATE_FIRST Case requires experimental_validation result")
+        expected=str(req.get("experimental_protocol_id") or "")
+        if str(raw.get("protocol_id") or "") != expected:
+            raise ValueError("experimental_validation protocol_id does not match House directive")
+        if raw.get("independent_diagnosis_performed") is not True:
+            raise ValueError("VALIDATE_FIRST requires independent_diagnosis_performed=true")
+        disease_confirmed=raw.get("disease_confirmed")
+        if not isinstance(disease_confirmed,bool):
+            raise ValueError("experimental_validation disease_confirmed must be boolean")
+        attempted=bool(raw.get("attempted"))
+        applicable=raw.get("applicable")
+        if not isinstance(applicable,bool):
+            raise ValueError("experimental_validation applicable must be boolean")
+        risk_decision=str(raw.get("risk_decision") or "NOT_ASSESSED").upper()
+        if risk_decision not in {"PROCEED","AVOID","NOT_ASSESSED"}:
+            raise ValueError("experimental_validation risk_decision invalid")
+        treatment_result=str(raw.get("treatment_result") or "NOT_ATTEMPTED").upper()
+        if treatment_result not in {"SUCCESS","FAILED","NOT_ATTEMPTED","UNAVAILABLE","BLOCKED"}:
+            raise ValueError("experimental_validation treatment_result invalid")
+        verify_result=str(raw.get("verify_result") or "NOT_RUN").upper()
+        if verify_result not in {"PASS","FAIL","NOT_RUN","INCONCLUSIVE"}:
+            raise ValueError("experimental_validation verify_result invalid")
+        if treatment_result=="SUCCESS" and verify_result=="NOT_RUN":
+            raise ValueError("successful Experimental treatment requires verify")
+        if attempted and not disease_confirmed:
+            raise ValueError("Experimental treatment cannot be attempted without independently confirmed Disease")
+        if attempted and not applicable:
+            raise ValueError("Experimental treatment cannot be attempted when candidate is not applicable")
+        if attempted and risk_decision!="PROCEED":
+            raise ValueError("Experimental treatment attempt requires risk_decision=PROCEED")
+        if treatment_result in {"SUCCESS","FAILED"} and not attempted:
+            raise ValueError("treatment result requires attempted=true")
+        success=(treatment_result=="SUCCESS" and verify_result=="PASS")
+        verified=verify_result in {"PASS","FAIL"}
+        continued=raw.get("continued_case_diagnosis")
+        if not success and continued is not True:
+            raise ValueError("failed/inapplicable Experimental validation must continue Case diagnosis before completion")
+        normalized={
+            "protocol_id":expected,
+            "episode_key":f"field:{int(case_id)}",
+            "source":"FIELD_CASE",
+            "internal_verified":verified,
+            "patient_id":str(client_id),
+            "field_case_id":str(int(case_id)),
+            "success":success,
+            "verified":verified,
+            "independent_diagnosis_performed":True,
+            "disease_confirmed":disease_confirmed,
+            "attempted":attempted,
+            "applicable":applicable,
+            "continued_case_diagnosis":bool(continued),
+            "risk_decision":risk_decision,
+            "treatment_result":treatment_result,
+            "verify_result":verify_result,
+            "reason":str(raw.get("reason") or "")[:2000],
+            "house_validation_stage":str(req.get("validation_stage") or "0/3"),
+            "evidence":dict(raw.get("evidence") or {}),
+        }
+        return normalized
+
+    def enqueue_field_validation_wilson(
+        self, case_id:int, validation:dict[str,Any], case_result:dict[str,Any]
+    )->int:
+        cursor=f"FIELD_VALIDATION:{int(case_id)}"
+        existing=self.conn.execute(
+            "select wilson_job_id from doctor_v2_wilson_jobs where input_cursor=? order by wilson_job_id desc limit 1",
+            (cursor,),
+        ).fetchone()
+        if existing:
+            return int(existing[0])
+        batch={
+            "reason":"EXPERIMENTAL_FIELD_VALIDATION",
+            "case_id":int(case_id),
+            "required_validations":[dict(validation)],
+            "case_result":dict(case_result or {}),
+        }
+        return self.enqueue_wilson("HOURLY_REVIEW",batch,cursor)
 
     def field_done_for_case(self, case_id:int) -> None:
         with self.conn:
@@ -191,7 +385,26 @@ class DoctorV2Runtime:
     def wilson_complete(self, job_id:int, result:dict[str,Any], output_cursor:str|None=None, *, failed:bool=False)->dict[str,Any]:
         r=self.conn.execute("select * from doctor_v2_wilson_jobs where wilson_job_id=?",(int(job_id),)).fetchone()
         if not r or r["status"]!="CLAIMED": raise RuntimeError("Wilson job is not claimed")
+        batch=self._loads(r["batch_json"])
+        required=[x for x in (batch.get("required_validations") or []) if isinstance(x,dict)]
+        validations=[x for x in (result.get("validations") or []) if isinstance(x,dict)]
+        if required and not failed:
+            for req in required:
+                pid=str(req.get("protocol_id") or "")
+                episode=str(req.get("episode_key") or "")
+                got=next((x for x in validations if str(x.get("protocol_id") or "")==pid and str(x.get("episode_key") or "")==episode),None)
+                if got is None:
+                    raise RuntimeError(f"Wilson must return required Field validation {pid}/{episode}")
+                if bool(got.get("success")) != bool(req.get("success")) or bool(got.get("verified")) != bool(req.get("verified")):
+                    raise RuntimeError("Wilson cannot rewrite Field success/verify facts")
+                if str(got.get("source") or "").upper() not in {"INTERNAL","INTERNAL_FIELD","FIELD_CASE"}:
+                    raise RuntimeError("required Field validation must remain internal evidence")
+                got.setdefault("patient_id",req.get("patient_id"))
+                got.setdefault("field_case_id",req.get("field_case_id"))
+                got.setdefault("evidence",req.get("evidence") or {})
         validation_results=[]
+        governance_results=[]
+        publication_queue=[]
         if not failed:
             candidates=result.get("protocol_candidates")
             if isinstance(candidates,list):
@@ -213,36 +426,84 @@ class DoctorV2Runtime:
                                  updated_at=CURRENT_TIMESTAMP""",
                             (pid,origin,state,item.get("disease_id"),self._j(item)),
                         )
-            validations=result.get("validations")
-            if isinstance(validations,list):
-                for item in validations:
-                    if not isinstance(item,dict):continue
-                    source=str(item.get("source") or "").upper()
-                    internal=bool(item.get("internal_verified")) or source in {"INTERNAL","INTERNAL_FIELD","FIELD_CASE"}
-                    if not internal:
-                        continue
-                    pid=str(item.get("protocol_id") or "").strip()
-                    episode=str(item.get("episode_key") or "").strip()
-                    if not pid or not episode:continue
-                    exists=self.conn.execute("select 1 from doctor_v2_protocol_candidates where protocol_id=?",(pid,)).fetchone()
-                    if not exists:continue
-                    vr=self.store.record_protocol_validation(
-                        protocol_id=pid,
-                        episode_key=episode,
-                        success=bool(item.get("success")),
-                        verified=bool(item.get("verified")),
-                        evidence=dict(item.get("evidence") or {}),
-                        installation_id_hash=item.get("installation_id_hash"),
-                        patient_id=item.get("patient_id"),
-                        field_case_id=item.get("field_case_id"),
-                    )
-                    validation_results.append({"protocol_id":pid,"episode_key":episode,**vr})
+            for item in validations:
+                source=str(item.get("source") or "").upper()
+                internal=bool(item.get("internal_verified")) or source in {"INTERNAL","INTERNAL_FIELD","FIELD_CASE"}
+                if not internal:
+                    continue
+                pid=str(item.get("protocol_id") or "").strip()
+                episode=str(item.get("episode_key") or "").strip()
+                if not pid or not episode:continue
+                exists=self.conn.execute("select 1 from doctor_v2_protocol_candidates where protocol_id=?",(pid,)).fetchone()
+                if not exists:continue
+                vr=self.store.record_protocol_validation(
+                    protocol_id=pid,
+                    episode_key=episode,
+                    success=bool(item.get("success")),
+                    verified=bool(item.get("verified")),
+                    evidence=dict(item.get("evidence") or {}),
+                    installation_id_hash=item.get("installation_id_hash"),
+                    patient_id=item.get("patient_id"),
+                    field_case_id=item.get("field_case_id"),
+                )
+                validation_results.append({"protocol_id":pid,"episode_key":episode,**vr})
+            actions=[x for x in (result.get("candidate_actions") or []) if isinstance(x,dict)]
+            governed:set[str]=set()
+            for action in actions:
+                pid=str(action.get("protocol_id") or "").strip()
+                op=str(action.get("action") or "").upper()
+                if not pid or op not in {"SUSPEND","REVISE"}:
+                    continue
+                current=self.store.protocol_candidate(pid)
+                if not current:
+                    continue
+                governed.add(pid)
+                if op=="SUSPEND":
+                    with self.conn:
+                        self.conn.execute(
+                            "update doctor_v2_protocol_candidates set state='SUSPENDED',updated_at=CURRENT_TIMESTAMP where protocol_id=?",
+                            (pid,),
+                        )
+                    governance_results.append({"protocol_id":pid,"action":"SUSPEND","reason":str(action.get("reason") or "")[:1000]})
+                else:
+                    replacement=action.get("replacement_candidate")
+                    if not isinstance(replacement,dict):
+                        raise RuntimeError("REVISE requires replacement_candidate")
+                    new_pid=str(replacement.get("protocol_id") or "").strip()
+                    if not new_pid or new_pid==pid:
+                        raise RuntimeError("REVISE requires a new protocol_id")
+                    disease_id=str(replacement.get("disease_id") or current.get("disease_id") or "") or None
+                    with self.conn:
+                        self.conn.execute(
+                            "update doctor_v2_protocol_candidates set state='SUSPENDED',updated_at=CURRENT_TIMESTAMP where protocol_id=?",
+                            (pid,),
+                        )
+                        self.conn.execute(
+                            """insert into doctor_v2_protocol_candidates(protocol_id,origin,state,disease_id,candidate_json)
+                               values(?, 'INTERNAL_FIELD', 'FIELD_TESTING', ?, ?)
+                               on conflict(protocol_id) do nothing""",
+                            (new_pid,disease_id,self._j(replacement)),
+                        )
+                    governance_results.append({"protocol_id":pid,"action":"REVISE","replacement_protocol_id":new_pid})
+            for vr in validation_results:
+                pid=str(vr.get("protocol_id") or "")
+                if bool(vr.get("publication_ready")) and pid not in governed:
+                    publication_queue.append(self.store.enqueue_publication_review(
+                        pid,int(job_id),{"validation":vr,"wilson_result":dict(result or {})}
+                    ))
         with self.conn:
             status="FAILED" if failed else "DONE"
             self.conn.execute("update doctor_v2_wilson_jobs set status=?,result_json=?,output_cursor=?,completed_at=CURRENT_TIMESTAMP where wilson_job_id=?",(status,self._j(result),output_cursor,int(job_id)))
             if output_cursor is not None and not failed:
                 self.conn.execute("insert into doctor_v2_wilson_cursors(stream,cursor_value) values('FIELD_CASE_REPORTS',?) on conflict(stream) do update set cursor_value=excluded.cursor_value,updated_at=CURRENT_TIMESTAMP",(str(output_cursor),))
-        return {"wilson_job_id":int(job_id),"status":status,"output_cursor":output_cursor,"validation_results":validation_results}
+        return {
+            "wilson_job_id":int(job_id),
+            "status":status,
+            "output_cursor":output_cursor,
+            "validation_results":validation_results,
+            "governance_results":governance_results,
+            "publication_queue":publication_queue,
+        }
 
     def ensure_wilson_baseline(self)->str:
         r=self.conn.execute("select cursor_value from doctor_v2_wilson_cursors where stream='FIELD_CASE_REPORTS'").fetchone()

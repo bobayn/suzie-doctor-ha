@@ -63,7 +63,7 @@ class V2Extension:
             self._project_id("FIELD_SUZIE"),generation,
         )
 
-    async def field_finished(self,case_id:int,client_id:str,outcome:str,result:dict[str,Any])->None:
+    async def field_finished(self,case_id:int,client_id:str,outcome:str,result:dict[str,Any])->dict[str,Any]:
         assignment=f"case:{int(case_id)}"
         self.runtime.field_done_for_case(int(case_id))
         self.runtime.store.ensure_patient(
@@ -75,7 +75,17 @@ class V2Extension:
             payload={"case_id":int(case_id),"outcome":str(outcome),"result":dict(result or {})},
             fingerprint=f"case:{int(case_id)}",create_house_job=False,
         )
+        wilson_job_id=None
+        validation=result.get("experimental_validation") if isinstance(result,dict) else None
+        if isinstance(validation,dict):
+            wilson_job_id=self.runtime.enqueue_field_validation_wilson(
+                int(case_id),validation,dict(result or {})
+            )
         await self._finish_assignment("FIELD_SUZIE",assignment)
+        return {
+            "experimental_validation_recorded":isinstance(validation,dict),
+            "wilson_job_id":wilson_job_id,
+        }
 
     def sync_field_slots(self)->None:
         rows=list(self.runtime.conn.execute(
@@ -154,6 +164,27 @@ class V2Extension:
             "field_priority":field_priority,
             **(dict(body.get("result") or {}) if isinstance(body.get("result"),dict) else {}),
         }
+        directive=str(result.get("house_directive") or "").upper().strip()
+        experimental_id=str(result.get("experimental_protocol_id") or "").strip()
+        if directive or experimental_id:
+            if decision != "DISPATCH_SUZIE":
+                raise web.HTTPBadRequest(text="Experimental validation directive requires DISPATCH_SUZIE")
+            if directive != "VALIDATE_FIRST" or not experimental_id:
+                raise web.HTTPBadRequest(text="Experimental dispatch requires house_directive=VALIDATE_FIRST and experimental_protocol_id")
+            candidates=list(job.get("experimental_protocol_candidates") or [])
+            matched=next((x for x in candidates if str(x.get("protocol_id"))==experimental_id),None)
+            if not matched:
+                raise web.HTTPBadRequest(text="Experimental Protocol is not a matched 0/3-2/3 candidate for this Patient Card")
+            result["house_directive"]="VALIDATE_FIRST"
+            result["experimental_protocol_id"]=experimental_id
+            result["validation_stage"]=str(matched.get("validation_stage") or "0/3")
+            result["experimental_candidate"]={
+                "protocol_id":experimental_id,
+                "disease_id":matched.get("disease_id"),
+                "validation_stage":result["validation_stage"],
+                "match_reasons":matched.get("match_reasons") or [],
+                "candidate":matched.get("candidate") or {},
+            }
         decided=self.runtime.house_decide(job_id,result)
         fq=decided.get("field_queue")
         legacy=None
@@ -164,7 +195,15 @@ class V2Extension:
                     source_key=f"v2-house-decision:{decided['decision_id']}",
                     source_request_id=None,
                     summary=str(result.get("summary") or f"House dispatched patient {job['patient_id']}"),
-                    problem={"house_job_id":job_id,"house_decision_id":decided["decision_id"],"house_result":result},
+                    problem={
+                        "house_job_id":job_id,
+                        "house_decision_id":decided["decision_id"],
+                        "house_result":result,
+                        "house_directive":result.get("house_directive"),
+                        "experimental_protocol_id":result.get("experimental_protocol_id"),
+                        "validation_stage":result.get("validation_stage"),
+                        "experimental_candidate":result.get("experimental_candidate"),
+                    },
                     disease_id=str(result.get("disease_id") or "") or None,
                     priority=int(fq.get("priority") or 50),
                     actor="doctor_house",
@@ -232,7 +271,12 @@ class V2Extension:
                     f"HOUSE JOB #{job_id}. Compatibility transport: call doctor.case.get "
                     f"case_id={compat_id}. Analyze returned House job. Finish exactly once "
                     f"with doctor.case.complete_next doctor_handle=HOUSE:{job_id}; put "
-                    "finding_class, significance, decision, field_priority in result."
+                    "finding_class, significance, decision, field_priority in result. "
+                    "You MUST review experimental_protocol_candidates in the returned House job. "
+                    "A matching 0/3-2/3 candidate never forces dispatch by itself. If the Patient Card "
+                    "already merits Field investigation and one candidate has reasonable real-world "
+                    "validation grounds, DISPATCH_SUZIE with experimental_protocol_id, its validation_stage, "
+                    "and house_directive=VALIDATE_FIRST. Otherwise decide normally."
                 )
             elif role=="WILSON":
                 compat_id=9_000_000_000+job_id
@@ -240,7 +284,11 @@ class V2Extension:
                     f"WILSON JOB #{job_id}. Compatibility transport: call doctor.case.get "
                     f"case_id={compat_id}. Perform returned Wilson job. Finish exactly once "
                     f"with doctor.case.complete_next doctor_handle=WILSON:{job_id}, "
-                    "outcome SUCCESS or FAILED, structured result."
+                    "outcome SUCCESS or FAILED, structured result. If batch contains "
+                    "required_validations, return each in result.validations with the exact "
+                    "protocol_id, episode_key, success and verified facts. Analyze positive "
+                    "and negative evidence; do not rewrite Field facts. 3/3 goes to publication "
+                    "review, never directly ACTIVE."
                 )
             else:
                 text=(
