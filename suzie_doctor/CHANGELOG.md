@@ -1,3 +1,9 @@
+## House Experimental transport normalization — 2026-09-23
+
+- Normalizes an explicit House `MATCHING_VALIDATION_TARGET` candidate review into canonical `house_directive=VALIDATE_FIRST`, `experimental_protocol_id`, and validation stage.
+- A House `DISPATCH_SUZIE` with matched Experimental candidates can no longer silently ignore those candidates: it must either issue `VALIDATE_FIRST` or explicitly decline Experimental validation with a reason.
+- This closes the real Web E2E gap where House recognized the 0/3 candidate but the Field Case was created without the validation directive.
+
 ## Doctor Server v2 dispatch recovery — 2026-09-23
 
 - Normalizes legacy/non-numeric Wilson FIELD_CASE_REPORTS cursors such as `E2E:60` instead of crashing the v2 dispatch loop.
