@@ -154,6 +154,9 @@ A Field Case carrying `house_directive=VALIDATE_FIRST` MUST follow this sequence
 
 1. Read the Case and the exact candidate ID/stage supplied by House.
 2. Independently diagnose the Disease. House selection is not diagnostic proof.
+   `candidate_disease_id` is only the hypothesis. After independent confirmation,
+   repeat `doctor.diagnose` with the exact `confirmed_disease_id`; only that exact
+   confirmation may unlock a signed Experimental execution package.
 3. Independently check candidate applicability to the exact patient/target.
 4. Resolve exact target, capabilities, preconditions and checkpoint/backup requirements.
 5. Produce the normal Field risk assessment. Do not execute on `AVOID`.

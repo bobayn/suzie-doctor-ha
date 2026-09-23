@@ -1,3 +1,11 @@
+## 0.2.61-dev — 2026-09-23
+
+- Handles `FIELD_EXPERIMENTAL_VALIDATION` before normal published-Disease matching, so an unpublished Experimental candidate cannot fall through to ordinary `NO_MATCH`/auto-escalation.
+- Exact House-selected Case/candidate authorization is checked before Experimental consultation.
+- `candidate_disease_id` remains a hypothesis; a signed Experimental package is returned only after Field independently supplies the matching `confirmed_disease_id`.
+- Prevents Experimental consultation from creating a duplicate Field Case.
+- Clarified the canonical Skill workflow and refreshed its content hash.
+
 ## Experimental matcher token hardening — 2026-09-23
 
 - Candidate matching tokenizes structured values only, not JSON field names.
