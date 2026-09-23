@@ -77,13 +77,21 @@ class V2Extension:
         )
         wilson_job_id=None
         validation=result.get("experimental_validation") if isinstance(result,dict) else None
-        if isinstance(validation,dict):
+        requirement=self.runtime.field_validation_requirement(int(case_id))
+        normalized_validation=(
+            isinstance(validation,dict)
+            and requirement is not None
+            and str(validation.get("protocol_id") or "") == str(requirement.get("experimental_protocol_id") or "")
+            and str(validation.get("episode_key") or "") == f"field:{int(case_id)}"
+            and str(validation.get("source") or "").upper() == "FIELD_CASE"
+        )
+        if normalized_validation:
             wilson_job_id=self.runtime.enqueue_field_validation_wilson(
                 int(case_id),validation,dict(result or {})
             )
         await self._finish_assignment("FIELD_SUZIE",assignment)
         return {
-            "experimental_validation_recorded":isinstance(validation,dict),
+            "experimental_validation_recorded":bool(normalized_validation),
             "wilson_job_id":wilson_job_id,
         }
 

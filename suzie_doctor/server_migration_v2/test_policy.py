@@ -58,6 +58,8 @@ def main() -> None:
     assert "MATCHING_VALIDATION_TARGET" in extension_source
     assert "experimental_candidate_disposition" in extension_source
     assert "requires VALIDATE_FIRST or explicit experimental_candidate_disposition" in extension_source
+    assert 'episode_key") or "") == f"field:{int(case_id)}"' in extension_source
+    assert 'str(validation.get("source") or "").upper() == "FIELD_CASE"' in extension_source
     engine_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py").read_text()
     assert '"EXPERIMENTAL"' in engine_source
     assert 'experimental_field_only' in engine_source
