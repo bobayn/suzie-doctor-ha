@@ -136,22 +136,47 @@ class DoctorV2Runtime:
                 found.update(DoctorV2Runtime._collect_disease_ids(item))
         return found
 
-    def experimental_candidates_for_patient(self, patient_id: str, limit:int=5) -> list[dict[str,Any]]:
+    def experimental_candidates_for_patient(
+        self, patient_id: str, trigger_event_id:int|None=None, limit:int=5
+    ) -> list[dict[str,Any]]:
         card=self.conn.execute(
             "select * from doctor_v2_patient_cards where patient_id=?",
             (str(patient_id),),
         ).fetchone()
         state=self._loads(card["state_json"]) if card else {}
-        event_payloads=[]
+        current_state={
+            key:state.get(key)
+            for key in (
+                "disease_id","confirmed_disease_id","active_disease_id",
+                "symptoms","evidence","fingerprints","component",
+            )
+            if isinstance(state,dict) and state.get(key) is not None
+        }
+        trigger_payload={}
+        if trigger_event_id is not None:
+            row=self.conn.execute(
+                "select payload_json from doctor_v2_patient_events where event_id=? and patient_id=?",
+                (int(trigger_event_id),str(patient_id)),
+            ).fetchone()
+            if row:
+                trigger_payload=self._loads(row[0])
+        anchor_context={"state":current_state,"trigger_event":trigger_payload}
+        anchor_disease_ids=self._collect_disease_ids(anchor_context)
+        anchor_text=self._experimental_text(anchor_context)
+        anchor_tokens=self._experimental_tokens(anchor_context)
+
+        history_payloads=[]
         for row in self.conn.execute(
-            "select payload_json from doctor_v2_patient_events where patient_id=? order by event_id desc limit 30",
+            "select event_id,payload_json from doctor_v2_patient_events where patient_id=? order by event_id desc limit 30",
             (str(patient_id),),
         ):
-            event_payloads.append(self._loads(row[0]))
-        patient_context={"state":state,"events":event_payloads}
-        disease_ids=self._collect_disease_ids(patient_context)
-        patient_text=self._experimental_text(patient_context)
-        patient_tokens=self._experimental_tokens(patient_context)
+            if trigger_event_id is not None and int(row[0])==int(trigger_event_id):
+                continue
+            history_payloads.append(self._loads(row[1]))
+        history_context={"events":history_payloads}
+        history_disease_ids=self._collect_disease_ids(history_context)
+        history_tokens=self._experimental_tokens(history_context)
+
         eligible={"CANDIDATE","FIELD_TESTING","VALIDATED_1_3","VALIDATED_2_3"}
         matched=[]
         rows=self.conn.execute(
@@ -164,11 +189,11 @@ class DoctorV2Runtime:
             try: candidate=json.loads(str(raw.get("candidate_json") or "{}"))
             except Exception: candidate={}
             disease_id=str(raw.get("disease_id") or candidate.get("disease_id") or "").strip()
-            reasons=[]; score=0
-            if disease_id and disease_id in disease_ids:
-                score+=100; reasons.append("disease_id_exact")
-            elif disease_id and disease_id.lower() in patient_text:
-                score+=80; reasons.append("disease_id_in_patient_context")
+            reasons=[]; score=0; anchor_score=0
+            if disease_id and disease_id in anchor_disease_ids:
+                anchor_score+=100; reasons.append("current_disease_id_exact")
+            elif disease_id and disease_id.lower() in anchor_text:
+                anchor_score+=80; reasons.append("current_disease_id_in_context")
             candidate_scope={
                 "title":candidate.get("title"),
                 "symptoms":candidate.get("symptoms"),
@@ -177,12 +202,23 @@ class DoctorV2Runtime:
                 "checks":candidate.get("checks"),
                 "component":candidate.get("component"),
             }
-            overlap=patient_tokens & self._experimental_tokens(candidate_scope)
+            candidate_tokens=self._experimental_tokens(candidate_scope)
+            overlap=anchor_tokens & candidate_tokens
             if overlap:
-                score+=min(36,len(overlap)*4)
-                reasons.append("symptom_evidence_overlap")
-            if score < 8:
+                points=min(36,len(overlap)*4)
+                anchor_score+=points
+                reasons.append("current_symptom_evidence_overlap")
+            # History may corroborate a current match, but it can never create one.
+            if anchor_score < 8:
                 continue
+            score=anchor_score
+            history_overlap=history_tokens & candidate_tokens
+            if history_overlap:
+                score+=min(12,len(history_overlap))
+                reasons.append("recent_history_corroboration")
+            if disease_id and disease_id in history_disease_ids:
+                score+=10
+                reasons.append("recent_history_same_disease")
             snap=self.store.protocol_candidate(str(raw["protocol_id"])) or {}
             matched.append({
                 "protocol_id":str(raw["protocol_id"]),
@@ -214,7 +250,7 @@ class DoctorV2Runtime:
         card=self.conn.execute("select * from doctor_v2_patient_cards where patient_id=?",(d["patient_id"],)).fetchone()
         d["patient_card"]=dict(card) if card else None
         if d["patient_card"]: d["patient_card"]["state"]=self._loads(d["patient_card"].pop("state_json",None))
-        d["experimental_protocol_candidates"]=self.experimental_candidates_for_patient(str(d["patient_id"]))
+        d["experimental_protocol_candidates"]=self.experimental_candidates_for_patient(str(d["patient_id"]),int(d["trigger_event_id"]) if d.get("trigger_event_id") is not None else None)
         d["recent_events"]=[]
         for e in self.conn.execute("select * from doctor_v2_patient_events where patient_id=? order by event_id desc limit 30",(d["patient_id"],)):
             x=dict(e); x["payload"]=self._loads(x.pop("payload_json",None)); d["recent_events"].append(x)
