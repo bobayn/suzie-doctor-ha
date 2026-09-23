@@ -50,6 +50,16 @@ def main():
             matches=house['experimental_protocol_candidates']
             assert matches and matches[0]['protocol_id']==pid, matches
             assert matches[0]['validation_stage']=='0/3'
+            rt.store.ensure_patient(patient,{'health':'normal'})
+            unrelated_event=rt.store.append_event(
+                patient_id=patient,event_type='OBSERVATION',source='test-unrelated',
+                payload={'symptom':'totally unrelated current trigger'},create_house_job=True,
+            )
+            unrelated_job=rt.conn.execute(
+                'select house_job_id from doctor_v2_house_jobs where trigger_event_id=?',(unrelated_event,)
+            ).fetchone()
+            unrelated=rt.house_get(int(unrelated_job['house_job_id']))
+            assert unrelated['experimental_protocol_candidates']==[], unrelated['experimental_protocol_candidates']
             decided=rt.house_decide(int(job['house_job_id']),{
                 'finding_class':'CASE','significance':'MEDIUM','decision':'DISPATCH_SUZIE','field_priority':'NORMAL',
                 'house_directive':'VALIDATE_FIRST','experimental_protocol_id':pid,'validation_stage':'0/3',

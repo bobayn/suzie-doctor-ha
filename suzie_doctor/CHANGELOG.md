@@ -1,3 +1,9 @@
+## Experimental matching anchor hardening — 2026-09-23
+
+- Experimental candidate matching now requires an anchor in the current House trigger/current explicit Disease context.
+- Recent patient history may increase confidence but can no longer create a match by itself.
+- Prevents a prior Experimental validation event from making the same candidate appear on unrelated later Patient Cards.
+
 ## House Experimental transport normalization — 2026-09-23
 
 - Normalizes an explicit House `MATCHING_VALIDATION_TARGET` candidate review into canonical `house_directive=VALIDATE_FIRST`, `experimental_protocol_id`, and validation stage.
