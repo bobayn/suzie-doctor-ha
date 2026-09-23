@@ -54,6 +54,10 @@ def main() -> None:
     assert "Интерфейс Home Assistant сообщил техническое событие" in live_source
     assert "experimental_protocol_candidates" in live_source
     assert "VALIDATE_FIRST" in live_source
+    extension_source = (root / "suzie_doctor/live_runtime/doctor_server/doctor_v2_extension.py").read_text()
+    assert "MATCHING_VALIDATION_TARGET" in extension_source
+    assert "experimental_candidate_disposition" in extension_source
+    assert "requires VALIDATE_FIRST or explicit experimental_candidate_disposition" in extension_source
     engine_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py").read_text()
     assert '"EXPERIMENTAL"' in engine_source
     assert 'experimental_field_only' in engine_source

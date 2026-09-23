@@ -164,14 +164,25 @@ class V2Extension:
             "field_priority":field_priority,
             **(dict(body.get("result") or {}) if isinstance(body.get("result"),dict) else {}),
         }
+        candidates=list(job.get("experimental_protocol_candidates") or [])
         directive=str(result.get("house_directive") or "").upper().strip()
         experimental_id=str(result.get("experimental_protocol_id") or "").strip()
+        review=result.get("experimental_protocol_candidate_review")
+        if (not directive and not experimental_id and decision=="DISPATCH_SUZIE"
+                and isinstance(review,dict)):
+            assessment=str(review.get("assessment") or "").upper().strip()
+            reviewed_id=str(review.get("protocol_id") or "").strip()
+            if assessment in {"MATCHING_VALIDATION_TARGET","VALIDATE_FIRST","APPLICABLE_VALIDATION_TARGET"} and reviewed_id:
+                directive="VALIDATE_FIRST"
+                experimental_id=reviewed_id
+                result["house_directive"]="VALIDATE_FIRST"
+                result["experimental_protocol_id"]=reviewed_id
+                result.setdefault("validation_stage",str(review.get("validation_stage") or ""))
         if directive or experimental_id:
             if decision != "DISPATCH_SUZIE":
                 raise web.HTTPBadRequest(text="Experimental validation directive requires DISPATCH_SUZIE")
             if directive != "VALIDATE_FIRST" or not experimental_id:
                 raise web.HTTPBadRequest(text="Experimental dispatch requires house_directive=VALIDATE_FIRST and experimental_protocol_id")
-            candidates=list(job.get("experimental_protocol_candidates") or [])
             matched=next((x for x in candidates if str(x.get("protocol_id"))==experimental_id),None)
             if not matched:
                 raise web.HTTPBadRequest(text="Experimental Protocol is not a matched 0/3-2/3 candidate for this Patient Card")
@@ -185,6 +196,11 @@ class V2Extension:
                 "match_reasons":matched.get("match_reasons") or [],
                 "candidate":matched.get("candidate") or {},
             }
+        elif decision=="DISPATCH_SUZIE" and candidates:
+            disposition=str(result.get("experimental_candidate_disposition") or "").upper().strip()
+            decline_reason=str(result.get("experimental_decline_reason") or "").strip()
+            if disposition not in {"DECLINE_EXPERIMENTAL","NOT_APPLICABLE","NOT_SAFE","NOT_USEFUL"} or not decline_reason:
+                raise web.HTTPBadRequest(text="House DISPATCH_SUZIE with matched Experimental candidates requires VALIDATE_FIRST or explicit experimental_candidate_disposition plus reason")
         decided=self.runtime.house_decide(job_id,result)
         fq=decided.get("field_queue")
         legacy=None
