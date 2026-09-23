@@ -172,6 +172,44 @@ class V2Extension:
             "field_priority":field_priority,
             **(dict(body.get("result") or {}) if isinstance(body.get("result"),dict) else {}),
         }
+        trigger_event=next(
+            (e for e in (job.get("recent_events") or [])
+             if int(e.get("event_id") or 0)==int(job.get("trigger_event_id") or 0)),
+            {},
+        )
+        trigger_payload=trigger_event.get("payload") if isinstance(trigger_event,dict) else {}
+        if not isinstance(trigger_payload,dict):
+            trigger_payload={}
+        trigger_evidence=trigger_payload.get("evidence")
+        if not isinstance(trigger_evidence,dict):
+            trigger_evidence={}
+        active_repair=None
+        if (
+            str(trigger_evidence.get("kind") or "")=="repair"
+            and trigger_evidence.get("active") is True
+            and trigger_evidence.get("terminal_resolution_required") is True
+            and trigger_evidence.get("domain")
+            and trigger_evidence.get("issue_id")
+        ):
+            active_repair={
+                "domain":str(trigger_evidence.get("domain")),
+                "issue_id":str(trigger_evidence.get("issue_id")),
+                "problem_key":str(trigger_evidence.get("problem_key") or ""),
+                "ha_severity":str(trigger_evidence.get("ha_severity") or "warning"),
+                "is_fixable":bool(trigger_evidence.get("is_fixable")),
+                "translation_key":trigger_evidence.get("translation_key"),
+                "translation_placeholders":trigger_evidence.get("translation_placeholders") or {},
+                "resolution_criterion":trigger_evidence.get("resolution_criterion") or {
+                    "type":"ha_repair_absent",
+                    "domain":str(trigger_evidence.get("domain")),
+                    "issue_id":str(trigger_evidence.get("issue_id")),
+                },
+            }
+            if decision in {"OBSERVE","RECHECK_LATER","IGNORE_AS_NOISE"}:
+                raise web.HTTPBadRequest(
+                    text="Active Home Assistant Repair requires DISPATCH_SUZIE or HUMAN_ACTION_REQUIRED until verified absent"
+                )
+            result["active_repair"]=active_repair
         candidates=list(job.get("experimental_protocol_candidates") or [])
         directive=str(result.get("house_directive") or "").upper().strip()
         experimental_id=str(result.get("experimental_protocol_id") or "").strip()
@@ -227,6 +265,7 @@ class V2Extension:
                         "experimental_protocol_id":result.get("experimental_protocol_id"),
                         "validation_stage":result.get("validation_stage"),
                         "experimental_candidate":result.get("experimental_candidate"),
+                        "active_repair":result.get("active_repair"),
                     },
                     disease_id=str(result.get("disease_id") or "") or None,
                     priority=int(fq.get("priority") or 50),
@@ -300,7 +339,11 @@ class V2Extension:
                     "A matching 0/3-2/3 candidate never forces dispatch by itself. If the Patient Card "
                     "already merits Field investigation and one candidate has reasonable real-world "
                     "validation grounds, DISPATCH_SUZIE with experimental_protocol_id, its validation_stage, "
-                    "and house_directive=VALIDATE_FIRST. Otherwise decide normally."
+                    "and house_directive=VALIDATE_FIRST. Otherwise decide normally. "
+                    "If the trigger evidence is an active Home Assistant Repair with "
+                    "terminal_resolution_required=true, it is an unresolved Doctor task: "
+                    "do NOT OBSERVE, RECHECK_LATER or IGNORE_AS_NOISE. Either DISPATCH_SUZIE "
+                    "for real resolution or HUMAN_ACTION_REQUIRED if owner action is genuinely necessary."
                 )
             elif role=="WILSON":
                 compat_id=9_000_000_000+job_id

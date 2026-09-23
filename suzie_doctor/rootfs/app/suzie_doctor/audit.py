@@ -650,39 +650,44 @@ class Auditor:
                         )
                         continue
 
-                    # A Repair WARNING is a real advisory from HA but not, by itself,
-                    # evidence of functional failure. Keep it as OBSERVE only.
-                    if severity not in {"error", "critical"}:
-                        observation = {
-                            "problem_key": key,
-                            "kind": "repair_warning",
-                            "domain": domain,
-                            "issue_id": issue_id,
-                            "severity": severity or "warning",
-                            "breaks_in_ha_version": issue.get("breaks_in_ha_version"),
-                            "is_fixable": issue.get("is_fixable"),
-                        }
-                        repair_observations.append(observation)
-                        self.db.add_observation(key, "repair_warning", observation)
-                        self.db.discard_problem(key, "HA Repair warning reclassified to OBSERVE.")
-                        continue
-
-                    # Active ERROR/CRITICAL Repairs are confirmed HA problems.
+                    # Any active, non-dismissed HA Repair is an unresolved Doctor task.
+                    # Severity controls urgency only; it must never demote an active
+                    # Repair to observation-only. Deterministic repair gets the first
+                    # chance in RecommendationExecutor; if it remains active, House/Field
+                    # must own it through a verified terminal result.
                     current_problem_keys.add(key)
                     doctor_severity = "CRITICAL" if severity == "critical" else "PROBLEM"
+                    placeholders = issue.get("translation_placeholders")
+                    if not isinstance(placeholders, dict):
+                        placeholders = {}
                     self.db.upsert_incident(
                         problem_key=key,
                         incident_type="repair_issue",
                         severity=doctor_severity,
                         title=f"Home Assistant Repair: {title}",
-                        detail=f"Источник: {domain}; issue: {issue_id}; HA severity: {severity}",
+                        detail=(
+                            f"Источник: {domain}; issue: {issue_id}; HA severity: {severity or 'warning'}; "
+                            f"is_fixable={bool(issue.get('is_fixable'))}."
+                        ),
                     )
                     findings.append({
                         "problem_key": key,
                         "kind": "repair",
+                        "title": f"Home Assistant Repair: {title}",
                         "domain": domain,
                         "issue_id": issue_id,
-                        "ha_severity": severity,
+                        "active": True,
+                        "terminal_resolution_required": True,
+                        "is_fixable": bool(issue.get("is_fixable")),
+                        "ha_severity": severity or "warning",
+                        "translation_key": issue.get("translation_key"),
+                        "translation_placeholders": placeholders,
+                        "breaks_in_ha_version": issue.get("breaks_in_ha_version"),
+                        "resolution_criterion": {
+                            "type": "ha_repair_absent",
+                            "domain": domain,
+                            "issue_id": issue_id,
+                        },
                     })
 
             entries = bridge.get("config_entries", [])

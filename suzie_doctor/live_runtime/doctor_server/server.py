@@ -890,6 +890,15 @@ class DoctorServer:
                 )
             else:
                 prompt=f"CASE #{case_id}"
+            active_repair=problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else None
+            if active_repair:
+                prompt += (
+                    f" Active Home Assistant Repair: domain={active_repair.get('domain')} "
+                    f"issue_id={active_repair.get('issue_id')}. This is an unresolved Doctor task, not an "
+                    "observation. Diagnose and resolve it safely. Before SUCCESS you MUST call ha.repairs.list "
+                    "and verify that this exact domain+issue_id is absent. If it remains active, do not report "
+                    "SUCCESS; continue diagnosis or use HUMAN_REQUIRED when owner action is genuinely required."
+                )
             job = await self._call_lab_run(
                 method="cdp",
                 text=prompt,
@@ -1338,6 +1347,12 @@ class DoctorServer:
             case_id = int(request.match_info["case_id"])
             async with self.journal_gate:
                 before = self.journal.get_case(case_id)
+                result_payload=self.attest_repair_resolution(
+                    case_id=case_id,
+                    case=before,
+                    outcome=str(body.get("outcome") or ""),
+                    result=result_payload,
+                )
                 requirement=self.v2_ext.runtime.field_validation_requirement(case_id)
                 if requirement and isinstance(result_payload.get("experimental_validation"),dict):
                     result_payload["experimental_validation"]=self.attest_experimental_attempt(
@@ -1559,6 +1574,55 @@ class DoctorServer:
             "signed_risk_assessment":safe_structured(risk or {}),
         })
         out["evidence"]=evidence
+        return out
+
+    def attest_repair_resolution(
+        self, *, case_id:int, case:dict[str,Any], outcome:str, result:dict[str,Any]
+    )->dict[str,Any]:
+        problem=case.get("problem") if isinstance(case.get("problem"),dict) else {}
+        repair=problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else None
+        if not repair:
+            return result
+        normalized_outcome=str(outcome or "").upper()
+        if normalized_outcome not in {"SUCCESS","RESOLVED"}:
+            return result
+        domain=str(repair.get("domain") or "")
+        issue_id=str(repair.get("issue_id") or "")
+        rows=self.command_bridge.conn.execute(
+            """select command_id,status,result_json,created_at,completed_at
+               from doctor_client_commands
+               where case_id=? and tool_name='ha.repairs.list' and status='COMPLETED'
+               order by created_at desc""",
+            (int(case_id),),
+        ).fetchall()
+        if not rows:
+            raise ValueError("Active HA Repair SUCCESS requires attested ha.repairs.list verification")
+        latest=rows[0]
+        try:
+            command_result=json.loads(str(latest["result_json"] or "{}"))
+        except Exception:
+            command_result={}
+        repairs=command_result.get("repairs") if isinstance(command_result,dict) else None
+        if not isinstance(repairs,list):
+            raise ValueError("ha.repairs.list verification returned no structured repairs list")
+        still_active=False
+        for item in repairs:
+            if not isinstance(item,dict):
+                continue
+            if str(item.get("domain") or "")==domain and str(item.get("issue_id") or "")==issue_id:
+                if item.get("active",True) is not False and not item.get("dismissed_version"):
+                    still_active=True
+                    break
+        if still_active:
+            raise ValueError("Active HA Repair is still present; Case cannot close SUCCESS")
+        out=dict(result)
+        out["repair_verification"]={
+            "domain":domain,
+            "issue_id":issue_id,
+            "active_after":False,
+            "verified_by":"ha.repairs.list",
+            "signed_command_id":str(latest["command_id"]),
+        }
         return out
 
     def experimental_card(
@@ -1819,7 +1883,7 @@ class DoctorServer:
                         "evidence": safe_structured(body.get("evidence") or body),
                     },
                     event_type="OBSERVATION",
-                    fingerprint=clean_text(body.get("fingerprint"), 200) or None,
+                    fingerprint=(clean_text(body.get("fingerprint"), 200) or clean_text(body.get("problem_key"), 200) or None),
                 )
                 payload["result"] = "PATIENT_JOURNAL_HOUSE"
                 payload["patient_journal"] = journal
@@ -1911,7 +1975,7 @@ class DoctorServer:
                     "evidence": safe_structured(body.get("evidence") or body),
                 },
                 event_type="OBSERVATION",
-                fingerprint=clean_text(body.get("fingerprint"), 200) or None,
+                fingerprint=(clean_text(body.get("fingerprint"), 200) or clean_text(body.get("problem_key"), 200) or None),
             )
             payload["result"] = "PATIENT_JOURNAL_HOUSE"
             payload["patient_journal"] = journal
