@@ -60,9 +60,14 @@ def main() -> None:
     assert "requires VALIDATE_FIRST or explicit experimental_candidate_disposition" in extension_source
     assert 'episode_key") or "") == f"field:{int(case_id)}"' in extension_source
     assert 'str(validation.get("source") or "").upper() == "FIELD_CASE"' in extension_source
+    server_source = (root / "suzie_doctor/live_runtime/doctor_server/server.py").read_text()
     engine_source = (root / "suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py").read_text()
     assert '"EXPERIMENTAL"' in engine_source
     assert 'experimental_field_only' in engine_source
+    assert 'success_when == "conditions"' in engine_source
+    assert 'response["verify_performed"] = verify_performed' in engine_source
+    assert 'response["verify_passed"]' in engine_source
+    assert 'Experimental validation PASS requires attested signed verify_performed=true and verify_passed=true' in server_source
     skill_source = (root / "suzie_doctor/rootfs/app/suzie_doctor_skill/SKILL.md").read_text()
     assert "House Experimental Candidate routing" in skill_source
     assert "continue the Case:" in skill_source

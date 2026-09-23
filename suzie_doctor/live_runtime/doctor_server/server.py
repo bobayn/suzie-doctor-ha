@@ -1541,14 +1541,21 @@ class DoctorServer:
             raise ValueError("attempted Experimental validation has no attested signed doctor.diagnose execution in this Case")
         actual=str(execution.get("result") or "").upper()
         reported=str(report.get("treatment_result") or "").upper()
+        reported_verify=str(report.get("verify_result") or "").upper()
+        signed_verify_performed=execution.get("verify_performed") is True
+        signed_verify_passed=execution.get("verify_passed") is True
         if reported=="SUCCESS" and actual!="SUCCESS":
             raise ValueError("reported Experimental treatment SUCCESS does not match signed execution result")
+        if reported=="SUCCESS" and reported_verify=="PASS" and not (signed_verify_performed and signed_verify_passed):
+            raise ValueError("Experimental validation PASS requires attested signed verify_performed=true and verify_passed=true")
         out=dict(report)
         evidence=dict(out.get("evidence") or {})
         evidence.update({
             "signed_command_id":str(matched["command_id"]),
             "signed_execution_result":actual,
             "signed_protocol_id":str(protocol_id),
+            "signed_verify_performed":signed_verify_performed,
+            "signed_verify_passed":signed_verify_passed,
             "signed_risk_assessment":safe_structured(risk or {}),
         })
         out["evidence"]=evidence
