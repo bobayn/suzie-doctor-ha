@@ -92,6 +92,10 @@ def main() -> None:
         [sys.executable, str(repo_root / "suzie_doctor/server_migration_v2/test_experimental_validation.py")],
         check=True,
     )
+    subprocess.run(
+        [sys.executable, str(repo_root / "suzie_doctor/server_migration_v2/test_active_repair_routing.py")],
+        check=True,
+    )
     print("PASS doctor_server_v2_policy")
 
 if __name__ == "__main__":

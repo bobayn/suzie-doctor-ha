@@ -49,21 +49,48 @@ class DoctorV2Runtime:
             or (payload.get("severity") if isinstance(payload,dict) else "")
             or ""
         ).upper().strip()
-        return {
+        base={
             "CRITICAL":100, "EMERGENCY":100, "RED":100,
             "HIGH":80,
             "PROBLEM":70, "ERROR":70,
             "WARNING":60, "YELLOW":60, "MEDIUM":60,
             "LOW":50, "INFO":40,
         }.get(raw,50)
+        if evidence.get("terminal_resolution_required") is True:
+            base=max(base,85)
+        return base
 
     def journal_to_house(self, patient_id: str, source: str, payload: dict[str,Any], *, event_type: str="OBSERVATION", severity: str|None=None, fingerprint: str|None=None, priority: int|None=None) -> dict[str,Any]:
         state={"latest_source":source,"latest":payload}
         version=self.store.ensure_patient(patient_id,state)
+        if fingerprint:
+            existing=self.conn.execute(
+                """select e.event_id,h.house_job_id,h.status as house_status,q.status as field_status,d.decision
+                   from doctor_v2_patient_events e
+                   join doctor_v2_house_jobs h on h.trigger_event_id=e.event_id
+                   left join doctor_v2_house_decisions d on d.house_job_id=h.house_job_id
+                   left join doctor_v2_field_queue q on q.source_house_decision_id=d.decision_id
+                   where e.patient_id=? and e.fingerprint=?
+                     and (h.status in ('WAITING','CLAIMED')
+                          or q.status in ('WAITING','ASSIGNED','RUNNING')
+                          or (h.status='DONE' and d.decision='HUMAN_ACTION_REQUIRED'))
+                   order by e.event_id desc limit 1""",
+                (str(patient_id),str(fingerprint)),
+            ).fetchone()
+            if existing:
+                return {
+                    "patient_id":patient_id,"card_version":version,
+                    "event_id":int(existing["event_id"]),
+                    "house_job_id":int(existing["house_job_id"]),
+                    "house_status":existing["house_status"],
+                    "deduplicated":True,
+                    "field_status":existing["field_status"],
+                    "decision":existing["decision"],
+                }
         effective_priority=self.house_priority_from_payload(payload,severity) if priority is None else int(priority)
         event_id=self.store.append_event(patient_id=patient_id,event_type=event_type,source=source,payload=payload,severity=severity,fingerprint=fingerprint,create_house_job=True,priority=effective_priority)
         row=self.conn.execute("select house_job_id,status from doctor_v2_house_jobs where trigger_event_id=?",(event_id,)).fetchone()
-        return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None}
+        return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None,"deduplicated":False}
 
     def customer_feed(self, patient_id: str, limit: int=80) -> dict[str,Any]:
         rows=self.conn.execute(

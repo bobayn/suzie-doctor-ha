@@ -449,7 +449,22 @@ class Runtime:
         await asyncio.sleep(15)
         while True:
             try:
-                await self.recommendation_executor.scan_once(execute=True)
+                recommendation_result = await self.recommendation_executor.scan_once(execute=True)
+                unresolved_repairs = [
+                    item for item in (recommendation_result.get("actions") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("kind") or "") == "repair"
+                    and str(item.get("result") or "") != "FIXED"
+                ]
+                if unresolved_repairs:
+                    await self.run_audit(
+                        "targeted",
+                        reason="repair_followup",
+                        target_context={
+                            "unresolved_repairs": unresolved_repairs[:20],
+                            "source": "recommendation_loop",
+                        },
+                    )
                 self.record_background_ok("recommendations")
             except asyncio.CancelledError:
                 raise
@@ -641,6 +656,11 @@ class Runtime:
                             "error_level", "logger", "message", "source",
                             "exception", "fingerprint", "event_timestamp",
                             "related_findings",
+                            "title", "domain", "issue_id", "active",
+                            "terminal_resolution_required", "is_fixable",
+                            "ha_severity", "translation_key",
+                            "translation_placeholders", "breaks_in_ha_version",
+                            "resolution_criterion",
                         )
                         if key in finding
                     },

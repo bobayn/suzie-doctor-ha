@@ -124,6 +124,27 @@ Web policy is **10/10**:
 
 Doctor Server, not Web dialogue, is canonical process memory.
 
+## Active Home Assistant Repairs
+
+An active, non-dismissed Home Assistant Repair is an unresolved Doctor task. Its HA
+severity controls urgency, not whether Doctor is allowed to ignore it. A WARNING Repair
+must never be downgraded to observation-only merely because it is not ERROR/CRITICAL.
+
+The deterministic Recommendation/Repair executor gets the first attempt. If the Repair
+remains active, is not natively fixable, requires input, fails, or cannot be verified, the
+case MUST enter Patient Journal -> House. The active Repair should be fingerprint-deduplicated
+so repeated scans reinforce one task instead of creating duplicate House jobs.
+
+For a trigger with `terminal_resolution_required=true`, House MUST NOT choose `OBSERVE`,
+`RECHECK_LATER`, or `IGNORE_AS_NOISE`. House must either `DISPATCH_SUZIE` for smart Field
+resolution or use `HUMAN_ACTION_REQUIRED` when owner action is genuinely necessary.
+
+A Field Case for an active Repair may close SUCCESS/RESOLVED only after an exact
+`ha.repairs.list` verification proves that the original `domain + issue_id` is absent.
+Process state, configuration changes, or a plausible explanation are not sufficient. If
+the Repair remains active, Field continues diagnosis or returns a truthful non-success
+outcome.
+
 ## House Experimental Candidate routing
 
 For every Patient Card, Doctor House MUST inspect the server-supplied

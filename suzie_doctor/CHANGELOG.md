@@ -1,3 +1,11 @@
+## 0.2.63-dev / Suite 0.1.9-dev — 2026-09-23
+
+- Active Home Assistant Repairs are now terminal Doctor tasks regardless of HA warning/error severity.
+- Deterministic repair remains first-line; unresolved/non-fixable Repairs trigger immediate smart Patient Journal -> House routing from the minute recommendation loop.
+- House cannot OBSERVE/RECHECK/IGNORE an active terminal Repair; it must dispatch Field or require owner action.
+- Active Repair House jobs are priority 85 and fingerprint-deduplicated while pending/in Field/awaiting owner action.
+- Field SUCCESS/RESOLVED is fail-closed unless an attested `ha.repairs.list` command proves the exact Repair is absent.
+
 ## 0.2.62-dev — 2026-09-23
 
 - Adds explicit ProtocolEngine postcondition verification with `verify.success_when=conditions`.
