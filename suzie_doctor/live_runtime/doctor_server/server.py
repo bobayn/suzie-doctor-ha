@@ -1643,6 +1643,126 @@ class DoctorServer:
         body, client = await self.authenticated_body(request)
         client_id = str(client["client_id"])
         license_state = self.db.license_state(client)
+        routing_intent = clean_text(body.get("routing_intent"), 80)
+        experimental_id = clean_text(body.get("experimental_protocol_id"), 180)
+
+        # Experimental Field validation is an exact-Case route and must be handled
+        # before normal published-Disease matching. An Experimental candidate may
+        # intentionally exist before its Protocol (or even its new Disease) is
+        # published into normal executable knowledge. Falling through to NO_MATCH
+        # would incorrectly create another Case and make VALIDATE_FIRST unusable.
+        if experimental_id:
+            if routing_intent != "FIELD_EXPERIMENTAL_VALIDATION":
+                raise web.HTTPBadRequest(
+                    text="Experimental Protocol requires FIELD_EXPERIMENTAL_VALIDATION routing"
+                )
+            try:
+                field_case_id = int(body.get("field_case_id"))
+            except Exception as exc:
+                raise web.HTTPBadRequest(
+                    text="Experimental Protocol requires field_case_id"
+                ) from exc
+            self.experimental_case_authorized(
+                client_id=client_id,
+                case_id=field_case_id,
+                protocol_id=experimental_id,
+            )
+            candidate = self.v2_ext.runtime.store.protocol_candidate(experimental_id)
+            if not candidate:
+                raise web.HTTPBadRequest(text="Experimental Protocol candidate not found")
+            candidate_body = (
+                candidate.get("candidate")
+                if isinstance(candidate.get("candidate"), dict)
+                else {}
+            )
+            disease_id = str(
+                candidate.get("disease_id")
+                or candidate_body.get("disease_id")
+                or ""
+            ).strip()
+            if not disease_id:
+                raise web.HTTPBadRequest(
+                    text="Experimental Protocol candidate has no disease_id"
+                )
+            candidate_disease_id = clean_text(body.get("candidate_disease_id"), 160)
+            if candidate_disease_id and candidate_disease_id != disease_id:
+                raise web.HTTPBadRequest(
+                    text="candidate_disease_id does not match Experimental Protocol"
+                )
+            confirmed_id = clean_text(body.get("confirmed_disease_id"), 160)
+            if confirmed_id and confirmed_id != disease_id:
+                raise web.HTTPBadRequest(
+                    text="confirmed_disease_id does not match Experimental Protocol"
+                )
+            confirmed = bool(confirmed_id == disease_id)
+            payload: dict[str, Any] = {
+                "result": "EXPERIMENTAL_REQUIRES_CONFIRMED_DISEASE",
+                "request_id": clean_text(body.get("request_id"), 128) or str(uuid4()),
+                "license": license_state,
+                "confirmed": confirmed,
+                "candidates": [],
+                "execution_packages": [],
+                "routing": "FIELD_EXPERIMENTAL_VALIDATION",
+                "disease": {
+                    "disease_id": disease_id,
+                    "title": candidate_body.get("title"),
+                    "component": candidate_body.get("component"),
+                    "diagnosis_status": "EXPERIMENTAL",
+                    "confidence": None,
+                },
+                "experimental_protocol": {
+                    "protocol_id": experimental_id,
+                    "validation_stage": candidate.get("validation_stage"),
+                    "state": candidate.get("state"),
+                    "negative_episodes": candidate.get("negative_episodes", 0),
+                    "blocker": None,
+                },
+            }
+            if not confirmed:
+                payload["message"] = (
+                    "House directive is not proof. Field must independently confirm "
+                    "Disease and retry with confirmed_disease_id before Experimental treatment."
+                )
+                payload["required_confirmation"] = {
+                    "confirmed_disease_id": disease_id,
+                }
+            else:
+                card, blocker, refreshed = self.experimental_card(
+                    protocol_id=experimental_id,
+                    disease_id=disease_id,
+                )
+                if refreshed:
+                    payload["experimental_protocol"].update({
+                        "validation_stage": refreshed.get("validation_stage"),
+                        "state": refreshed.get("state"),
+                        "negative_episodes": refreshed.get("negative_episodes", 0),
+                    })
+                payload["experimental_protocol"]["blocker"] = blocker
+                if card is None:
+                    payload["result"] = "EXPERIMENTAL_PROTOCOL_NOT_EXECUTABLE"
+                    payload["message"] = (
+                        "Experimental candidate cannot enter the signed machine-treatment "
+                        "path; continue Field diagnosis."
+                    )
+                elif not bool(license_state["active"]):
+                    payload["result"] = "EXPERIMENTAL_PROTOCOL_LICENSE_BLOCKED"
+                else:
+                    payload["execution_packages"] = [self.package_for(
+                        client_id=client_id,
+                        disease_id=disease_id,
+                        card=card,
+                        execution_actor="field_suzie",
+                    )]
+                    payload["result"] = "EXPERIMENTAL_PROTOCOL_AVAILABLE"
+            self.db.event("experimental_protocol_consult", client_id, {
+                "case_id": field_case_id,
+                "protocol_id": experimental_id,
+                "disease_id": disease_id,
+                "confirmed": confirmed,
+                "result": payload.get("result"),
+            })
+            return self.signed(payload)
+
         confirmed_id = clean_text(body.get("confirmed_disease_id"), 160)
         requested_id = clean_text(body.get("disease_id"), 160)
 
@@ -1671,7 +1791,6 @@ class DoctorServer:
             "candidates": candidates,
             "execution_packages": [],
         }
-        routing_intent = clean_text(body.get("routing_intent"), 80)
         v2_route = routing_intent in {
             "FAMILY_DOCTOR_PROTOCOL_OR_PATIENT_JOURNAL",
             "PATIENT_JOURNAL_HOUSE_REVIEW",
@@ -1734,52 +1853,6 @@ class DoctorServer:
             },
             "recommendations": self.knowledge.recommendations(disease),
         })
-
-        experimental_id=clean_text(body.get("experimental_protocol_id"),180)
-        if experimental_id:
-            if routing_intent != "FIELD_EXPERIMENTAL_VALIDATION":
-                raise web.HTTPBadRequest(text="Experimental Protocol requires FIELD_EXPERIMENTAL_VALIDATION routing")
-            try:
-                field_case_id=int(body.get("field_case_id"))
-            except Exception as exc:
-                raise web.HTTPBadRequest(text="Experimental Protocol requires field_case_id") from exc
-            self.experimental_case_authorized(
-                client_id=client_id,case_id=field_case_id,protocol_id=experimental_id
-            )
-            card,blocker,candidate=self.experimental_card(
-                protocol_id=experimental_id,disease_id=disease_id
-            )
-            payload["experimental_protocol"]={
-                "protocol_id":experimental_id,
-                "validation_stage":(candidate or {}).get("validation_stage"),
-                "state":(candidate or {}).get("state"),
-                "negative_episodes":(candidate or {}).get("negative_episodes",0),
-                "blocker":blocker,
-            }
-            if not confirmed:
-                payload["result"]="EXPERIMENTAL_REQUIRES_CONFIRMED_DISEASE"
-                payload["message"]="House directive is not proof; Field must independently confirm Disease before Experimental treatment."
-            elif card is None:
-                payload["result"]="EXPERIMENTAL_PROTOCOL_NOT_EXECUTABLE"
-                payload["message"]="Experimental candidate cannot enter the signed machine-treatment path; continue Field diagnosis."
-            elif not bool(license_state["active"]):
-                payload["result"]="EXPERIMENTAL_PROTOCOL_LICENSE_BLOCKED"
-            else:
-                payload["execution_packages"]=[self.package_for(
-                    client_id=client_id,
-                    disease_id=disease_id,
-                    card=card,
-                    execution_actor="field_suzie",
-                )]
-                payload["result"]="EXPERIMENTAL_PROTOCOL_AVAILABLE"
-                payload["routing"]="FIELD_EXPERIMENTAL_VALIDATION"
-            self.db.event("experimental_protocol_consult",client_id,{
-                "case_id":field_case_id,
-                "protocol_id":experimental_id,
-                "disease_id":disease_id,
-                "result":payload.get("result"),
-            })
-            return self.signed(payload)
 
         cards = self.knowledge.protocol_cards(disease_id)
         eligible_cards = cards

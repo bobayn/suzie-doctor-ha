@@ -2,7 +2,7 @@
   "name": "suzie-doctor-skill",
   "version": "0.1.7-dev",
   "schema_version": 1,
-  "sha256": "69fb3a2eeaacfd5040450222d437cf773ea3e8531128cad60778a90989514d4d",
+  "sha256": "1fb61729c7b733cc8eab97d9682acbe7e07770eff7963847e6c60a1a3530bdfb",
   "canonical": true,
   "surfaces": [
     "web",
