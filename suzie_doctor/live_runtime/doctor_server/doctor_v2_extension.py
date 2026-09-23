@@ -394,6 +394,9 @@ class V2Extension:
                 if not bool(self.server.config.get("doctor_v2_dispatch_enabled", False)):
                     await asyncio.sleep(2)
                     continue
+                recovered=self.runtime.recover_stranded_house_wilson()
+                if recovered:
+                    self.server.db.event("doctor_v2_stranded_assignment_recovered",None,{"items":recovered})
                 self._schedule_wilson()
                 self.sync_field_slots()
                 for item in self.runtime.expired_sessions():
