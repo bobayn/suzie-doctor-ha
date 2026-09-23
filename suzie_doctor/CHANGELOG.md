@@ -1,3 +1,9 @@
+## Experimental Wilson evidence guard — 2026-09-23
+
+- Wilson validation jobs are created only from Server-normalized `VALIDATE_FIRST` Field results bound to the exact protocol and `episode_key=field:<case_id>`.
+- A normal Field Case cannot create Experimental validation evidence merely by self-reporting an `experimental_validation` object.
+- Prevents duplicate/non-authorized Cases from contaminating Wilson progression.
+
 ## 0.2.61-dev — 2026-09-23
 
 - Handles `FIELD_EXPERIMENTAL_VALIDATION` before normal published-Disease matching, so an unpublished Experimental candidate cannot fall through to ordinary `NO_MATCH`/auto-escalation.
