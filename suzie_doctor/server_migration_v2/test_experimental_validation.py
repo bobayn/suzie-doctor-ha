@@ -26,6 +26,11 @@ def main():
             ).fetchone()
             assert cur and cur[0] == '60'
 
+            assert rt.house_priority_from_payload({'evidence':{'severity':'CRITICAL'}}) == 100
+            assert rt.house_priority_from_payload({'evidence':{'severity':'PROBLEM'}}) == 70
+            assert rt.house_priority_from_payload({'evidence':{'severity':'LOW'}}) == 50
+            assert rt.house_priority_from_payload({'evidence':{}}) == 50
+
             pid='EXP-TEST-001'; disease='DISEASE-TEST-001'; patient='patient-exp'
             rt.store.upsert_protocol_candidate(
                 protocol_id=pid,origin='INTERNAL_FIELD',disease_id=disease,

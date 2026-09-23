@@ -1,3 +1,9 @@
+## House priority from current event severity — 2026-09-23
+
+- Doctor V2 now derives House queue priority from the current event severity instead of assigning every Patient Card priority 50.
+- CRITICAL/RED events pre-empt ordinary backlog; HIGH/PROBLEM/WARNING are ordered above LOW/unknown observations.
+- Priority is routing metadata only; it does not upgrade diagnosis significance or force Field dispatch.
+
 ## Experimental matching anchor hardening — 2026-09-23
 
 - Experimental candidate matching now requires an anchor in the current House trigger/current explicit Disease context.
