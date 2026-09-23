@@ -1922,12 +1922,14 @@ class ProtocolEngine:
                 response["treatment"] = treatment_results
                 verify_results: list[dict[str, Any]] = []
                 success = False
+                verify_performed = False
                 if not treatment_failed:
                     verify = card.get("verify") or {}
                     if (
                         isinstance(verify, dict)
                         and verify.get("rerun_diagnostics")
                     ):
+                        verify_performed = True
                         verify_env = dict(context or {})
                         verify_results = await self._run_diagnostics(
                             card, verify_env
@@ -1941,6 +1943,12 @@ class ProtocolEngine:
                                 verify_env,
                                 default=False,
                             )
+                        elif success_when == "conditions":
+                            success = self._eval_conditions(
+                                verify.get("conditions"),
+                                verify_env,
+                                default=False,
+                            )
                         else:
                             raise ProtocolError(
                                 "Unsupported verify.success_when: "
@@ -1949,6 +1957,8 @@ class ProtocolEngine:
                     else:
                         success = not treatment_failed
                 response["verify"] = verify_results
+                response["verify_performed"] = verify_performed
+                response["verify_passed"] = bool(success) if verify_performed else None
 
                 rollback_results: list[dict[str, Any]] = []
                 if not success and (card.get("rollback") or []):

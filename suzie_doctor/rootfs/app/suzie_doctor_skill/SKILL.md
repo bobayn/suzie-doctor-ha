@@ -166,6 +166,8 @@ A Field Case carrying `house_directive=VALIDATE_FIRST` MUST follow this sequence
 7. Execute only the signed `EXPERIMENTAL` package returned by Doctor Server.
 8. Verify the original functional criterion. Process/service state alone is insufficient
    when the Disease was confirmed by a stronger functional criterion.
+   For validation credit, the signed execution itself must report `verify_performed=true`
+   and `verify_passed=true`; a Field-written `verify_result=PASS` cannot substitute for it.
 9. Record `experimental_validation` in the Case Report with at least:
    - protocol_id
    - independent_diagnosis_performed=true

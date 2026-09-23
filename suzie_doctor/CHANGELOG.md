@@ -1,3 +1,11 @@
+## 0.2.62-dev — 2026-09-23
+
+- Adds explicit ProtocolEngine postcondition verification with `verify.success_when=conditions`.
+- Execution results now expose `verify_performed` and `verify_passed`.
+- Experimental SUCCESS/PASS evidence is rejected unless the exact signed execution attests both `verify_performed=true` and `verify_passed=true`.
+- Field self-report can no longer manufacture a successful 1/3 validation without signed functional verification.
+- Canonical Skill updated and hash refreshed.
+
 ## Experimental Wilson evidence guard — 2026-09-23
 
 - Wilson validation jobs are created only from Server-normalized `VALIDATE_FIRST` Field results bound to the exact protocol and `episode_key=field:<case_id>`.
