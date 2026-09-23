@@ -33,6 +33,7 @@ from case_journal import (
 )
 from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
+from protocol_factory import build_card as build_generated_protocol_card
 
 SERVER_VERSION = "0.2.0-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -876,9 +877,22 @@ class DoctorServer:
                 )
             return
         try:
+            problem=case.get("problem") if isinstance(case.get("problem"),dict) else {}
+            if str(problem.get("house_directive") or "") == "VALIDATE_FIRST":
+                prompt=(
+                    f"CASE #{case_id}. House directive VALIDATE_FIRST for Experimental Protocol "
+                    f"{problem.get('experimental_protocol_id')} at {problem.get('validation_stage')}. "
+                    "Independently confirm Disease/applicability first; House is not proof. If safe/applicable, "
+                    "obtain treatment only through doctor.diagnose signed path, perform Field risk assessment, "
+                    "execute and verify the original functional criterion. If experimental validation fails, is "
+                    "unsafe, unavailable or inapplicable, record negative experimental_validation evidence and "
+                    "CONTINUE diagnosing/treating the patient rather than ending the Case for that reason alone."
+                )
+            else:
+                prompt=f"CASE #{case_id}"
             job = await self._call_lab_run(
                 method="cdp",
-                text=f"CASE #{case_id}",
+                text=prompt,
             )
             job_id = str(job.get("job_id") or "")
             if not job_id:
@@ -1324,6 +1338,20 @@ class DoctorServer:
             case_id = int(request.match_info["case_id"])
             async with self.journal_gate:
                 before = self.journal.get_case(case_id)
+                requirement=self.v2_ext.runtime.field_validation_requirement(case_id)
+                if requirement and isinstance(result_payload.get("experimental_validation"),dict):
+                    result_payload["experimental_validation"]=self.attest_experimental_attempt(
+                        case_id=case_id,
+                        protocol_id=str(requirement.get("experimental_protocol_id") or ""),
+                        report=dict(result_payload["experimental_validation"]),
+                    )
+                normalized_validation=self.v2_ext.runtime.normalize_field_validation_result(
+                    case_id,
+                    str(before.get("client_id") or ""),
+                    result_payload,
+                )
+                if normalized_validation is not None:
+                    result_payload["experimental_validation"]=normalized_validation
                 result = self.journal.complete_and_next(
                     case_id=case_id,
                     claim_token=str(body.get("claim_token") or ""),
@@ -1332,7 +1360,7 @@ class DoctorServer:
                     actor="doctor_suzie",
                     allow_handoff=False,
                 )
-            await self.v2_ext.field_finished(
+            v2_completion=await self.v2_ext.field_finished(
                 case_id,
                 str(before.get("client_id") or ""),
                 str(body.get("outcome") or ""),
@@ -1347,7 +1375,9 @@ class DoctorServer:
                 )
                 self._dispatch_tasks.add(task)
                 task.add_done_callback(self._dispatch_tasks.discard)
-            return web.json_response({"ok": True, **result})
+            return web.json_response({"ok": True, **result, "doctor_v2": v2_completion})
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
         except Exception as exc:
             raise self._journal_http_error(exc)
 
@@ -1464,6 +1494,119 @@ class DoctorServer:
             "client_id": client["client_id"],
             "license": self.db.license_state(client),
         })
+
+    def experimental_case_authorized(
+        self, *, client_id: str, case_id: int, protocol_id: str
+    ) -> dict[str, Any]:
+        case=self.journal.get_case(int(case_id))
+        if str(case.get("client_id") or "") != str(client_id):
+            raise web.HTTPForbidden(text="Experimental Case belongs to another client")
+        problem=case.get("problem") if isinstance(case.get("problem"),dict) else {}
+        if str(problem.get("house_directive") or "") != "VALIDATE_FIRST":
+            raise web.HTTPForbidden(text="Experimental treatment requires House VALIDATE_FIRST directive")
+        if str(problem.get("experimental_protocol_id") or "") != str(protocol_id):
+            raise web.HTTPForbidden(text="Experimental Protocol does not match House directive")
+        return case
+
+    def attest_experimental_attempt(
+        self, *, case_id:int, protocol_id:str, report:dict[str,Any]
+    )->dict[str,Any]:
+        if not bool(report.get("attempted")):
+            return report
+        rows=self.command_bridge.conn.execute(
+            """select command_id,arguments_json,status,result_json,created_at,completed_at
+               from doctor_client_commands
+               where case_id=? and tool_name='doctor.diagnose'
+               order by created_at desc""",
+            (int(case_id),),
+        ).fetchall()
+        matched=None
+        execution=None
+        risk=None
+        for row in rows:
+            try: args=json.loads(str(row["arguments_json"] or "{}"))
+            except Exception: args={}
+            evidence=args.get("evidence") if isinstance(args.get("evidence"),dict) else {}
+            if not bool(args.get("execute")) or str(evidence.get("experimental_protocol_id") or "")!=str(protocol_id):
+                continue
+            if str(row["status"] or "")!="COMPLETED":
+                continue
+            try: command_result=json.loads(str(row["result_json"] or "{}"))
+            except Exception: command_result={}
+            for item in command_result.get("execution_results") or []:
+                if isinstance(item,dict) and str(item.get("protocol_id") or "")==str(protocol_id):
+                    matched=row; execution=item; risk=args.get("risk_assessment"); break
+            if matched is not None: break
+        if matched is None or not isinstance(execution,dict):
+            raise ValueError("attempted Experimental validation has no attested signed doctor.diagnose execution in this Case")
+        actual=str(execution.get("result") or "").upper()
+        reported=str(report.get("treatment_result") or "").upper()
+        if reported=="SUCCESS" and actual!="SUCCESS":
+            raise ValueError("reported Experimental treatment SUCCESS does not match signed execution result")
+        out=dict(report)
+        evidence=dict(out.get("evidence") or {})
+        evidence.update({
+            "signed_command_id":str(matched["command_id"]),
+            "signed_execution_result":actual,
+            "signed_protocol_id":str(protocol_id),
+            "signed_risk_assessment":safe_structured(risk or {}),
+        })
+        out["evidence"]=evidence
+        return out
+
+    def experimental_card(
+        self, *, protocol_id: str, disease_id: str
+    ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None]:
+        candidate=self.v2_ext.runtime.store.protocol_candidate(str(protocol_id))
+        if not candidate:
+            return None,"candidate_not_found",None
+        if str(candidate.get("state") or "") not in {
+            "CANDIDATE","FIELD_TESTING","VALIDATED_1_3","VALIDATED_2_3"
+        }:
+            return None,"candidate_not_in_field_validation_stage",candidate
+        candidate_disease=str(candidate.get("disease_id") or "")
+        if candidate_disease and candidate_disease != str(disease_id):
+            return None,"candidate_disease_mismatch",candidate
+        raw=dict(candidate.get("candidate") or {})
+        raw.setdefault("protocol_id",str(protocol_id))
+        raw.setdefault("disease_id",str(disease_id))
+        card=None
+        if bool(raw.get("controlled_test")) and isinstance(raw.get("experimental_card"),dict):
+            card=dict(raw["experimental_card"])
+        else:
+            disease=self.knowledge.disease(str(disease_id))
+            if disease is None:
+                return None,"disease_not_found",candidate
+            approval_key=f"{disease_id}|{raw.get('protocol_id')}"
+            try:
+                generated=build_generated_protocol_card(
+                    disease,raw,approved_keys={approval_key}
+                )
+            except Exception as exc:
+                return None,f"candidate_factory_error:{type(exc).__name__}",candidate
+            factory=generated.get("factory") if isinstance(generated.get("factory"),dict) else {}
+            if not bool(factory.get("mapped")) or not bool(factory.get("complete_mapping")):
+                return None,"candidate_not_machine_mapped",candidate
+            if not (generated.get("treatment") or []):
+                return None,"candidate_has_no_machine_treatment",candidate
+            card=generated
+        if not isinstance(card,dict):
+            return None,"candidate_card_missing",candidate
+        card=dict(card)
+        card["disease_id"]=str(disease_id)
+        proto=dict(card.get("protocol") or {})
+        proto.update({
+            "id":str(protocol_id),
+            "version":str(proto.get("version") or raw.get("version") or "0.1.0-exp"),
+            "status":"EXPERIMENTAL",
+        })
+        card["protocol"]=proto
+        card["experimental_validation"]={
+            "validation_stage":candidate.get("validation_stage") or "0/3",
+            "origin":candidate.get("origin"),
+            "negative_episodes":candidate.get("negative_episodes",0),
+        }
+        return card,None,candidate
 
     def package_for(
         self,
@@ -1591,6 +1734,52 @@ class DoctorServer:
             },
             "recommendations": self.knowledge.recommendations(disease),
         })
+
+        experimental_id=clean_text(body.get("experimental_protocol_id"),180)
+        if experimental_id:
+            if routing_intent != "FIELD_EXPERIMENTAL_VALIDATION":
+                raise web.HTTPBadRequest(text="Experimental Protocol requires FIELD_EXPERIMENTAL_VALIDATION routing")
+            try:
+                field_case_id=int(body.get("field_case_id"))
+            except Exception as exc:
+                raise web.HTTPBadRequest(text="Experimental Protocol requires field_case_id") from exc
+            self.experimental_case_authorized(
+                client_id=client_id,case_id=field_case_id,protocol_id=experimental_id
+            )
+            card,blocker,candidate=self.experimental_card(
+                protocol_id=experimental_id,disease_id=disease_id
+            )
+            payload["experimental_protocol"]={
+                "protocol_id":experimental_id,
+                "validation_stage":(candidate or {}).get("validation_stage"),
+                "state":(candidate or {}).get("state"),
+                "negative_episodes":(candidate or {}).get("negative_episodes",0),
+                "blocker":blocker,
+            }
+            if not confirmed:
+                payload["result"]="EXPERIMENTAL_REQUIRES_CONFIRMED_DISEASE"
+                payload["message"]="House directive is not proof; Field must independently confirm Disease before Experimental treatment."
+            elif card is None:
+                payload["result"]="EXPERIMENTAL_PROTOCOL_NOT_EXECUTABLE"
+                payload["message"]="Experimental candidate cannot enter the signed machine-treatment path; continue Field diagnosis."
+            elif not bool(license_state["active"]):
+                payload["result"]="EXPERIMENTAL_PROTOCOL_LICENSE_BLOCKED"
+            else:
+                payload["execution_packages"]=[self.package_for(
+                    client_id=client_id,
+                    disease_id=disease_id,
+                    card=card,
+                    execution_actor="field_suzie",
+                )]
+                payload["result"]="EXPERIMENTAL_PROTOCOL_AVAILABLE"
+                payload["routing"]="FIELD_EXPERIMENTAL_VALIDATION"
+            self.db.event("experimental_protocol_consult",client_id,{
+                "case_id":field_case_id,
+                "protocol_id":experimental_id,
+                "disease_id":disease_id,
+                "result":payload.get("result"),
+            })
+            return self.signed(payload)
 
         cards = self.knowledge.protocol_cards(disease_id)
         eligible_cards = cards

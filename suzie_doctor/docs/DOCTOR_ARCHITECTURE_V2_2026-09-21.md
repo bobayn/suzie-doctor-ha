@@ -214,3 +214,14 @@ Keep:
 - attempts/cooldown/recurrence
 - no automatic bootstrap Core restart
 - garage entrance door no automatic self-heal
+
+
+## Experimental Protocol validation loop — 2026-09-23
+
+Experimental Protocol Candidates with internal validation progress 0/3, 1/3 or 2/3 are active inputs to Doctor House, not passive Wilson storage. Doctor Server deterministically matches eligible candidates against the Patient Card Disease/symptoms/evidence and includes the matches in House context. A match alone never creates a Field Case.
+
+When the Patient Card independently merits Field investigation, House may issue `DISPATCH_SUZIE` with `house_directive=VALIDATE_FIRST`, `experimental_protocol_id` and `validation_stage`. Field independently reconfirms Disease/applicability, obtains any Experimental treatment only through the signed exact-client Doctor path, performs normal risk assessment/checkpoint/preconditions, verifies the original functional criterion and reports structured validation evidence.
+
+An unsuccessful Experimental validation is negative Wilson evidence and does not terminate the patient Case: Field continues independent diagnosis and safe treatment. Only independent INTERNAL Field episodes with treatment success plus verify PASS advance 0/3 -> 1/3 -> 2/3 -> 3/3. External evidence adds zero validation credit.
+
+`VALIDATED_3_3` is not ACTIVE. After Wilson review the Server places the candidate into a separate publication-review queue. Wilson may suspend or revise a candidate; a revision begins as a new 0/3 candidate. Only the later publication step may make a Protocol ACTIVE for Family/Local Doctor.

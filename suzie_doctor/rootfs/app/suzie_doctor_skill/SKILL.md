@@ -5,8 +5,9 @@ Schema: 1
 
 ## Purpose
 
-This is the canonical operational skill for **Suzie Field Doctor**. It is
-surface-independent: Web/ChatGPT and API runtimes use the same clinical method.
+This is the canonical operational skill for **Suzie Doctor Suite roles**: Doctor House,
+Suzie Field Doctor, Doctor Wilson and Family/Local Doctor. It is surface-independent:
+Web/ChatGPT and API runtimes use the same clinical method.
 
 Doctor House is the semantic dispatcher. Family/Local Doctor performs routine
 recommendations and approved deterministic Protocols. Doctor Wilson systematizes
@@ -123,11 +124,95 @@ Web policy is **10/10**:
 
 Doctor Server, not Web dialogue, is canonical process memory.
 
+## House Experimental Candidate routing
+
+For every Patient Card, Doctor House MUST inspect the server-supplied
+`experimental_protocol_candidates` in addition to ACTIVE Protocols, Disease and patient
+history. The Server, not House memory, performs candidate matching. Eligible validation
+stages are 0/3, 1/3 and 2/3.
+
+A matching Experimental candidate NEVER creates a Field Case by itself and MUST NOT be
+used merely to collect validation credit. House first decides whether the Patient Card is
+significant enough to deserve Field investigation on its own merits.
+
+When both are true — the Patient Card merits Field investigation and one matched candidate
+has reasonable real-world validation grounds — House uses `DISPATCH_SUZIE` and includes:
+
+- `experimental_protocol_id`
+- `validation_stage` = `0/3` | `1/3` | `2/3`
+- `house_directive` = `VALIDATE_FIRST`
+
+`VALIDATE_FIRST` means: independently confirm Disease and applicability; if safe and
+technically possible, try this Experimental Protocol first through the signed treatment
+path. If it is inapplicable, unsafe, unavailable, treatment fails, or verify fails, record
+negative validation evidence and continue independent Field diagnosis/treatment of the
+current patient. Failure of the candidate is never by itself permission to end the Case.
+
+## Field VALIDATE_FIRST workflow
+
+A Field Case carrying `house_directive=VALIDATE_FIRST` MUST follow this sequence:
+
+1. Read the Case and the exact candidate ID/stage supplied by House.
+2. Independently diagnose the Disease. House selection is not diagnostic proof.
+3. Independently check candidate applicability to the exact patient/target.
+4. Resolve exact target, capabilities, preconditions and checkpoint/backup requirements.
+5. Produce the normal Field risk assessment. Do not execute on `AVOID`.
+6. Obtain Experimental treatment only through `doctor.diagnose` with the exact
+   `experimental_protocol_id`. The MCP binds it to the active Case and Server authorizes
+   only the House-selected candidate for that exact client.
+7. Execute only the signed `EXPERIMENTAL` package returned by Doctor Server.
+8. Verify the original functional criterion. Process/service state alone is insufficient
+   when the Disease was confirmed by a stronger functional criterion.
+9. Record `experimental_validation` in the Case Report with at least:
+   - protocol_id
+   - independent_diagnosis_performed=true
+   - disease_confirmed=true|false
+   - applicable=true|false
+   - attempted=true|false
+   - risk_decision=PROCEED|AVOID|NOT_ASSESSED
+   - treatment_result=SUCCESS|FAILED|NOT_ATTEMPTED|UNAVAILABLE|BLOCKED
+   - verify_result=PASS|FAIL|NOT_RUN|INCONCLUSIVE
+   - continued_case_diagnosis=true when the Experimental validation was not successful
+   - reason and bounded evidence
+10. If the Experimental candidate does not achieve successful verify, continue the Case:
+    diagnose independently, seek another safe treatment, use rollback/fallback where
+    appropriate, and only then choose the final Case outcome.
+
+Doctor Server attests attempted Experimental treatment against the exact-client command
+journal. A self-reported attempt without a completed signed `doctor.diagnose execute=true`
+for the same Case/candidate is not accepted as validation evidence.
+
+## Wilson Experimental validation governance
+
+Every completed `VALIDATE_FIRST` Case creates a Wilson review job containing required
+Field validation evidence. Wilson MUST return the same protocol_id, episode_key,
+`success` and `verified` facts; it may analyze them but must not rewrite them.
+
+Only independent INTERNAL Field episodes where treatment succeeded AND verify passed count:
+
+- 0/3 + successful verified Field episode -> 1/3
+- 1/3 + next independent successful verified Field episode -> 2/3
+- 2/3 + next independent successful verified Field episode -> 3/3
+
+FAILED, inapplicable, unsafe, blocked, unavailable and verify-failed attempts remain stored
+as negative evidence. External/forum/GitHub evidence is useful research evidence but adds
+zero to the 3/3 counter.
+
+Wilson may suspend a candidate or revise it. Revision creates a new Experimental candidate
+and starts its validation at 0/3; validation credit is not inherited silently.
+
+At 3/3 the candidate is still NOT ACTIVE. Doctor Server places it in the publication review
+queue after Wilson review. Publication is a separate governed step. Only a published ACTIVE
+Protocol becomes available to Family/Local Doctor under normal automation-class/trust-mode
+rules.
+
 ## Protocol states
 
 - ACTIVE: published executable knowledge. Family Doctor may execute a signed deterministic
   ACTIVE Protocol under trust-mode/automation-class safety gates; Field Suzie may execute
   it under Field risk review when dispatched.
+- EXPERIMENTAL: unpublished executable candidate available only to an exact House-dispatched
+  `VALIDATE_FIRST` Field Case through the signed treatment path. Family Doctor cannot execute it.
 - WATCH: diagnostic knowledge only; no treatment permission.
 - MANUAL: curated guidance only; ProtocolEngine must not execute treatment.
 - SUSPENDED: not executable.
@@ -197,9 +282,11 @@ a capability fact, not a reason to improvise a shell.
 
 ## AI-assisted governance
 
-Doctor House decides whether a Patient Card needs Field Suzie. Unknown/no-Protocol does
-not automatically create a Field Case. Doctor Wilson generalizes completed field work,
-tracks supporting/contradicting evidence and manages new Protocol candidates.
+Doctor House decides whether a Patient Card needs Field Suzie. Unknown/no-Protocol and an
+Experimental match do not automatically create a Field Case. House receives matched
+Experimental 0/3-2/3 candidates from Server and may issue VALIDATE_FIRST only when the
+Patient Card independently merits Field investigation. Doctor Wilson generalizes completed
+field work, tracks positive/negative validation evidence and manages candidate progression.
 
 Field Suzie does not publish Protocol status. A recipe from web/forum/log text is evidence
 only and cannot execute itself. Experimental candidates may be tested only through a

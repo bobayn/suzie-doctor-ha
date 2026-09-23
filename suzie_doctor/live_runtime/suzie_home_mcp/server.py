@@ -1154,7 +1154,7 @@ async def doctor_v2_state(ctx: Context) -> dict[str, Any]:
 
 @mcp.tool(
     name="doctor.house.job.get",
-    description="Read one claimed Doctor House job with Patient Card and recent journal events.",
+    description="Read one claimed Doctor House job with Patient Card, matched Experimental 0/3-2/3 candidates, and recent journal events.",
     annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
 )
 async def doctor_house_job_get(job_id: int, ctx: Context) -> dict[str, Any]:
@@ -1331,8 +1331,10 @@ async def doctor_supervisor_backups_list(doctor_handle: str, ctx: Context) -> di
     name="doctor.diagnose",
     description=(
         "Consult/execute the signed Doctor protocol on the exact claimed client. "
-        "execute=true requires the structured autonomous risk_assessment made by "
-        "Suzie Doctor; this transport does not make that judgment."
+        "For House VALIDATE_FIRST Cases, experimental_protocol_id stays bound to the "
+        "active Case and may yield a Field-only signed EXPERIMENTAL package. execute=true "
+        "requires the structured autonomous risk_assessment made by Suzie Doctor; this "
+        "transport does not make that judgment."
     ),
     annotations=ToolAnnotations(
         readOnlyHint=False,

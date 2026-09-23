@@ -367,6 +367,7 @@ class ProtocolEngine:
                 raise ProtocolError(f"{source}: protocol.{key} is required")
         if protocol["status"] not in {
             "ACTIVE",
+            "EXPERIMENTAL",
             "WATCH",
             "MANUAL",
             "SUSPENDED",
@@ -1648,16 +1649,18 @@ class ProtocolEngine:
 
         if developer_override:
             return True, "developer_override"
-        if status != "ACTIVE":
+        actor = str(execution_actor or "field_suzie").strip().lower()
+        if actor not in {"field_suzie", "family_doctor"}:
+            return False, "unknown_execution_actor"
+        if status == "EXPERIMENTAL":
+            if actor != "field_suzie":
+                return False, "experimental_field_only"
+        elif status != "ACTIVE":
             return False, f"protocol_status_{status.lower()}"
         if automation_class == "DIAGNOSTIC_ONLY":
             return False, "diagnostic_only"
         if trust_mode == "manual":
             return False, "manual_trust_mode"
-
-        actor = str(execution_actor or "field_suzie").strip().lower()
-        if actor not in {"field_suzie", "family_doctor"}:
-            return False, "unknown_execution_actor"
 
         # Family Doctor may execute only already-published ACTIVE deterministic
         # treatment.  This avoids waking strong AI for routine medicine while
