@@ -491,34 +491,98 @@ class DoctorV2Runtime:
                     publication_queue.append(self.store.enqueue_publication_review(
                         pid,int(job_id),{"validation":vr,"wilson_result":dict(result or {})}
                     ))
+        persisted_cursor=None
         with self.conn:
             status="FAILED" if failed else "DONE"
             self.conn.execute("update doctor_v2_wilson_jobs set status=?,result_json=?,output_cursor=?,completed_at=CURRENT_TIMESTAMP where wilson_job_id=?",(status,self._j(result),output_cursor,int(job_id)))
-            if output_cursor is not None and not failed:
-                self.conn.execute("insert into doctor_v2_wilson_cursors(stream,cursor_value) values('FIELD_CASE_REPORTS',?) on conflict(stream) do update set cursor_value=excluded.cursor_value,updated_at=CURRENT_TIMESTAMP",(str(output_cursor),))
+            cursor_to=batch.get("cursor_to") if isinstance(batch,dict) else None
+            if not failed and cursor_to is not None:
+                try:
+                    persisted_cursor=str(int(cursor_to))
+                except Exception:
+                    persisted_cursor=None
+                if persisted_cursor is not None:
+                    self.conn.execute("insert into doctor_v2_wilson_cursors(stream,cursor_value) values('FIELD_CASE_REPORTS',?) on conflict(stream) do update set cursor_value=excluded.cursor_value,updated_at=CURRENT_TIMESTAMP",(persisted_cursor,))
         return {
             "wilson_job_id":int(job_id),
             "status":status,
             "output_cursor":output_cursor,
+            "persisted_field_case_cursor":persisted_cursor,
             "validation_results":validation_results,
             "governance_results":governance_results,
             "publication_queue":publication_queue,
         }
 
+    @staticmethod
+    def _normalize_field_case_cursor(value:Any)->int:
+        text=str(value or "").strip()
+        if text.isdigit():
+            return int(text)
+        tail=text.rsplit(":",1)[-1].strip() if text else ""
+        if tail.isdigit():
+            return int(tail)
+        return 0
+
     def ensure_wilson_baseline(self)->str:
         r=self.conn.execute("select cursor_value from doctor_v2_wilson_cursors where stream='FIELD_CASE_REPORTS'").fetchone()
-        if r:return str(r[0])
+        if r:
+            raw=str(r[0])
+            normalized=str(self._normalize_field_case_cursor(raw))
+            if raw != normalized:
+                with self.conn:
+                    self.conn.execute("update doctor_v2_wilson_cursors set cursor_value=?,updated_at=CURRENT_TIMESTAMP where stream='FIELD_CASE_REPORTS'",(normalized,))
+            return normalized
         max_case=self.conn.execute("select coalesce(max(case_id),0) from doctor_cases where outcome is not null").fetchone()[0]
         with self.conn:
             self.conn.execute("insert into doctor_v2_wilson_cursors(stream,cursor_value) values('FIELD_CASE_REPORTS',?)",(str(max_case),))
         return str(max_case)
 
     def build_hourly_wilson_batch(self)->dict[str,Any]|None:
-        cursor=int(self.ensure_wilson_baseline() or 0)
+        cursor=self._normalize_field_case_cursor(self.ensure_wilson_baseline())
         rows=[dict(r) for r in self.conn.execute("select case_id,client_id,source_key,summary,disease_id,state,outcome,result_json,updated_at from doctor_cases where outcome is not null and case_id>? order by case_id",(cursor,))]
         if not rows:return None
         for r in rows:r["result"]=self._loads(r.pop("result_json",None))
         return {"cursor_from":cursor,"cursor_to":max(r["case_id"] for r in rows),"case_reports":rows}
+
+    def recover_stranded_house_wilson(self)->list[dict[str,Any]]:
+        recovered=[]
+        for role,prefix,table,idcol in (
+            ("HOUSE","house:","doctor_v2_house_jobs","house_job_id"),
+            ("WILSON","wilson:","doctor_v2_wilson_jobs","wilson_job_id"),
+        ):
+            slots=list(self.conn.execute(
+                "select slot_id,assignment_id from doctor_v2_role_slots where role=? and state='BUSY'",
+                (role,),
+            ))
+            for slot in slots:
+                assignment=str(slot["assignment_id"] or "")
+                if not assignment.startswith(prefix):
+                    continue
+                try: job_id=int(assignment.split(":",1)[1])
+                except Exception: continue
+                job=self.conn.execute(f"select status from {table} where {idcol}=?",(job_id,)).fetchone()
+                if not job or str(job["status"])!="CLAIMED":
+                    continue
+                dialog=self.current_dialog(role,assignment)
+                if dialog and str(dialog.get("state") or "")=="OPEN":
+                    continue
+                with self.conn:
+                    if role=="HOUSE":
+                        self.conn.execute(
+                            "update doctor_v2_house_jobs set status='WAITING',claimed_dialog_id=NULL,claimed_at=NULL where house_job_id=? and status='CLAIMED'",
+                            (job_id,),
+                        )
+                    else:
+                        self.conn.execute(
+                            "update doctor_v2_wilson_jobs set status='WAITING' where wilson_job_id=? and status='CLAIMED'",
+                            (job_id,),
+                        )
+                    self.conn.execute(
+                        "update doctor_v2_role_slots set state='FREE',assignment_id=NULL,updated_at=CURRENT_TIMESTAMP where slot_id=? and assignment_id=?",
+                        (str(slot["slot_id"]),assignment),
+                    )
+                recovered.append({"role":role,"assignment_id":assignment,"job_id":job_id})
+        return recovered
 
     def has_open_wilson_mode(self,mode:str)->bool:
         return self.conn.execute("select 1 from doctor_v2_wilson_jobs where mode=? and status in ('WAITING','CLAIMED') limit 1",(mode,)).fetchone() is not None

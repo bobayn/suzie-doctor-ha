@@ -1,3 +1,10 @@
+## Doctor Server v2 dispatch recovery — 2026-09-23
+
+- Normalizes legacy/non-numeric Wilson FIELD_CASE_REPORTS cursors such as `E2E:60` instead of crashing the v2 dispatch loop.
+- Wilson validation-only jobs no longer overwrite the global Field Case cursor with arbitrary model output cursors.
+- Automatically requeues stranded CLAIMED House/Wilson jobs when their dialog is already closed and frees the reserved role slot.
+- Added regression coverage so Experimental matching cannot be starved by a dead House slot.
+
 ## 0.2.60-dev — 2026-09-23
 
 - Fixes Suite bundle compatibility after Experimental validation work: Connector Core remains 0.1.3-dev because the canonical tool interface did not change; only Doctor semantics inside the existing evidence contract changed.

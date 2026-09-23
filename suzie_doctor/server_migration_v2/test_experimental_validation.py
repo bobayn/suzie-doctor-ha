@@ -13,6 +13,19 @@ def main():
         db=Path(td)/'server.sqlite3'
         rt=DoctorV2Runtime(db,LIVE/'doctor_v2_schema.sql')
         try:
+            assert rt._normalize_field_case_cursor('60') == 60
+            assert rt._normalize_field_case_cursor('E2E:60') == 60
+            assert rt._normalize_field_case_cursor('broken') == 0
+            with rt.conn:
+                rt.conn.execute(
+                    "insert into doctor_v2_wilson_cursors(stream,cursor_value) values('FIELD_CASE_REPORTS','E2E:60')"
+                )
+            assert rt.ensure_wilson_baseline() == '60'
+            cur=rt.conn.execute(
+                "select cursor_value from doctor_v2_wilson_cursors where stream='FIELD_CASE_REPORTS'"
+            ).fetchone()
+            assert cur and cur[0] == '60'
+
             pid='EXP-TEST-001'; disease='DISEASE-TEST-001'; patient='patient-exp'
             rt.store.upsert_protocol_candidate(
                 protocol_id=pid,origin='INTERNAL_FIELD',disease_id=disease,
@@ -55,6 +68,10 @@ def main():
             out=rt.wilson_complete(w1,{'validations':[dict(neg)]},output_cursor='EXP:101')
             assert out['validation_results'][0]['validation_stage']=='0/3'
             assert out['validation_results'][0]['negative_episodes']==1
+            cur=rt.conn.execute(
+                "select cursor_value from doctor_v2_wilson_cursors where stream='FIELD_CASE_REPORTS'"
+            ).fetchone()
+            assert cur and cur[0] == '60', 'validation Wilson output_cursor must not move FIELD_CASE_REPORTS cursor'
             for n in range(1,4):
                 val={
                     'protocol_id':pid,'episode_key':f'field:{101+n}','source':'FIELD_CASE','internal_verified':True,
@@ -70,6 +87,32 @@ def main():
             pub=rt.conn.execute('select status from doctor_v2_protocol_publication_queue where protocol_id=?',(pid,)).fetchone()
             assert pub and pub['status']=='WAITING'
             assert snap['state']!='APPROVED_ACTIVE'
+
+            # A claimed House job with no OPEN dialog must self-heal instead of
+            # holding the only reserved House slot forever.
+            rt.store.append_event(
+                patient_id=patient,event_type='OBSERVATION',source='stuck-test',
+                payload={'disease_id':disease,'symptom':'stuck house'},
+                priority=77,create_house_job=True,
+            )
+            stuck=rt.next_house_waiting(); assert stuck
+            assignment=f"house:{int(stuck['house_job_id'])}"
+            slot=rt.role_acquire('HOUSE',assignment); assert slot == 'house-1'
+            claimed=rt.claim_house(int(stuck['house_job_id']),'dlg-stuck'); assert claimed
+            rt.dialog_open('dlg-stuck','HOUSE',assignment,'house-project',1)
+            ses=rt.open_session('dlg-stuck',{})
+            rt.store.end_session('dlg-stuck',int(ses['ordinal']),'NATURAL')
+            recovered=rt.recover_stranded_house_wilson()
+            assert recovered and recovered[0]['assignment_id']==assignment
+            jobrow=rt.conn.execute(
+                'select status,claimed_dialog_id from doctor_v2_house_jobs where house_job_id=?',
+                (int(stuck['house_job_id']),),
+            ).fetchone()
+            assert jobrow['status']=='WAITING' and jobrow['claimed_dialog_id'] is None
+            slotrow=rt.conn.execute(
+                "select state,assignment_id from doctor_v2_role_slots where slot_id='house-1'"
+            ).fetchone()
+            assert slotrow['state']=='FREE' and slotrow['assignment_id'] is None
             print('EXPERIMENTAL_VALIDATION_CHAIN_TEST_PASS')
         finally:
             rt.store.close()
