@@ -52,7 +52,7 @@ mcp = MCPServer(
         "Case before any client action, use exact-client read-only diagnostics "
         "first, verify treatment, then call doctor.case.complete_next."
     ),
-    version="0.1.4-dev",
+    version="0.1.5-dev",
 )
 
 CLAIM_HANDLES: dict[str, dict[str, Any]] = {}
@@ -213,6 +213,7 @@ async def doctor_capabilities() -> dict[str, Any]:
         "suite_version": manifest.get("suite_version"),
         "tools": [x.get("name") for x in contract.get("tools", [])],
     }
+    base["field_actions"] = list(contract.get("field_actions") or [])
     base["doctor_handle"] = {
         "required_after_claim": True,
         "transport_session_independent": True,

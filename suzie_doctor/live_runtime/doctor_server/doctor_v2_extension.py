@@ -66,6 +66,7 @@ class V2Extension:
     async def field_finished(self,case_id:int,client_id:str,outcome:str,result:dict[str,Any])->dict[str,Any]:
         assignment=f"case:{int(case_id)}"
         self.runtime.field_done_for_case(int(case_id))
+        self.runtime.mark_resolution_field_finished(int(case_id),str(outcome),dict(result or {}))
         self.runtime.store.ensure_patient(
             str(client_id),
             {"last_field_case_id":int(case_id),"last_field_outcome":str(outcome),"last_field_report":dict(result or {})},
@@ -89,6 +90,11 @@ class V2Extension:
             wilson_job_id=self.runtime.enqueue_field_validation_wilson(
                 int(case_id),validation,dict(result or {})
             )
+        if isinstance(result,dict) and result.get("new_protocol_evidence") is True:
+            cursor=f"FIELD_ONE_SHOT:{int(case_id)}"
+            existing=self.runtime.conn.execute("select wilson_job_id from doctor_v2_wilson_jobs where input_cursor=? limit 1",(cursor,)).fetchone()
+            if not existing:
+                wilson_job_id=self.runtime.enqueue_wilson("HOURLY_REVIEW",{"reason":"FIELD_ONE_SHOT_EVIDENCE","case_id":int(case_id),"patient_id":str(client_id),"case_report":dict(result or {}),"publication_rule":"evidence_only_not_active"},cursor)
         await self._finish_assignment("FIELD_SUZIE",assignment)
         return {
             "experimental_validation_recorded":bool(normalized_validation),
@@ -210,6 +216,21 @@ class V2Extension:
                     text="Active Home Assistant Repair requires DISPATCH_SUZIE or HUMAN_ACTION_REQUIRED until verified absent"
                 )
             result["active_repair"]=active_repair
+        if decision=="HUMAN_ACTION_REQUIRED":
+            human=result.get("human_requirement") if isinstance(result.get("human_requirement"),dict) else {}
+            human_type=str(human.get("type") or "").upper().strip()
+            human_reason=str(human.get("reason") or "").strip()
+            if human_type not in {"PHYSICAL_ACTION","CREDENTIAL","OAUTH","MISSING_CAPABILITY"} or not human_reason:
+                raise web.HTTPBadRequest(text="House HUMAN_ACTION_REQUIRED requires human_requirement.type and reason")
+            if human_type=="MISSING_CAPABILITY":
+                requested=str(human.get("capability") or human.get("action") or "").strip()
+                if not requested:
+                    raise web.HTTPBadRequest(text="MISSING_CAPABILITY requires capability/action")
+                available={str(x) for x in (trigger_evidence.get("field_action_capabilities") or []) if str(x)}
+                if requested in available or "doctor.action.request"==requested and available:
+                    raise web.HTTPConflict(text="House MISSING_CAPABILITY conflicts with available Field action capability; re-evaluate")
+            result["human_requirement"]={"type":human_type,"reason":human_reason,"capability":str(human.get("capability") or ""),"action":str(human.get("action") or "")}
+
         candidates=list(job.get("experimental_protocol_candidates") or [])
         directive=str(result.get("house_directive") or "").upper().strip()
         experimental_id=str(result.get("experimental_protocol_id") or "").strip()
@@ -248,9 +269,28 @@ class V2Extension:
             if disposition not in {"DECLINE_EXPERIMENTAL","NOT_APPLICABLE","NOT_SAFE","NOT_USEFUL"} or not decline_reason:
                 raise web.HTTPBadRequest(text="House DISPATCH_SUZIE with matched Experimental candidates requires VALIDATE_FIRST or explicit experimental_candidate_disposition plus reason")
         decided=self.runtime.house_decide(job_id,result)
+        self.runtime.mark_resolution_house_decision(job_id,result)
         fq=decided.get("field_queue")
         legacy=None
         if fq:
+            previous_attempts=[]
+            do_not_repeat=[]
+            rows=self.server.command_bridge.conn.execute(
+                """select command_id,case_id,arguments_json,status,result_json,execution_state,created_at
+                   from doctor_client_commands where client_id=? and tool_name='doctor.action.request'
+                   order by created_at desc limit 20""",(str(job["patient_id"]),)
+            ).fetchall()
+            for row in rows:
+                try: args=json.loads(str(row["arguments_json"] or "{}"))
+                except Exception: args={}
+                try: command_result=json.loads(str(row["result_json"] or "{}"))
+                except Exception: command_result={}
+                item={"command_id":str(row["command_id"]),"case_id":int(row["case_id"]),"action":args.get("action") or {},"exact_target":args.get("exact_target") or {},"execution_state":str(row["execution_state"] or ""),"status":str(row["status"] or ""),"created_at":str(row["created_at"] or ""),"result":command_result}
+                previous_attempts.append(item)
+                if str(row["execution_state"] or "")=="VERIFIED_FAIL":
+                    do_not_repeat.append({"action":item["action"],"exact_target":item["exact_target"],"reason":"previous_verified_fail"})
+            problem_key=str((active_repair or {}).get("problem_key") or trigger_evidence.get("problem_key") or trigger_event.get("fingerprint") or "")
+            original_criterion=(active_repair or {}).get("resolution_criterion") or trigger_evidence.get("resolution_criterion")
             async with self.server.journal_gate:
                 case,created=self.server.journal.escalate(
                     client_id=str(job["patient_id"]),
@@ -258,14 +298,26 @@ class V2Extension:
                     source_request_id=None,
                     summary=str(result.get("summary") or f"House dispatched patient {job['patient_id']}"),
                     problem={
+                        "patient_card_version":int(job.get("card_version") or 0),
+                        "trigger_event_id":int(job.get("trigger_event_id") or 0),
+                        "problem_key":problem_key,
+                        "domain":str((active_repair or {}).get("domain") or trigger_evidence.get("domain") or ""),
+                        "issue_id":str((active_repair or {}).get("issue_id") or trigger_evidence.get("issue_id") or ""),
+                        "terminal_resolution_required":bool(active_repair),
+                        "original_functional_criterion":original_criterion,
                         "house_job_id":job_id,
                         "house_decision_id":decided["decision_id"],
+                        "house_decision":{"decision":decision,"finding_class":finding_class,"significance":significance,"field_priority":field_priority,"summary":result.get("summary"),"rationale":result.get("rationale")},
                         "house_result":result,
                         "house_directive":result.get("house_directive"),
                         "experimental_protocol_id":result.get("experimental_protocol_id"),
                         "validation_stage":result.get("validation_stage"),
                         "experimental_candidate":result.get("experimental_candidate"),
+                        "experimental_protocol_candidates":candidates,
                         "active_repair":result.get("active_repair"),
+                        "field_action_capabilities":list(trigger_evidence.get("field_action_capabilities") or []),
+                        "previous_attempts":previous_attempts,
+                        "do_not_repeat":do_not_repeat,
                     },
                     disease_id=str(result.get("disease_id") or "") or None,
                     priority=int(fq.get("priority") or 50),
@@ -343,7 +395,7 @@ class V2Extension:
                     "If the trigger evidence is an active Home Assistant Repair with "
                     "terminal_resolution_required=true, it is an unresolved Doctor task: "
                     "do NOT OBSERVE, RECHECK_LATER or IGNORE_AS_NOISE. Either DISPATCH_SUZIE "
-                    "for real resolution or HUMAN_ACTION_REQUIRED if owner action is genuinely necessary."
+                    "for real resolution or HUMAN_ACTION_REQUIRED only for a genuine physical/credential/OAuth/missing-capability step. HUMAN_ACTION_REQUIRED MUST include result.human_requirement with type PHYSICAL_ACTION, CREDENTIAL, OAUTH or MISSING_CAPABILITY and a concrete reason; absence of Disease/Protocol is never a human reason."
                 )
             elif role=="WILSON":
                 compat_id=9_000_000_000+job_id

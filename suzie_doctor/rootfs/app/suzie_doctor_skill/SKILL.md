@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.8-dev
+Version: 0.1.9-dev
 Schema: 1
 
 ## Purpose
@@ -85,6 +85,12 @@ expected result, functional verify criterion, and when to abandon the hypothesis
 Core does not decide whether the treatment idea is medically correct; it enforces the
 mechanical safety envelope.
 
+The initial semantic Field action catalog is intentionally small: `integration.reload`,
+`addon.restart`, `core.restart`, and `host.reboot`. Connector Core maps these to existing
+structured ProtocolEngine primitives. Each action publishes reversibility, blast radius,
+checkpoint requirement, rollback availability, exact-target fields, attempt limit and cooldown.
+There is still no arbitrary shell, eval, Python or generic service-call primitive.
+
 A Field Action Request MUST include:
 
 - active Case binding and exact client;
@@ -105,6 +111,12 @@ The resulting package is `FIELD_ONE_SHOT`: client-bound, Case-bound by the comma
 short-lived, one-action only, and executable only by Field Suzie. It is not an ACTIVE or
 EXPERIMENTAL Protocol and grants no reusable authority. Family Doctor never receives
 permission from it.
+
+Every state-changing one-shot has a server `command_id` and an execution lifecycle:
+`REQUESTED -> SIGNED -> EXECUTING -> EXECUTED -> VERIFY_PENDING -> VERIFIED_PASS|VERIFIED_FAIL`.
+For disruptive host actions the transition may use `CONNECTION_LOST_EXPECTED`; reconnecting
+MUST resume at verify and MUST NOT replay the treatment. Only one state-changing Doctor
+command may execute per exact client at a time.
 
 `FIELD_ONE_SHOT` success requires treatment execution **and** mandatory functional verify
 PASS. Command accepted, process running, reload completed, or restart completed are not
@@ -414,11 +426,31 @@ Home Assistant Core MUST still never be restarted merely to bootstrap or update 
 
 Use HUMAN_ACTION_REQUIRED only when the next necessary step inherently requires a person:
 physical work, credential/OAuth input, or an unavailable capability that only a person can
-provide. Do not use HUMAN_ACTION_REQUIRED merely because treatment is risky or uncertain;
+provide. Every HUMAN decision/report MUST carry structured `human_requirement.type` equal to
+`PHYSICAL_ACTION`, `CREDENTIAL`, `OAUTH`, or `MISSING_CAPABILITY`, plus a concrete reason.
+`MISSING_CAPABILITY` MUST name the missing action/capability; it is invalid when current
+Doctor capabilities already expose that Field action. Do not use HUMAN_ACTION_REQUIRED merely because treatment is risky or uncertain;
 Suzie Doctor must resolve that decision itself by further diagnosis, a safer alternative,
 a reversible path, or AVOID. After a person completes the bounded physical/credential
 step, repeat capability/precondition checks and verify the functional effect before
 resuming the same flow. A human step never bypasses the signed execution paths.
+
+## Terminal Repair resolution lifecycle
+
+For `terminal_resolution_required=true`, the problem has an independent resolution state keyed
+by patient + fingerprint/problem_key: `OPEN`, `DISPATCHED`, `WAITING_HUMAN`, `VERIFYING`,
+`RESOLVED`. House/Field job completion alone does not resolve it. While the HA Repair remains
+active, absence of an open House/Field task and absence of a valid WAITING_HUMAN reason MUST
+recreate a House evaluation without duplicating an already-open task.
+
+`WAITING_HUMAN` is not permanent. Re-evaluate by creating a new House review (never rewriting
+the old decision) when capabilities change, the Patient Card materially changes, the recheck
+interval expires, or the owner step has had a chance to take effect. If the Repair disappears,
+mark the resolution `RESOLVED`.
+
+A dispatched Field Case MUST preserve the original problem context: Patient Card version,
+trigger event, problem_key, Repair domain/issue_id, terminal flag, original functional criterion,
+House decision/rationale, previous attempts, do-not-repeat set and Experimental candidates.
 
 ## Signed execution paths
 

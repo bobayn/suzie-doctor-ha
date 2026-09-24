@@ -1,3 +1,13 @@
+## 0.2.65-dev / Suite 0.1.11-dev — 2026-09-24
+
+- Completed the House-dispatched Field `doctor.action.request` end-to-end path without requiring a known Disease/Protocol.
+- Added semantic Field actions (`integration.reload`, `addon.restart`, `core.restart`, `host.reboot`) with exact-target, blast-radius, attempt/cooldown and owner-prohibition gates.
+- Added command execution states and reboot-safe verify-only resume; disruptive actions are not replayed after connection loss.
+- Added `ha_repair_absent` mandatory functional verify and one-shot evidence for Wilson; one success does not promote a Protocol.
+- Added terminal Repair resolution lifecycle and exact-client repair reconciliation, including expiring/re-evaluated WAITING_HUMAN.
+- HUMAN decisions now require PHYSICAL_ACTION/CREDENTIAL/OAUTH/MISSING_CAPABILITY with a concrete reason; missing capability is rejected when current Field capabilities provide it.
+- Field Cases now preserve Patient Card/trigger/problem/Repair/House/attempt/do-not-repeat/Experimental context.
+
 ## 0.2.63-dev / Suite 0.1.9-dev — 2026-09-23
 
 - Active Home Assistant Repairs are now terminal Doctor tasks regardless of HA warning/error severity.

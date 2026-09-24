@@ -1,26 +1,26 @@
 {
   "suite_name": "Suzie Doctor Suite",
-  "suite_version": "0.1.10-dev",
-  "app_version": "0.2.64-dev",
+  "suite_version": "0.1.11-dev",
+  "app_version": "0.2.65-dev",
   "connector": {
-    "version": "0.1.4-dev",
+    "version": "0.1.5-dev",
     "interface_version": 1,
     "canonical_core": true,
     "schema_version": 1
   },
   "skill": {
-    "version": "0.1.8-dev",
+    "version": "0.1.9-dev",
     "schema_version": 1,
     "canonical_core": true,
     "connector_interface_version": 1
   },
   "protocol": {
     "card_schema_version": 1,
-    "primitive_set_version": 3
+    "primitive_set_version": 4
   },
   "doctor_server_api": "v1",
   "bridge_version": "0.2.5-dev",
-  "emergency_pack_version": "0.1.3-dev",
+  "emergency_pack_version": "0.1.4-dev",
   "surfaces": {
     "web": {
       "adapter_contract": 1
@@ -72,7 +72,13 @@
       "active_ha_repair_observe_forbidden": true,
       "field_one_shot_action_path": true,
       "field_one_shot_requires_verify": true,
-      "field_one_shot_family_doctor_allowed": false
+      "field_one_shot_family_doctor_allowed": false,
+      "terminal_repair_resolution_state": true,
+      "waiting_human_re_evaluation": true,
+      "field_context_complete": true,
+      "field_action_command_state": true,
+      "single_mutation_per_client": true,
+      "repair_reconciliation": true
     },
     "protocol_admission": {
       "legacy_statuses_grandfathered": true,

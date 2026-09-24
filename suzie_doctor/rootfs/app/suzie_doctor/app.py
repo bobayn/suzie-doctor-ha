@@ -451,6 +451,14 @@ class Runtime:
         while True:
             try:
                 recommendation_result = await self.recommendation_executor.scan_once(execute=True)
+                if self.doctor_server is not None:
+                    repair_snapshot = await self.ha.list_repairs()
+                    field_caps = [
+                        str(item.get("name"))
+                        for item in (self.connector.capabilities().get("field_actions") or [])
+                        if isinstance(item, dict) and item.get("name")
+                    ]
+                    await self.doctor_server.reconcile_repairs(repair_snapshot, field_caps)
                 unresolved_repairs = [
                     item for item in (recommendation_result.get("actions") or [])
                     if isinstance(item, dict)
@@ -554,61 +562,119 @@ class Runtime:
             raise DoctorServerError("Doctor Server is disabled")
 
         await self.doctor_server.ensure_enrolled()
+        command_id = str(request.get("command_id") or "").strip()
+        case_id = int(request.get("field_case_id") or 0)
+        exact_target = dict(request.get("exact_target") or {})
+        action = dict(request.get("action") or {})
+        action_name = str(action.get("name") or "").strip()
+        if not action_name and action.get("primitive"):
+            action_name = next((str(item.get("name")) for item in (self.connector.capabilities().get("field_actions") or []) if isinstance(item,dict) and str(item.get("primitive") or "")==str(action.get("primitive"))), "")
+        if not command_id or case_id <= 0:
+            raise DoctorServerError("Field action command/case binding missing")
         response = await self.doctor_server.field_action(dict(request))
         execution_results: list[dict[str, Any]] = []
         for package in response.get("execution_packages") or []:
             try:
-                card = self.doctor_server.validate_execution_package(package)
-                primitives = self.protocol_engine._card_primitives(card)
-                unsupported = sorted(
-                    primitives - self.protocol_engine.SUPPORTED_PRIMITIVES
+                binding = package.get("field_binding") if isinstance(package.get("field_binding"), dict) else {}
+                expected_binding = {
+                    "command_id": command_id,
+                    "field_case_id": case_id,
+                    "client_id": self.doctor_server.client_id,
+                    "exact_target": exact_target,
+                    "action_name": action_name,
+                }
+                card = self.doctor_server.validate_execution_package(
+                    package, expected_field_binding=expected_binding
                 )
+                primitives = self.protocol_engine._card_primitives(card)
+                unsupported = sorted(primitives - self.protocol_engine.SUPPORTED_PRIMITIVES)
                 if unsupported:
-                    execution_results.append({
-                        "result": "UNSUPPORTED_PRIMITIVE",
-                        "protocol_id": (card.get("protocol") or {}).get("id"),
-                        "unsupported_primitives": unsupported,
-                    })
+                    execution_results.append({"result":"UNSUPPORTED_PRIMITIVE","protocol_id":(card.get("protocol") or {}).get("id"),"unsupported_primitives":unsupported})
                     continue
                 evidence = request.get("evidence")
-                execution_context = (
-                    dict(evidence.get("context"))
-                    if isinstance(evidence, dict)
-                    and isinstance(evidence.get("context"), dict)
-                    else {}
+                execution_context = dict(evidence.get("context")) if isinstance(evidence,dict) and isinstance(evidence.get("context"),dict) else {}
+                execution_context.update({"field_action_authorized":True,"field_case_id":case_id,"exact_target":exact_target})
+                field_meta = card.get("field_action") if isinstance(card.get("field_action"),dict) else {}
+                policy = field_meta.get("policy") if isinstance(field_meta.get("policy"),dict) else {}
+                disconnect_expected = bool(policy.get("disconnect_expected"))
+                pending = {
+                    "command_id":command_id,
+                    "case_id":case_id,
+                    "risk_assessment":risk_assessment,
+                    "action_name":action_name,
+                    "execution_context":execution_context,
+                    "created_at":datetime.now(UTC).isoformat(),
+                    "action":action,
+                    "exact_target":exact_target,
+                }
+                if disconnect_expected:
+                    self.db.set_meta("field_action_pending_v1", json.dumps(pending, ensure_ascii=False, separators=(",",":")))
+                    await self.doctor_server.update_command_state(command_id=command_id,state="CONNECTION_LOST_EXPECTED")
+                else:
+                    await self.doctor_server.update_command_state(command_id=command_id,state="EXECUTING")
+                item = await self.protocol_engine.execute_card(
+                    card, context=execution_context, trust_mode=self.options.trust_mode,
+                    risk_assessment=risk_assessment, execution_actor="field_suzie",
+                    simulated=False, developer_override=False,
                 )
-                execution_context["field_action_authorized"] = True
-                execution_context["field_case_id"] = int(
-                    request.get("field_case_id") or 0
-                )
-                execution_context["exact_target"] = dict(
-                    request.get("exact_target") or {}
-                )
-                execution_results.append(
-                    await self.protocol_engine.execute_card(
-                        card,
-                        context=execution_context,
-                        trust_mode=self.options.trust_mode,
-                        risk_assessment=risk_assessment,
-                        execution_actor="field_suzie",
-                        simulated=False,
-                        developer_override=False,
-                    )
+                execution_results.append(item)
+                if disconnect_expected and str(item.get("result") or "") == "CONNECTION_LOST_EXPECTED":
+                    response["deferred_result_submission"] = True
+                    response["execution_results"] = execution_results
+                    return response
+                if disconnect_expected:
+                    self.db.set_meta("field_action_pending_v1", "")
+                await self.doctor_server.update_command_state(command_id=command_id,state="EXECUTED")
+                await self.doctor_server.update_command_state(command_id=command_id,state="VERIFY_PENDING")
+                await self.doctor_server.update_command_state(
+                    command_id=command_id,
+                    state="VERIFIED_PASS" if item.get("verify_performed") is True and item.get("verify_passed") is True else "VERIFIED_FAIL",
                 )
             except Exception as exc:
-                execution_results.append({
-                    "result": "PACKAGE_REJECTED",
-                    "error": f"{type(exc).__name__}: {exc}",
-                })
+                execution_results.append({"result":"PACKAGE_REJECTED","error":f"{type(exc).__name__}: {exc}"})
         response["execution_results"] = execution_results
-        self.server_status = {
-            "state": "ok",
-            "checked_at": datetime.now(UTC).isoformat(),
-            "client_id": self.doctor_server.client_id,
-            "license": response.get("license"),
-            "last_result": response.get("result"),
-        }
+        self.server_status = {"state":"ok","checked_at":datetime.now(UTC).isoformat(),"client_id":self.doctor_server.client_id,"license":response.get("license"),"last_result":response.get("result")}
         return response
+
+    async def resume_pending_field_action(self) -> bool:
+        if self.doctor_server is None:
+            return False
+        raw = self.db.get_meta("field_action_pending_v1", "") or ""
+        if not raw:
+            return False
+        try:
+            pending = json.loads(raw)
+        except Exception:
+            self.db.set_meta("field_action_pending_v1", "")
+            return False
+        command_id = str(pending.get("command_id") or "")
+        case_id = int(pending.get("case_id") or 0)
+        exact_target = pending.get("exact_target") if isinstance(pending.get("exact_target"),dict) else {}
+        action_name = str(pending.get("action_name") or "")
+        try:
+            created = datetime.fromisoformat(str(pending.get("created_at") or ""))
+        except Exception:
+            created = datetime.now(UTC) - timedelta(minutes=20)
+        age = (datetime.now(UTC) - created).total_seconds()
+        if age < 20:
+            return True
+        binding={"command_id":command_id,"field_case_id":case_id,"client_id":self.doctor_server.client_id,"exact_target":exact_target,"action_name":action_name}
+        try:
+            resume=await self.doctor_server.field_action_resume(command_id=command_id,field_case_id=case_id)
+            packages=resume.get("execution_packages") or []
+            if not packages: raise DoctorServerError("resume returned no execution package")
+            card=self.doctor_server.validate_execution_package(packages[0],expected_field_binding=binding)
+            await self.doctor_server.update_command_state(command_id=command_id,state="VERIFY_PENDING")
+            verified=await self.protocol_engine.verify_field_one_shot(card,context=dict(pending.get("execution_context") or {}))
+        except Exception as exc:
+            if age < 600:
+                return True
+            verified={"result":"VERIFIED_FAIL","verify_performed":True,"verify_passed":False,"new_protocol_evidence":False,"error":f"{type(exc).__name__}: {exc}"}
+        await self.doctor_server.update_command_state(command_id=command_id,state="VERIFIED_PASS" if verified.get("verify_passed") is True else "VERIFIED_FAIL")
+        result={"result":"FIELD_ACTION_RESUMED","execution_results":[verified]}
+        await self.doctor_server.submit_command_result(command_id=command_id,result=result)
+        self.db.set_meta("field_action_pending_v1", "")
+        return True
 
     async def consult_server_for_audit(
         self,
@@ -716,6 +782,7 @@ class Runtime:
                         or ""
                     ),
                     "evidence": {
+                        **{
                         key: finding.get(key)
                         for key in (
                             "kind", "severity", "problem_key",
@@ -730,6 +797,12 @@ class Runtime:
                             "resolution_criterion",
                         )
                         if key in finding
+                        },
+                        "field_action_capabilities": [
+                            str(item.get("name"))
+                            for item in (self.connector.capabilities().get("field_actions") or [])
+                            if isinstance(item, dict) and item.get("name")
+                        ],
                     },
                     "system": {
                         "doctor_app_version": APP_VERSION,
@@ -765,6 +838,11 @@ class Runtime:
                     await asyncio.sleep(300)
                     continue
 
+                if await self.resume_pending_field_action():
+                    self.record_background_ok("doctor_server_commands")
+                    await asyncio.sleep(2)
+                    continue
+
                 payload = await self.doctor_server.poll_command()
                 if str(payload.get("result") or "") != "COMMAND":
                     self.record_background_ok("doctor_server_commands")
@@ -788,6 +866,7 @@ class Runtime:
                 trusted_context = {
                     "source": "doctor_server_command_bridge",
                     "case_id": int(command.get("case_id") or 0),
+                    "command_id": command_id,
                     "execution_actor": str(
                         command.get("execution_actor") or "field_suzie"
                     ),
@@ -799,10 +878,11 @@ class Runtime:
                         arguments,
                         trusted_context=trusted_context,
                     )
-                    await self.doctor_server.submit_command_result(
-                        command_id=command_id,
-                        result=result,
-                    )
+                    if not bool(result.get("deferred_result_submission")):
+                        await self.doctor_server.submit_command_result(
+                            command_id=command_id,
+                            result=result,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

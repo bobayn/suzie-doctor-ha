@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.4-dev",
+  "version": "0.1.5-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose|doctor.action.request -> signed_execution_package -> ProtocolEngine",
@@ -498,7 +498,7 @@
   "adapters": [
     {
       "adapter_id": "doctor.core",
-      "adapter_version": "0.1.4-dev",
+      "adapter_version": "0.1.5-dev",
       "family": "doctor",
       "available": true,
       "health": "ready",
@@ -798,5 +798,60 @@
     "server_responses": "ed25519",
     "concurrent_commands_per_client": 1,
     "model_supplied_human_confirmation": false
-  }
+  },
+  "field_actions": [
+    {
+      "name": "integration.reload",
+      "primitive": "reload_config_entry_verified",
+      "reversibility": "REVERSIBLE_RUNTIME",
+      "blast_radius": "TARGET_INTEGRATION",
+      "checkpoint_required": false,
+      "rollback_available": false,
+      "exact_target_fields": [
+        "entry_id"
+      ],
+      "attempt_limit": 1,
+      "cooldown_seconds": 60
+    },
+    {
+      "name": "addon.restart",
+      "primitive": "restart_addon",
+      "reversibility": "REVERSIBLE_RUNTIME",
+      "blast_radius": "TARGET_ADDON",
+      "checkpoint_required": false,
+      "rollback_available": false,
+      "exact_target_fields": [
+        "slug"
+      ],
+      "attempt_limit": 1,
+      "cooldown_seconds": 120
+    },
+    {
+      "name": "core.restart",
+      "primitive": "restart_core",
+      "reversibility": "REVERSIBLE_RUNTIME",
+      "blast_radius": "HOME_ASSISTANT_CORE",
+      "checkpoint_required": false,
+      "rollback_available": false,
+      "exact_target_fields": [
+        "component"
+      ],
+      "attempt_limit": 1,
+      "cooldown_seconds": 300
+    },
+    {
+      "name": "host.reboot",
+      "primitive": "reboot_host",
+      "reversibility": "REVERSIBLE_RUNTIME",
+      "blast_radius": "HAOS_HOST",
+      "checkpoint_required": false,
+      "rollback_available": false,
+      "exact_target_fields": [
+        "host"
+      ],
+      "attempt_limit": 1,
+      "cooldown_seconds": 600,
+      "disconnect_expected": true
+    }
+  ]
 }

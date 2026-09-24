@@ -84,6 +84,17 @@ class ClientCommandBridge:
                 ON doctor_client_commands(case_id,created_at);
             """
         )
+        columns = {str(r["name"]) for r in self.conn.execute("PRAGMA table_info(doctor_client_commands)")}
+        migrations = {
+            "execution_state": "ALTER TABLE doctor_client_commands ADD COLUMN execution_state TEXT",
+            "state_updated_at": "ALTER TABLE doctor_client_commands ADD COLUMN state_updated_at TEXT",
+            "action_key": "ALTER TABLE doctor_client_commands ADD COLUMN action_key TEXT",
+            "package_json": "ALTER TABLE doctor_client_commands ADD COLUMN package_json TEXT",
+        }
+        for name, ddl in migrations.items():
+            if name not in columns:
+                self.conn.execute(ddl)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_doctor_client_commands_action ON doctor_client_commands(client_id,action_key,created_at)")
         self.conn.commit()
 
     def _public(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -93,6 +104,7 @@ class ClientCommandBridge:
             out.pop("trusted_context_json", "{}"), {}
         )
         out["result"] = _loads(out.pop("result_json", "{}"), {})
+        out["signed_package"] = _loads(out.pop("package_json", "{}"), {})
         return out
 
     def enqueue(
@@ -106,12 +118,17 @@ class ClientCommandBridge:
     ) -> dict[str, Any]:
         command_id = f"CMD-{uuid4()}"
         now = iso()
+        action_key = None
+        if str(tool_name) == "doctor.action.request":
+            action = arguments.get("action") if isinstance(arguments.get("action"), dict) else {}
+            target = arguments.get("exact_target") if isinstance(arguments.get("exact_target"), dict) else {}
+            action_key = _json({"action": action, "exact_target": target})
         self.conn.execute(
             """
             INSERT INTO doctor_client_commands(
                 command_id,client_id,case_id,tool_name,arguments_json,
-                trusted_context_json,status,created_at
-            ) VALUES(?,?,?,?,?,?,'QUEUED',?)
+                trusted_context_json,status,created_at,execution_state,state_updated_at,action_key
+            ) VALUES(?,?,?,?,?,?,'QUEUED',?,'REQUESTED',?,?)
             """,
             (
                 command_id,
@@ -121,6 +138,8 @@ class ClientCommandBridge:
                 _json(arguments),
                 _json(trusted_context),
                 now,
+                now,
+                action_key,
             ),
         )
         self.conn.commit()
@@ -195,6 +214,60 @@ class ClientCommandBridge:
         except Exception:
             self.conn.rollback()
             raise
+
+    def store_signed_package(
+        self, *, client_id: str, command_id: str, package: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row=self.conn.execute("SELECT status FROM doctor_client_commands WHERE command_id=? AND client_id=?",(command_id,client_id)).fetchone()
+            if not row or str(row["status"])!="CLAIMED":
+                raise CommandBridgeError("signed package requires claimed command")
+            self.conn.execute("UPDATE doctor_client_commands SET package_json=?,state_updated_at=? WHERE command_id=? AND client_id=?",(_json(package),iso(),command_id,client_id))
+            self.conn.commit(); return self.get(command_id)
+        except Exception:
+            self.conn.rollback(); raise
+
+    def set_execution_state(
+        self, *, client_id: str, command_id: str, state: str
+    ) -> dict[str, Any]:
+        allowed = {
+            "REQUESTED","SIGNED","EXECUTING","CONNECTION_LOST_EXPECTED",
+            "EXECUTED","VERIFY_PENDING","VERIFIED_PASS","VERIFIED_FAIL",
+        }
+        state = str(state or "").upper()
+        if state not in allowed:
+            raise CommandBridgeError("invalid execution state")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT status FROM doctor_client_commands WHERE command_id=? AND client_id=?",
+                (command_id, client_id),
+            ).fetchone()
+            if not row:
+                raise CommandBridgeError("command/client mismatch")
+            if str(row["status"]) not in {"QUEUED","CLAIMED","COMPLETED","FAILED"}:
+                raise CommandBridgeError("command state cannot be updated")
+            self.conn.execute(
+                "UPDATE doctor_client_commands SET execution_state=?,state_updated_at=? WHERE command_id=? AND client_id=?",
+                (state, iso(), command_id, client_id),
+            )
+            self.conn.commit()
+            return self.get(command_id)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def recent_action(
+        self, *, client_id: str, action_key: str, since: datetime
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """SELECT * FROM doctor_client_commands
+               WHERE client_id=? AND action_key=? AND created_at>=?
+               ORDER BY created_at DESC LIMIT 1""",
+            (client_id, action_key, iso(since)),
+        ).fetchone()
+        return self._public(row) if row else None
 
     def finish(
         self,

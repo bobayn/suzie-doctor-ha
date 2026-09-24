@@ -52,10 +52,12 @@ class ProtocolEngine:
         "reload_subsystem",
         "restart_addon",
         "restart_core",
+        "reboot_host",
         "set_entity_device_class",
         "set_entity_enabled",
         "update_state",
         "verify_recorder_write",
+        "ha_repair_absent",
         "wait",
     }
     SUPPORTED_TRIGGER_TYPES = {
@@ -1421,6 +1423,10 @@ class ProtocolEngine:
                 await asyncio.sleep(5)
             return False
 
+        if name == "reboot_host":
+            await self.supervisor.reboot_host()
+            return {"accepted": True, "disconnect_expected": True}
+
         if name == "create_backup":
             before = await self.supervisor.backups_info()
             before_items = (
@@ -1504,6 +1510,21 @@ class ProtocolEngine:
 
         if name == "verify_recorder_write":
             return await self.ha.recorder_write_probe()
+
+        if name == "ha_repair_absent":
+            domain = str(resolved.get("domain") or "").strip()
+            issue_id = str(resolved.get("issue_id") or "").strip()
+            if not domain or not issue_id:
+                raise ProtocolError("ha_repair_absent requires domain and issue_id")
+            repairs = await self.ha.list_repairs()
+            items = repairs if isinstance(repairs, list) else (repairs.get("repairs", []) if isinstance(repairs, dict) else [])
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("domain") or "") == domain and str(item.get("issue_id") or "") == issue_id:
+                    if item.get("active", True) is not False and not item.get("dismissed_version"):
+                        return False
+            return True
 
         if name == "config_entry_state":
             entry_id = str(resolved.get("entry_id") or "")
@@ -1930,6 +1951,24 @@ class ProtocolEngine:
                         break
 
                 response["treatment"] = treatment_results
+                field_meta = card.get("field_action") if isinstance(card.get("field_action"), dict) else {}
+                field_policy = field_meta.get("policy") if isinstance(field_meta.get("policy"), dict) else {}
+                disconnect_expected = bool(field_one_shot and field_policy.get("disconnect_expected"))
+                if disconnect_expected and not treatment_failed:
+                    versions = await self._versions()
+                    duration_ms = int((monotonic() - started) * 1000)
+                    self.db.finish_protocol_run(
+                        run_id, result="VERIFY_PENDING", attempt_count=max(1, attempts_total),
+                        restart_level_used="host_reboot", versions=versions,
+                    )
+                    response["result"] = "CONNECTION_LOST_EXPECTED"
+                    response["verify"] = []
+                    response["verify_performed"] = False
+                    response["verify_passed"] = None
+                    response["verify_pending"] = True
+                    response["duration_ms"] = duration_ms
+                    return response
+
                 verify_results: list[dict[str, Any]] = []
                 success = False
                 verify_performed = False
@@ -2112,6 +2151,29 @@ class ProtocolEngine:
             response["result"] = "FAILED"
             response["error"] = f"{type(exc).__name__}: {exc}"
             return response
+
+    async def verify_field_one_shot(
+        self, card: dict[str, Any], *, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        card = self._validate_card(dict(card))
+        if str((card.get("protocol") or {}).get("status") or "") != "FIELD_ONE_SHOT":
+            raise ProtocolError("verify_field_one_shot requires FIELD_ONE_SHOT card")
+        verify = card.get("verify") or {}
+        if not isinstance(verify, dict) or not verify.get("rerun_diagnostics"):
+            raise ProtocolError("FIELD_ONE_SHOT requires functional verify diagnostics")
+        env = dict(context or {})
+        results = await self._run_diagnostics(card, env)
+        success_when = str(verify.get("success_when") or "")
+        if success_when != "conditions":
+            raise ProtocolError("FIELD_ONE_SHOT verify requires conditions")
+        passed = self._eval_conditions(verify.get("conditions"), env, default=False)
+        return {
+            "result": "VERIFIED_PASS" if passed else "VERIFIED_FAIL",
+            "verify": results,
+            "verify_performed": True,
+            "verify_passed": bool(passed),
+            "new_protocol_evidence": bool(passed),
+        }
 
     async def _versions(self) -> dict[str, Any]:
         try:

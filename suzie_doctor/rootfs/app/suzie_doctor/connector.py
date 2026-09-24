@@ -128,6 +128,7 @@ class ConnectorCore:
                 self.protocol_engine.SUPPORTED_PRIMITIVES
             ),
             "treatment_path": str(self.contract.get("treatment_path") or ""),
+            "field_actions": list(self.contract.get("field_actions") or []),
         }
 
     async def invoke(
@@ -167,8 +168,8 @@ class ConnectorCore:
             exact_target = args.get("exact_target")
             evidence = args.get("evidence")
             verify_criterion = args.get("verify_criterion")
-            if not isinstance(action, dict) or not str(action.get("primitive") or "").strip():
-                raise ConnectorError("doctor.action.request requires action.primitive")
+            if not isinstance(action, dict) or not (str(action.get("name") or "").strip() or str(action.get("primitive") or "").strip()):
+                raise ConnectorError("doctor.action.request requires action.name or action.primitive")
             if not isinstance(exact_target, dict) or not exact_target:
                 raise ConnectorError("doctor.action.request requires structured exact_target")
             if not isinstance(evidence, dict):
@@ -182,8 +183,12 @@ class ConnectorCore:
                     "reason": "suite_incompatible",
                     "suite": self.suite.status(),
                 }
+            command_id = str(trusted.get("command_id") or "").strip()
+            if not command_id:
+                raise ConnectorError("doctor.action.request requires trusted command_id")
             return await self.field_action_callback(
                 {
+                    "command_id": command_id,
                     "field_case_id": case_id,
                     "action": dict(action),
                     "exact_target": dict(exact_target),

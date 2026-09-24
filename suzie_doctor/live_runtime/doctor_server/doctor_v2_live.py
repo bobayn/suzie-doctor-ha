@@ -1,6 +1,8 @@
 from __future__ import annotations
 import json
 import sqlite3
+import hashlib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from doctor_v2_store import DoctorV2Store
@@ -36,6 +38,7 @@ class DoctorV2Runtime:
             "waiting_field": c.execute("select count(*) from doctor_v2_field_queue where status='WAITING'").fetchone()[0],
             "waiting_wilson": c.execute("select count(*) from doctor_v2_wilson_jobs where status='WAITING'").fetchone()[0],
             "open_dialogs": c.execute("select count(*) from doctor_v2_web_dialogs where state='OPEN'").fetchone()[0],
+            "resolution_states": {str(r[0]):int(r[1]) for r in c.execute("select state,count(*) from doctor_v2_resolutions group by state")},
             "quick_check": c.execute("pragma quick_check").fetchone()[0],
         }
 
@@ -60,37 +63,154 @@ class DoctorV2Runtime:
             base=max(base,85)
         return base
 
+    @staticmethod
+    def _repair_resolution_info(payload: dict[str,Any], fingerprint: str|None) -> dict[str,Any]|None:
+        evidence=payload.get("evidence") if isinstance(payload,dict) and isinstance(payload.get("evidence"),dict) else {}
+        if not (str(evidence.get("kind") or "")=="repair" and evidence.get("active") is True and evidence.get("terminal_resolution_required") is True):
+            return None
+        domain=str(evidence.get("domain") or "").strip()
+        issue_id=str(evidence.get("issue_id") or "").strip()
+        fp=str(fingerprint or evidence.get("problem_key") or "").strip()
+        if not fp or not domain or not issue_id:
+            return None
+        caps=sorted({str(x) for x in (evidence.get("field_action_capabilities") or []) if str(x)})
+        cap_hash=hashlib.sha256(json.dumps(caps,ensure_ascii=False,separators=(",",":")).encode()).hexdigest()
+        material={k:evidence.get(k) for k in ("kind","problem_key","domain","issue_id","is_fixable","translation_key","translation_placeholders","resolution_criterion") if k in evidence}
+        material_hash=hashlib.sha256(json.dumps(material,ensure_ascii=False,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+        return {"fingerprint":fp,"problem_key":str(evidence.get("problem_key") or fp),"domain":domain,"issue_id":issue_id,"capabilities":caps,"capabilities_hash":cap_hash,"material_hash":material_hash}
+
+    def _resolution(self, patient_id:str, fingerprint:str) -> dict[str,Any]|None:
+        row=self.conn.execute("select * from doctor_v2_resolutions where patient_id=? and fingerprint=?",(str(patient_id),str(fingerprint))).fetchone()
+        if not row:return None
+        out=dict(row); out["human_requirement"]=self._loads(out.pop("human_requirement_json",None)); return out
+
+    def _resolution_open_task(self, patient_id:str, fingerprint:str) -> dict[str,Any]|None:
+        row=self.conn.execute(
+            """select e.event_id,h.house_job_id,h.status as house_status,q.status as field_status,q.legacy_case_id,d.decision
+               from doctor_v2_patient_events e
+               join doctor_v2_house_jobs h on h.trigger_event_id=e.event_id
+               left join doctor_v2_house_decisions d on d.house_job_id=h.house_job_id
+               left join doctor_v2_field_queue q on q.source_house_decision_id=d.decision_id
+               where e.patient_id=? and e.fingerprint=?
+                 and (h.status in ('WAITING','CLAIMED') or q.status in ('WAITING','ASSIGNED','CLAIMED'))
+               order by e.event_id desc limit 1""",(str(patient_id),str(fingerprint))).fetchone()
+        return dict(row) if row else None
+
+    def mark_resolution_house_decision(self, job_id:int, result:dict[str,Any]) -> None:
+        row=self.conn.execute(
+            """select e.patient_id,e.fingerprint,e.payload_json,h.card_version
+               from doctor_v2_house_jobs h join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
+               where h.house_job_id=?""",(int(job_id),)).fetchone()
+        if not row or not row["fingerprint"]:return
+        payload=self._loads(row["payload_json"]); info=self._repair_resolution_info(payload,str(row["fingerprint"]))
+        if not info:return
+        decision=str(result.get("decision") or "")
+        state="DISPATCHED" if decision=="DISPATCH_SUZIE" else ("WAITING_HUMAN" if decision=="HUMAN_ACTION_REQUIRED" else "OPEN")
+        human=result.get("human_requirement") if isinstance(result.get("human_requirement"),dict) else {}
+        next_recheck=(datetime.now(UTC)+timedelta(minutes=15)).isoformat() if state=="WAITING_HUMAN" else None
+        with self.conn:
+            self.conn.execute(
+                """insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,current_house_job_id,last_card_version,human_requirement_json,capabilities_hash,material_hash,next_recheck_at,updated_at)
+                   values(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                   on conflict(patient_id,fingerprint) do update set state=excluded.state,current_house_job_id=excluded.current_house_job_id,last_card_version=excluded.last_card_version,human_requirement_json=excluded.human_requirement_json,capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=excluded.next_recheck_at,updated_at=CURRENT_TIMESTAMP""",
+                (str(row["patient_id"]),info["fingerprint"],info["problem_key"],info["domain"],info["issue_id"],state,int(job_id),int(row["card_version"]),self._j(human),info["capabilities_hash"],info["material_hash"],next_recheck))
+
+    def mark_resolution_field_case(self, queue_id:int, case_id:int) -> None:
+        row=self.conn.execute(
+            """select e.patient_id,e.fingerprint from doctor_v2_field_queue q
+               join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
+               join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
+               join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
+               where q.queue_id=?""",(int(queue_id),)).fetchone()
+        if row and row["fingerprint"]:
+            with self.conn:self.conn.execute("update doctor_v2_resolutions set state='DISPATCHED',current_field_case_id=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(int(case_id),str(row["patient_id"]),str(row["fingerprint"])))
+
+    def mark_resolution_verifying(self, case_id:int) -> None:
+        row=self.conn.execute(
+            """select e.patient_id,e.fingerprint from doctor_v2_field_queue q
+               join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
+               join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
+               join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
+               where q.legacy_case_id=? limit 1""",(int(case_id),)).fetchone()
+        if row and row["fingerprint"]:
+            with self.conn:self.conn.execute("update doctor_v2_resolutions set state='VERIFYING',updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(str(row["patient_id"]),str(row["fingerprint"])))
+
+    def mark_resolution_field_finished(self, case_id:int, outcome:str, result:dict[str,Any]) -> None:
+        row=self.conn.execute(
+            """select e.patient_id,e.fingerprint from doctor_v2_field_queue q
+               join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
+               join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
+               join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
+               where q.legacy_case_id=? limit 1""",(int(case_id),)).fetchone()
+        if not row or not row["fingerprint"]:return
+        normalized=str(outcome or "").upper()
+        repair_verify=result.get("repair_verification") if isinstance(result,dict) and isinstance(result.get("repair_verification"),dict) else {}
+        if normalized in {"SUCCESS","RESOLVED"} and repair_verify.get("active_after") is False:
+            state="RESOLVED"; resolved=datetime.now(UTC).isoformat(); human={}; next_recheck=None
+        elif normalized=="HUMAN_REQUIRED":
+            state="WAITING_HUMAN"; resolved=None; human=result.get("human_requirement") if isinstance(result.get("human_requirement"),dict) else {}; next_recheck=(datetime.now(UTC)+timedelta(minutes=15)).isoformat()
+        else:
+            state="OPEN"; resolved=None; human={}; next_recheck=(datetime.now(UTC)+timedelta(minutes=5)).isoformat()
+        with self.conn:
+            self.conn.execute("update doctor_v2_resolutions set state=?,human_requirement_json=?,next_recheck_at=?,resolved_at=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(state,self._j(human),next_recheck,resolved,str(row["patient_id"]),str(row["fingerprint"])))
+
     def journal_to_house(self, patient_id: str, source: str, payload: dict[str,Any], *, event_type: str="OBSERVATION", severity: str|None=None, fingerprint: str|None=None, priority: int|None=None) -> dict[str,Any]:
         state={"latest_source":source,"latest":payload}
         version=self.store.ensure_patient(patient_id,state)
-        if fingerprint:
+        repair=self._repair_resolution_info(payload,fingerprint)
+        if repair:
+            existing_resolution=self._resolution(str(patient_id),repair["fingerprint"])
+            open_task=self._resolution_open_task(str(patient_id),repair["fingerprint"])
+            if open_task:
+                return {"patient_id":patient_id,"card_version":version,"event_id":int(open_task["event_id"]),"house_job_id":int(open_task["house_job_id"]),"house_status":open_task["house_status"],"deduplicated":True,"field_status":open_task.get("field_status"),"decision":open_task.get("decision"),"resolution_state":"DISPATCHED"}
+            if existing_resolution and str(existing_resolution.get("state") or "")=="WAITING_HUMAN":
+                caps_same=str(existing_resolution.get("capabilities_hash") or "")==repair["capabilities_hash"]
+                material_same=str(existing_resolution.get("material_hash") or "")==repair["material_hash"]
+                next_recheck=str(existing_resolution.get("next_recheck_at") or "")
+                not_due=False
+                try:
+                    parsed=datetime.fromisoformat(next_recheck) if next_recheck else None
+                    if parsed is not None and parsed.tzinfo is None: parsed=parsed.replace(tzinfo=UTC)
+                    not_due=bool(parsed and parsed>datetime.now(UTC))
+                except Exception:not_due=False
+                human=existing_resolution.get("human_requirement") if isinstance(existing_resolution.get("human_requirement"),dict) else {}
+                valid_human=str(human.get("type") or "") in {"PHYSICAL_ACTION","CREDENTIAL","OAUTH","MISSING_CAPABILITY"}
+                if caps_same and material_same and not_due and valid_human:
+                    return {"patient_id":patient_id,"card_version":version,"event_id":existing_resolution.get("last_event_id"),"house_job_id":existing_resolution.get("current_house_job_id"),"house_status":"DONE","deduplicated":True,"field_status":None,"decision":"HUMAN_ACTION_REQUIRED","resolution_state":"WAITING_HUMAN"}
+            if existing_resolution and str(existing_resolution.get("state") or "")=="OPEN":
+                caps_same=str(existing_resolution.get("capabilities_hash") or "")==repair["capabilities_hash"]
+                material_same=str(existing_resolution.get("material_hash") or "")==repair["material_hash"]
+                next_recheck=str(existing_resolution.get("next_recheck_at") or "")
+                try:
+                    parsed=datetime.fromisoformat(next_recheck) if next_recheck else None
+                    if parsed is not None and parsed.tzinfo is None: parsed=parsed.replace(tzinfo=UTC)
+                    not_due=bool(parsed and parsed>datetime.now(UTC))
+                except Exception:not_due=False
+                if caps_same and material_same and not_due:
+                    return {"patient_id":patient_id,"card_version":version,"event_id":existing_resolution.get("last_event_id"),"house_job_id":existing_resolution.get("current_house_job_id"),"house_status":"DONE","deduplicated":True,"resolution_state":"OPEN_COOLDOWN"}
+            if existing_resolution and str(existing_resolution.get("state") or "")=="VERIFYING":
+                return {"patient_id":patient_id,"card_version":version,"event_id":existing_resolution.get("last_event_id"),"house_job_id":existing_resolution.get("current_house_job_id"),"house_status":"DONE","deduplicated":True,"resolution_state":"VERIFYING"}
+        elif fingerprint:
             existing=self.conn.execute(
                 """select e.event_id,h.house_job_id,h.status as house_status,q.status as field_status,d.decision
-                   from doctor_v2_patient_events e
-                   join doctor_v2_house_jobs h on h.trigger_event_id=e.event_id
+                   from doctor_v2_patient_events e join doctor_v2_house_jobs h on h.trigger_event_id=e.event_id
                    left join doctor_v2_house_decisions d on d.house_job_id=h.house_job_id
                    left join doctor_v2_field_queue q on q.source_house_decision_id=d.decision_id
-                   where e.patient_id=? and e.fingerprint=?
-                     and (h.status in ('WAITING','CLAIMED')
-                          or q.status in ('WAITING','ASSIGNED','RUNNING')
-                          or (h.status='DONE' and d.decision='HUMAN_ACTION_REQUIRED'))
-                   order by e.event_id desc limit 1""",
-                (str(patient_id),str(fingerprint)),
-            ).fetchone()
+                   where e.patient_id=? and e.fingerprint=? and (h.status in ('WAITING','CLAIMED') or q.status in ('WAITING','ASSIGNED','CLAIMED'))
+                   order by e.event_id desc limit 1""",(str(patient_id),str(fingerprint))).fetchone()
             if existing:
-                return {
-                    "patient_id":patient_id,"card_version":version,
-                    "event_id":int(existing["event_id"]),
-                    "house_job_id":int(existing["house_job_id"]),
-                    "house_status":existing["house_status"],
-                    "deduplicated":True,
-                    "field_status":existing["field_status"],
-                    "decision":existing["decision"],
-                }
+                return {"patient_id":patient_id,"card_version":version,"event_id":int(existing["event_id"]),"house_job_id":int(existing["house_job_id"]),"house_status":existing["house_status"],"deduplicated":True,"field_status":existing["field_status"],"decision":existing["decision"]}
         effective_priority=self.house_priority_from_payload(payload,severity) if priority is None else int(priority)
         event_id=self.store.append_event(patient_id=patient_id,event_type=event_type,source=source,payload=payload,severity=severity,fingerprint=fingerprint,create_house_job=True,priority=effective_priority)
         row=self.conn.execute("select house_job_id,status from doctor_v2_house_jobs where trigger_event_id=?",(event_id,)).fetchone()
-        return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None,"deduplicated":False}
+        if repair and row:
+            with self.conn:
+                self.conn.execute(
+                    """insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,current_house_job_id,last_event_id,last_card_version,human_requirement_json,capabilities_hash,material_hash,updated_at)
+                       values(?,?,?,?,?,'DISPATCHED',?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                       on conflict(patient_id,fingerprint) do update set problem_key=excluded.problem_key,domain=excluded.domain,issue_id=excluded.issue_id,state='DISPATCHED',current_house_job_id=excluded.current_house_job_id,last_event_id=excluded.last_event_id,last_card_version=excluded.last_card_version,human_requirement_json='{}',capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=NULL,resolved_at=NULL,updated_at=CURRENT_TIMESTAMP""",
+                    (str(patient_id),repair["fingerprint"],repair["problem_key"],repair["domain"],repair["issue_id"],int(row[0]),event_id,version,'{}',repair["capabilities_hash"],repair["material_hash"]))
+        return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None,"deduplicated":False,"resolution_state":"DISPATCHED" if repair else None}
 
     def customer_feed(self, patient_id: str, limit: int=80) -> dict[str,Any]:
         rows=self.conn.execute(
@@ -331,6 +451,7 @@ class DoctorV2Runtime:
     def set_field_legacy_case(self, queue_id:int, case_id:int) -> None:
         with self.conn:
             self.conn.execute("update doctor_v2_field_queue set legacy_case_id=?,status='ASSIGNED',assignment_id=?,updated_at=CURRENT_TIMESTAMP where queue_id=?",(int(case_id),f"case:{int(case_id)}",int(queue_id)))
+        self.mark_resolution_field_case(int(queue_id),int(case_id))
 
     def field_validation_requirement(self, case_id:int) -> dict[str,Any]|None:
         row=self.conn.execute(

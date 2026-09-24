@@ -6,18 +6,20 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: 0.2.63-dev
+- App: 0.2.65-dev
 - Integration bridge: `0.2.5-dev`
-- Protocol Pack: `0.1.3-dev`
-- Suite: 0.1.9-dev
-- Connector Core: 0.1.3-dev
-- Skill Core: 0.1.7-dev
+- Protocol Pack: `0.1.4-dev`
+- Suite: 0.1.11-dev
+- Connector Core: 0.1.5-dev
+- Skill Core: 0.1.9-dev
 
 The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 
 - Ingress UI and persistent SQLite storage in `/data`;
 - one canonical Suzie Doctor Connector Core is bundled with the App and exposed through Web and API surface adapters with the same tool contract;
 - Connector Core now uses a validated adapter/capability registry; unavailable future families are explicit stubs with reasons rather than fake tools or shell fallbacks;
+- House-dispatched Field Suzie has a signed `doctor.action.request` one-shot path for safe structured treatment even without a known Disease/Protocol; semantic actions are bounded to integration reload, add-on restart, Core restart and host reboot, with exact-target/risk/cooldown/verify gates;
+- terminal Home Assistant Repairs have independent OPEN/DISPATCHED/WAITING_HUMAN/VERIFYING/RESOLVED resolution state and exact-client reconciliation so completed jobs cannot silently orphan an active Repair;
 - capability metadata distinguishes availability from permission and carries risk, exact-target policy, confirmation class, checkpoint and rollback support;
 - one canonical versioned Suzie Doctor Skill Core is bundled with the App; it contains operating methodology, not the proprietary Master Knowledge Base;\n- Skill Core requires a bounded restart/reboot fallback assessment before HUMAN_REQUIRED when targeted treatment is unavailable or has failed and restart is safe, relevant and technically authorized;\n- Doctor Server can route an exact-client command to the installed App over the existing TLS-pinned/Ed25519 client channel; the App pulls only its own client_id commands and executes them through the same Connector Core, with one command at a time per client and treatment risk is decided by Suzie Doctor through structured risk_assessment; transport/server human-confirmation is not the decision gate;\n- Skill Core includes the shared Case journal lifecycle: get -> atomic claim -> diagnose/treat -> verify -> complete-next, reuse the same real dialog for queued follow-up Cases, and stop on duplicate claim or target conflict;
 - Suite compatibility is checked at runtime and blocks all treatment fail-closed while leaving diagnostics available if App/Connector/Skill/Protocol/Bridge/Server-API contracts drift;

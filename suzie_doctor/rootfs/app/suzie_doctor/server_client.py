@@ -277,6 +277,20 @@ class DoctorServerClient:
     async def field_action(self, request: dict[str, Any]) -> dict[str, Any]:
         return await self._signed_post("/v1/field-action", request)
 
+    async def field_action_resume(self, *, command_id: str, field_case_id: int) -> dict[str, Any]:
+        return await self._signed_post(
+            "/v1/field-action-resume",
+            {"command_id": str(command_id), "field_case_id": int(field_case_id)},
+        )
+
+    async def reconcile_repairs(
+        self, repairs: list[dict[str, Any]], field_action_capabilities: list[str]
+    ) -> dict[str, Any]:
+        return await self._signed_post(
+            "/v1/repair-reconcile",
+            {"repairs": list(repairs or []), "field_action_capabilities": list(field_action_capabilities or [])},
+        )
+
     async def customer_feed(self, limit: int = 80) -> dict[str, Any]:
         return await self._signed_post(
             "/v1/customer-feed",
@@ -286,6 +300,12 @@ class DoctorServerClient:
     async def poll_command(self) -> dict[str, Any]:
         """Poll exactly this enrolled client for one server-routed command."""
         return await self._signed_post("/v1/client/commands/poll", {})
+
+    async def update_command_state(self, *, command_id: str, state: str) -> dict[str, Any]:
+        return await self._signed_post(
+            "/v1/client/commands/state",
+            {"command_id": str(command_id), "state": str(state)},
+        )
 
     async def submit_command_result(
         self,
@@ -308,6 +328,8 @@ class DoctorServerClient:
     def validate_execution_package(
         self,
         package: dict[str, Any],
+        *,
+        expected_field_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(package, dict):
             raise DoctorServerError("execution package must be an object")
@@ -330,4 +352,14 @@ class DoctorServerClient:
             raise DoctorServerError("execution package Disease mismatch")
         if str(card_protocol.get("id") or "") != protocol_id:
             raise DoctorServerError("execution package Protocol mismatch")
+        if expected_field_binding is not None:
+            binding = package.get("field_binding")
+            if not isinstance(binding, dict):
+                raise DoctorServerError("FIELD_ONE_SHOT package has no field binding")
+            binding_hash = hashlib.sha256(canonical_json(binding)).hexdigest()
+            if str(package.get("field_binding_sha256") or "") != binding_hash:
+                raise DoctorServerError("FIELD_ONE_SHOT binding hash mismatch")
+            for key, expected in expected_field_binding.items():
+                if canonical_json(binding.get(key)) != canonical_json(expected):
+                    raise DoctorServerError(f"FIELD_ONE_SHOT binding mismatch: {key}")
         return card

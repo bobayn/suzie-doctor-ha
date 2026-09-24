@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.1-v2-dev"
+SERVER_VERSION = "0.2.2-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -43,8 +43,15 @@ ALLOWED_NETWORKS = [
 ]
 MAX_BODY = 256 * 1024
 
-FIELD_ACTION_PRIMITIVES = {"reload_config_entry", "reload_config_entry_verified", "reload_subsystem", "restart_addon", "restart_core"}
-FIELD_VERIFY_PRIMITIVES = {"addon_info", "config_entry_info", "config_entry_state", "core_memory_stability", "mqtt_probe", "network_primary_info", "read_host_metrics", "verify_recorder_write"}
+FIELD_ACTION_POLICIES = {
+    "integration.reload": {"primitive":"reload_config_entry_verified","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_INTEGRATION","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["entry_id"],"attempt_limit":1,"cooldown_seconds":60,"disconnect_expected":False},
+    "addon.restart": {"primitive":"restart_addon","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_ADDON","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["slug"],"attempt_limit":1,"cooldown_seconds":120,"disconnect_expected":False},
+    "core.restart": {"primitive":"restart_core","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HOME_ASSISTANT_CORE","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["component"],"attempt_limit":1,"cooldown_seconds":300,"disconnect_expected":False},
+    "host.reboot": {"primitive":"reboot_host","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HAOS_HOST","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["host"],"attempt_limit":1,"cooldown_seconds":600,"disconnect_expected":True},
+    "subsystem.reload": {"primitive":"reload_subsystem","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HA_SUBSYSTEM","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["subsystem"],"attempt_limit":1,"cooldown_seconds":60,"disconnect_expected":False},
+}
+FIELD_ACTION_PRIMITIVE_ALIASES = {v["primitive"]: k for k,v in FIELD_ACTION_POLICIES.items()}
+FIELD_VERIFY_PRIMITIVES = {"addon_info", "config_entry_info", "config_entry_state", "core_memory_stability", "mqtt_probe", "network_primary_info", "read_host_metrics", "verify_recorder_write", "ha_repair_absent"}
 
 CLIENT_COMMAND_TOOLS = {
     "doctor.capabilities",
@@ -1303,6 +1310,25 @@ class DoctorServer:
             }
         )
 
+    async def client_command_state(self, request: web.Request) -> web.Response:
+        body, client = await self.authenticated_body(request)
+        client_id = str(client["client_id"])
+        command_id = clean_text(body.get("command_id"), 128)
+        state = clean_text(body.get("state"), 80).upper()
+        if not command_id or not state:
+            raise web.HTTPBadRequest(text="command_id and state required")
+        try:
+            command = self.command_bridge.set_execution_state(
+                client_id=client_id, command_id=command_id, state=state
+            )
+        except CommandBridgeError as exc:
+            raise web.HTTPConflict(text=str(exc))
+        self.db.event("doctor_client_command_state", client_id, {
+            "case_id": command.get("case_id"), "command_id": command_id,
+            "tool_name": command.get("tool_name"), "execution_state": state,
+        })
+        return self.signed({"result":"RECORDED","client_id":client_id,"command_id":command_id,"execution_state":state})
+
     async def client_command_result(self, request: web.Request) -> web.Response:
         body, client = await self.authenticated_body(request)
         client_id = str(client["client_id"])
@@ -1314,6 +1340,14 @@ class DoctorServer:
         if not command_id:
             raise web.HTTPBadRequest(text="command_id required")
         try:
+            before_command = self.command_bridge.get(command_id)
+            if str(before_command.get("tool_name") or "") == "doctor.action.request":
+                final_exec_state = "VERIFIED_FAIL"
+                if not error:
+                    executions = result.get("execution_results") if isinstance(result, dict) else []
+                    if any(isinstance(item,dict) and item.get("verify_performed") is True and item.get("verify_passed") is True for item in (executions or [])):
+                        final_exec_state = "VERIFIED_PASS"
+                self.command_bridge.set_execution_state(client_id=client_id, command_id=command_id, state=final_exec_state)
             command = self.command_bridge.finish(
                 client_id=client_id,
                 command_id=command_id,
@@ -1352,12 +1386,30 @@ class DoctorServer:
             case_id = int(request.match_info["case_id"])
             async with self.journal_gate:
                 before = self.journal.get_case(case_id)
+                result_payload=self.attest_field_one_shot(
+                    case_id=case_id, outcome=str(body.get("outcome") or ""), result=result_payload
+                )
                 result_payload=self.attest_repair_resolution(
                     case_id=case_id,
                     case=before,
                     outcome=str(body.get("outcome") or ""),
                     result=result_payload,
                 )
+                if str(body.get("outcome") or "").upper()=="HUMAN_REQUIRED":
+                    human=result_payload.get("human_requirement") if isinstance(result_payload.get("human_requirement"),dict) else {}
+                    human_type=str(human.get("type") or "").upper().strip()
+                    human_reason=str(human.get("reason") or "").strip()
+                    if human_type not in {"PHYSICAL_ACTION","CREDENTIAL","OAUTH","MISSING_CAPABILITY"} or not human_reason:
+                        raise ValueError("Field HUMAN_REQUIRED requires human_requirement.type and reason")
+                    if human_type=="MISSING_CAPABILITY":
+                        requested=str(human.get("capability") or human.get("action") or "").strip()
+                        if not requested:
+                            raise ValueError("Field MISSING_CAPABILITY requires capability/action")
+                        problem=before.get("problem") if isinstance(before.get("problem"),dict) else {}
+                        available={str(x) for x in (problem.get("field_action_capabilities") or []) if str(x)}
+                        if requested in available or (requested=="doctor.action.request" and available):
+                            raise ValueError("Field MISSING_CAPABILITY conflicts with available machine capability")
+                    result_payload["human_requirement"]={"type":human_type,"reason":human_reason,"capability":str(human.get("capability") or ""),"action":str(human.get("action") or "")}
                 requirement=self.v2_ext.runtime.field_validation_requirement(case_id)
                 if requirement and isinstance(result_payload.get("experimental_validation"),dict):
                     result_payload["experimental_validation"]=self.attest_experimental_attempt(
@@ -1581,6 +1633,40 @@ class DoctorServer:
         out["evidence"]=evidence
         return out
 
+    def attest_field_one_shot(
+        self, *, case_id:int, outcome:str, result:dict[str,Any]
+    )->dict[str,Any]:
+        rows=self.command_bridge.conn.execute(
+            """select command_id,status,result_json,execution_state,arguments_json,created_at
+               from doctor_client_commands where case_id=? and tool_name='doctor.action.request'
+               order by created_at desc""",(int(case_id),)
+        ).fetchall()
+        if not rows:return result
+        latest=rows[0]
+        exec_state=str(latest["execution_state"] or "")
+        if str(latest["status"] or "")!="COMPLETED" or exec_state not in {"VERIFIED_PASS","VERIFIED_FAIL"}:
+            raise ValueError("Field one-shot command is not terminally verified")
+        try: command_result=json.loads(str(latest["result_json"] or "{}"))
+        except Exception: command_result={}
+        try: arguments=json.loads(str(latest["arguments_json"] or "{}"))
+        except Exception: arguments={}
+        executions=[x for x in (command_result.get("execution_results") or []) if isinstance(x,dict)]
+        verified_pass=exec_state=="VERIFIED_PASS" and any(x.get("verify_performed") is True and x.get("verify_passed") is True for x in executions)
+        normalized=str(outcome or "").upper()
+        if normalized in {"SUCCESS","RESOLVED"} and not verified_pass:
+            raise ValueError("Field one-shot SUCCESS requires VERIFIED_PASS functional criterion")
+        out=dict(result)
+        out["field_one_shot_evidence"]={
+            "command_id":str(latest["command_id"]),"execution_state":exec_state,
+            "action":safe_structured(arguments.get("action") or {}),"exact_target":safe_structured(arguments.get("exact_target") or {}),
+            "functional_verify_pass":bool(verified_pass),
+        }
+        if verified_pass:
+            out["new_protocol_evidence"]=True
+        elif normalized not in {"SUCCESS","RESOLVED"} and out.get("continued_case_diagnosis") is not True:
+            raise ValueError("VERIFIED_FAIL one-shot requires continued_case_diagnosis=true before Case completion")
+        return out
+
     def attest_repair_resolution(
         self, *, case_id:int, case:dict[str,Any], outcome:str, result:dict[str,Any]
     )->dict[str,Any]:
@@ -1593,6 +1679,30 @@ class DoctorServer:
             return result
         domain=str(repair.get("domain") or "")
         issue_id=str(repair.get("issue_id") or "")
+        action_rows=self.command_bridge.conn.execute(
+            """select command_id from doctor_client_commands
+               where case_id=? and tool_name='doctor.action.request' and status='COMPLETED' and execution_state='VERIFIED_PASS'
+               order by created_at desc""",(int(case_id),)
+        ).fetchall()
+        for action_row in action_rows:
+            try: command=self.command_bridge.get(str(action_row["command_id"]))
+            except Exception: continue
+            package=command.get("signed_package") if isinstance(command.get("signed_package"),dict) else {}
+            card=package.get("card") if isinstance(package.get("card"),dict) else {}
+            diagnostics=card.get("diagnostics") if isinstance(card.get("diagnostics"),list) else []
+            exact_verify=any(
+                isinstance(item,dict)
+                and str(item.get("primitive") or "")=="ha_repair_absent"
+                and str((item.get("args") or {}).get("domain") or "")==domain
+                and str((item.get("args") or {}).get("issue_id") or "")==issue_id
+                for item in diagnostics
+            )
+            executions=(command.get("result") or {}).get("execution_results") if isinstance(command.get("result"),dict) else []
+            passed=any(isinstance(item,dict) and item.get("verify_performed") is True and item.get("verify_passed") is True for item in (executions or []))
+            if exact_verify and passed:
+                out=dict(result)
+                out["repair_verification"]={"domain":domain,"issue_id":issue_id,"active_after":False,"verified_by":"signed_field_one_shot:ha_repair_absent","signed_command_id":str(action_row["command_id"])}
+                return out
         rows=self.command_bridge.conn.execute(
             """select command_id,status,result_json,created_at,completed_at
                from doctor_client_commands
@@ -1691,6 +1801,7 @@ class DoctorServer:
         disease_id: str,
         card: dict[str, Any],
         execution_actor: str | None = None,
+        field_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utcnow()
         ttl = int(self.config["execution_package_ttl_seconds"])
@@ -1701,7 +1812,7 @@ class DoctorServer:
             if key not in {"source_evidence", "_source_file"}
         }
         sanitized_card["source_evidence"] = []
-        return {
+        package = {
             "package_id": str(uuid4()),
             "issued_at": iso(now),
             "expires_at": iso(now + timedelta(seconds=ttl)),
@@ -1714,6 +1825,11 @@ class DoctorServer:
             "execution_actor": execution_actor,
             "card": sanitized_card,
         }
+        if isinstance(field_binding, dict):
+            binding = safe_structured(field_binding)
+            package["field_binding"] = binding
+            package["field_binding_sha256"] = hashlib.sha256(canonical_json(binding)).hexdigest()
+        return package
 
     def field_action_case_authorized(self, *, client_id: str, case_id: int) -> dict[str, Any]:
         case = self.journal.get_case(int(case_id))
@@ -1723,6 +1839,9 @@ class DoctorServer:
             raise web.HTTPForbidden(text="Field action requires an active claimed Case")
         if not str(case.get("doctor_session_id") or ""):
             raise web.HTTPForbidden(text="Field action requires House-dispatched Doctor session")
+        problem=case.get("problem") if isinstance(case.get("problem"),dict) else {}
+        if not problem.get("house_job_id") or not problem.get("house_decision_id"):
+            raise web.HTTPForbidden(text="doctor.action.request requires House-dispatched Field Case provenance")
         return case
 
     def field_action_owner_prohibition(self, *, exact_target: dict[str, Any], action: dict[str, Any]) -> str | None:
@@ -1754,6 +1873,27 @@ class DoctorServer:
                 return True
         return False
 
+    async def field_action_resume(self, request: web.Request) -> web.Response:
+        body, client = await self.authenticated_body(request)
+        client_id=str(client["client_id"])
+        command_id=clean_text(body.get("command_id"),160)
+        try: case_id=int(body.get("field_case_id"))
+        except Exception as exc: raise web.HTTPBadRequest(text="field_case_id required") from exc
+        if not command_id: raise web.HTTPBadRequest(text="command_id required")
+        try: command=self.command_bridge.get(command_id)
+        except CommandBridgeError as exc: raise web.HTTPNotFound(text=str(exc))
+        if str(command.get("client_id") or "")!=client_id or int(command.get("case_id") or 0)!=case_id or str(command.get("tool_name") or "")!="doctor.action.request" or str(command.get("status") or "")!="CLAIMED":
+            raise web.HTTPForbidden(text="Field resume command binding mismatch")
+        if str(command.get("execution_state") or "") not in {"CONNECTION_LOST_EXPECTED","EXECUTED","VERIFY_PENDING"}:
+            raise web.HTTPConflict(text="Field action is not awaiting resume verification")
+        package=command.get("signed_package") if isinstance(command.get("signed_package"),dict) else {}
+        if not package: raise web.HTTPConflict(text="Field action has no stored signed package")
+        package=dict(package)
+        now=utcnow(); ttl=int(self.config["execution_package_ttl_seconds"])
+        package["issued_at"]=iso(now); package["expires_at"]=iso(now+timedelta(seconds=ttl))
+        self.command_bridge.set_execution_state(client_id=client_id,command_id=command_id,state="VERIFY_PENDING")
+        return self.signed({"result":"FIELD_ACTION_VERIFY_RESUME","verify_only":True,"command_id":command_id,"case_id":case_id,"execution_packages":[package]})
+
     async def field_action(self, request: web.Request) -> web.Response:
         body, client = await self.authenticated_body(request)
         client_id = str(client["client_id"])
@@ -1764,88 +1904,171 @@ class DoctorServer:
             case_id = int(body.get("field_case_id"))
         except Exception as exc:
             raise web.HTTPBadRequest(text="Field action requires field_case_id") from exc
-        self.field_action_case_authorized(client_id=client_id, case_id=case_id)
+        case = self.field_action_case_authorized(client_id=client_id, case_id=case_id)
+
+        command_id = clean_text(body.get("command_id"), 160)
+        if not command_id:
+            raise web.HTTPBadRequest(text="Field action requires command_id")
+        try:
+            command = self.command_bridge.get(command_id)
+        except CommandBridgeError as exc:
+            raise web.HTTPForbidden(text=str(exc)) from exc
+        if (
+            str(command.get("client_id") or "") != client_id
+            or int(command.get("case_id") or 0) != case_id
+            or str(command.get("tool_name") or "") != "doctor.action.request"
+            or str(command.get("status") or "") != "CLAIMED"
+        ):
+            raise web.HTTPForbidden(text="Field action command binding mismatch")
+        if str(command.get("execution_state") or "REQUESTED") not in {"", "REQUESTED"}:
+            raise web.HTTPConflict(text="Field action command was already signed/executed")
 
         action = body.get("action") if isinstance(body.get("action"), dict) else {}
         exact_target = body.get("exact_target") if isinstance(body.get("exact_target"), dict) else {}
+        evidence = body.get("evidence") if isinstance(body.get("evidence"), dict) else {}
         risk = body.get("risk_assessment") if isinstance(body.get("risk_assessment"), dict) else {}
-        verify_criterion = body.get("verify_criterion") if isinstance(body.get("verify_criterion"), dict) else {}
-        primitive = clean_text(action.get("primitive"), 120)
+        action_name = clean_text(action.get("name"), 120)
+        raw_primitive = clean_text(action.get("primitive"), 120)
+        if not action_name and raw_primitive:
+            action_name = FIELD_ACTION_PRIMITIVE_ALIASES.get(raw_primitive, "")
+        policy = FIELD_ACTION_POLICIES.get(action_name)
+        if not policy:
+            raise web.HTTPBadRequest(text="Field action is not allowlisted")
+        primitive = str(policy["primitive"])
+        if raw_primitive and raw_primitive != primitive:
+            raise web.HTTPBadRequest(text="Field action primitive does not match action policy")
         action_args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        for field in policy.get("exact_target_fields") or []:
+            if not str(exact_target.get(str(field)) or "").strip():
+                raise web.HTTPBadRequest(text=f"Field action exact_target requires {field}")
+            if field in action_args and str(action_args.get(field)) != str(exact_target.get(field)):
+                raise web.HTTPBadRequest(text=f"Field action target mismatch for {field}")
+            if field in {"entry_id","slug","subsystem"} and field not in action_args:
+                action_args[field]=exact_target.get(field)
+        if action_name == "core.restart" and str(exact_target.get("component") or "").lower() not in {"core","homeassistant_core","home assistant core"}:
+            raise web.HTTPBadRequest(text="core.restart exact_target.component must identify Home Assistant Core")
+
+        original_args = command.get("arguments") if isinstance(command.get("arguments"), dict) else {}
+        original_action = original_args.get("action") if isinstance(original_args.get("action"), dict) else {}
+        original_target = original_args.get("exact_target") if isinstance(original_args.get("exact_target"), dict) else {}
+        if canonical_json(original_target) != canonical_json(exact_target):
+            raise web.HTTPForbidden(text="Field action target differs from claimed command")
+        original_name = clean_text(original_action.get("name"), 120)
+        original_primitive = clean_text(original_action.get("primitive"), 120)
+        if not original_name and original_primitive:
+            original_name = FIELD_ACTION_PRIMITIVE_ALIASES.get(original_primitive, "")
+        if original_name != action_name:
+            raise web.HTTPForbidden(text="Field action differs from claimed command")
+
         reason = clean_text(body.get("reason"), 2000)
         expected_result = clean_text(body.get("expected_result"), 2000)
-        if primitive not in FIELD_ACTION_PRIMITIVES:
-            raise web.HTTPBadRequest(text="Field action primitive is not allowlisted")
-        if not exact_target:
-            raise web.HTTPBadRequest(text="Field action requires exact_target")
         if not reason or not expected_result:
             raise web.HTTPBadRequest(text="Field action requires reason and expected_result")
         if str(risk.get("decision") or "").upper() != "PROCEED":
-            return self.signed({"result": "FIELD_ACTION_AVOIDED", "license": license_state, "execution_packages": [], "case_id": case_id})
-        prohibition = self.field_action_owner_prohibition(exact_target=exact_target, action=action)
+            self.command_bridge.set_execution_state(client_id=client_id, command_id=command_id, state="VERIFIED_FAIL")
+            return self.signed({"result":"FIELD_ACTION_AVOIDED","license":license_state,"execution_packages":[],"case_id":case_id,"command_id":command_id})
+        prohibition = self.field_action_owner_prohibition(exact_target=exact_target, action={"name":action_name,"primitive":primitive,"args":action_args})
         if prohibition:
-            return self.signed({"result": "FIELD_ACTION_BLOCKED", "reason": "owner_prohibition", "owner_prohibition_id": prohibition, "license": license_state, "execution_packages": [], "case_id": case_id})
-        if self.field_action_already_attempted(case_id=case_id, action=action, exact_target=exact_target):
-            return self.signed({"result": "FIELD_ACTION_BLOCKED", "reason": "same_action_already_attempted_in_case", "license": license_state, "execution_packages": [], "case_id": case_id})
+            self.command_bridge.set_execution_state(client_id=client_id, command_id=command_id, state="VERIFIED_FAIL")
+            return self.signed({"result":"FIELD_ACTION_BLOCKED","reason":"owner_prohibition","owner_prohibition_id":prohibition,"license":license_state,"execution_packages":[],"case_id":case_id,"command_id":command_id})
 
+        action_key = canonical_json({"action_name":action_name,"exact_target":safe_structured(exact_target)}).decode("utf-8")
+        previous = self.command_bridge.conn.execute(
+            """select command_id,status,execution_state,created_at from doctor_client_commands
+               where client_id=? and case_id=? and tool_name='doctor.action.request'
+                 and command_id<>? and action_key is not null
+               order by created_at desc""",
+            (client_id, case_id, command_id),
+        ).fetchall()
+        for row in previous:
+            try:
+                prior = self.command_bridge.get(str(row["command_id"]))
+            except Exception:
+                continue
+            pa = prior.get("arguments") if isinstance(prior.get("arguments"), dict) else {}
+            paction = pa.get("action") if isinstance(pa.get("action"), dict) else {}
+            pname = clean_text(paction.get("name"), 120) or FIELD_ACTION_PRIMITIVE_ALIASES.get(clean_text(paction.get("primitive"),120),"")
+            if pname == action_name and canonical_json(pa.get("exact_target") or {}) == canonical_json(exact_target):
+                raise web.HTTPConflict(text="same Field action already attempted in this Case")
+        cooldown = max(0, int(policy.get("cooldown_seconds") or 0))
+        if cooldown:
+            cutoff = iso(utcnow() - timedelta(seconds=cooldown))
+            rows = self.command_bridge.conn.execute(
+                """select command_id,arguments_json from doctor_client_commands
+                   where client_id=? and tool_name='doctor.action.request' and command_id<>? and created_at>=?
+                   order by created_at desc""",
+                (client_id, command_id, cutoff),
+            ).fetchall()
+            for row in rows:
+                try: pa=json.loads(str(row["arguments_json"] or "{}"))
+                except Exception: continue
+                paction=pa.get("action") if isinstance(pa.get("action"),dict) else {}
+                pname=clean_text(paction.get("name"),120) or FIELD_ACTION_PRIMITIVE_ALIASES.get(clean_text(paction.get("primitive"),120),"")
+                if pname==action_name and canonical_json(pa.get("exact_target") or {})==canonical_json(exact_target):
+                    raise web.HTTPConflict(text="Field action cooldown is active")
+
+        verify_criterion = body.get("verify_criterion") if isinstance(body.get("verify_criterion"), dict) else {}
+        problem = case.get("problem") if isinstance(case.get("problem"),dict) else {}
+        original_criterion = problem.get("original_functional_criterion")
+        if not isinstance(original_criterion,dict):
+            repair = problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else {}
+            original_criterion = repair.get("resolution_criterion") if isinstance(repair.get("resolution_criterion"),dict) else None
+        if isinstance(original_criterion,dict) and str(original_criterion.get("type") or "") == "ha_repair_absent":
+            domain=str(original_criterion.get("domain") or "")
+            issue_id=str(original_criterion.get("issue_id") or "")
+            if str(verify_criterion.get("type") or "") == "ha_repair_absent":
+                if str(verify_criterion.get("domain") or "") != domain or str(verify_criterion.get("issue_id") or "") != issue_id:
+                    raise web.HTTPBadRequest(text="verify criterion does not match original Repair criterion")
+            verify_criterion={
+                "type":"ha_repair_absent","domain":domain,"issue_id":issue_id,
+                "diagnostics":[{"id":"original_functional_criterion","primitive":"ha_repair_absent","args":{"domain":domain,"issue_id":issue_id},"save_as":"original_functional_pass"}],
+                "conditions":{"all":[{"expr":"original_functional_pass == true"}]},
+            }
         diagnostics = verify_criterion.get("diagnostics")
         conditions = verify_criterion.get("conditions")
-        if not isinstance(diagnostics, list) or not diagnostics or len(diagnostics) > 4:
+        if not isinstance(diagnostics,list) or not diagnostics or len(diagnostics)>4:
             raise web.HTTPBadRequest(text="verify_criterion requires 1..4 diagnostics")
-        clean_diagnostics = []
-        for index, item in enumerate(diagnostics, 1):
-            if not isinstance(item, dict):
-                raise web.HTTPBadRequest(text="verify diagnostic must be an object")
-            verify_primitive = clean_text(item.get("primitive"), 120)
-            if verify_primitive not in FIELD_VERIFY_PRIMITIVES:
-                raise web.HTTPBadRequest(text="verify primitive is not allowlisted")
-            clean_diagnostics.append({"id": clean_text(item.get("id"), 120) or f"verify_{index}", "primitive": verify_primitive, "args": safe_structured(item.get("args") or {}), "save_as": clean_text(item.get("save_as"), 120) or f"verify_{index}"})
-        if conditions in (None, {}, []):
-            raise web.HTTPBadRequest(text="verify_criterion.conditions is required")
+        clean_diagnostics=[]
+        for index,item in enumerate(diagnostics,1):
+            if not isinstance(item,dict): raise web.HTTPBadRequest(text="verify diagnostic must be an object")
+            vp=clean_text(item.get("primitive"),120)
+            if vp not in FIELD_VERIFY_PRIMITIVES: raise web.HTTPBadRequest(text="verify primitive is not allowlisted")
+            clean_diagnostics.append({"id":clean_text(item.get("id"),120) or f"verify_{index}","primitive":vp,"args":safe_structured(item.get("args") or {}),"save_as":clean_text(item.get("save_as"),120) or f"verify_{index}"})
+        if conditions in (None,{},[]): raise web.HTTPBadRequest(text="verify_criterion.conditions is required")
 
-        rollback = body.get("rollback") or []
-        if not isinstance(rollback, list):
-            raise web.HTTPBadRequest(text="rollback must be a list")
-        clean_rollback = []
-        for item in rollback:
-            if not isinstance(item, dict):
-                raise web.HTTPBadRequest(text="rollback step must be an object")
-            rollback_primitive = clean_text(item.get("primitive"), 120)
-            if rollback_primitive not in FIELD_ACTION_PRIMITIVES:
-                raise web.HTTPBadRequest(text="rollback primitive is not allowlisted")
-            clean_rollback.append({"step": clean_text(item.get("step"), 120) or "rollback", "primitive": rollback_primitive, "args": safe_structured(item.get("args") or {}), "max_attempts": 1})
+        checkpoint=body.get("checkpoint")
+        if policy.get("checkpoint_required") and not (isinstance(checkpoint,dict) and checkpoint.get("required")):
+            raise web.HTTPBadRequest(text="Field action policy requires checkpoint")
+        clean_checkpoint={"required":False}
+        if isinstance(checkpoint,dict) and checkpoint.get("required"):
+            if clean_text(checkpoint.get("primitive"),120)!="create_backup": raise web.HTTPBadRequest(text="Field checkpoint supports create_backup only")
+            clean_checkpoint={"required":True,"primitive":"create_backup","args":safe_structured(checkpoint.get("args") or {})}
+        rollback=body.get("rollback") or []
+        if rollback and not policy.get("rollback_available"):
+            raise web.HTTPBadRequest(text="Field action policy does not support rollback")
 
-        checkpoint = body.get("checkpoint")
-        clean_checkpoint = {"required": False}
-        if isinstance(checkpoint, dict) and checkpoint.get("required"):
-            if clean_text(checkpoint.get("primitive"), 120) != "create_backup":
-                raise web.HTTPBadRequest(text="Field checkpoint supports create_backup only")
-            clean_checkpoint = {"required": True, "primitive": "create_backup", "args": safe_structured(checkpoint.get("args") or {})}
-
-        card = {
-            "schema_version": 1,
-            "disease_id": "FIELD-UNCLASSIFIED",
-            "title": "Field Suzie one-shot treatment",
-            "component": clean_text(exact_target.get("component"), 120) or "field",
-            "protocol": {"id": f"FIELD-ACTION-{case_id}-{uuid4()}", "version": "1", "status": "FIELD_ONE_SHOT"},
-            "automation_class": "CONFIRM_REQUIRED",
-            "diagnostics": clean_diagnostics,
-            "confirm": {"all": ["field_action_authorized == true"]},
-            "exclude": [],
-            "preconditions": [],
-            "checkpoint": clean_checkpoint,
-            "treatment": [{"step": "field_action", "primitive": primitive, "args": safe_structured(action_args), "max_attempts": 1}],
-            "verify": {"rerun_diagnostics": True, "success_when": "conditions", "conditions": safe_structured(conditions)},
-            "rollback": clean_rollback,
-            "fallback": safe_structured(body.get("fallback") or []),
-            "field_action": {"case_id": case_id, "exact_target": safe_structured(exact_target), "reason": reason, "evidence": safe_structured(body.get("evidence") or {}), "expected_result": expected_result, "risk_assessment": safe_structured(risk)},
+        field_binding={"command_id":command_id,"field_case_id":case_id,"client_id":client_id,"exact_target":safe_structured(exact_target),"action_name":action_name,"primitive":primitive}
+        card={
+            "schema_version":1,"disease_id":"FIELD-UNCLASSIFIED","title":"Field Suzie one-shot treatment",
+            "component":clean_text(exact_target.get("component"),120) or action_name,
+            "protocol":{"id":f"FIELD-ACTION-{case_id}-{uuid4()}","version":"1","status":"FIELD_ONE_SHOT"},
+            "automation_class":"CONFIRM_REQUIRED","diagnostics":clean_diagnostics,
+            "confirm":{"all":["field_action_authorized"]},"exclude":[],"preconditions":[],"checkpoint":clean_checkpoint,
+            "treatment":[{"step":"field_action","primitive":primitive,"args":safe_structured(action_args),"max_attempts":int(policy.get("attempt_limit") or 1)}],
+            "verify":{"rerun_diagnostics":True,"success_when":"conditions","conditions":safe_structured(conditions)},
+            "rollback":[],"fallback":safe_structured(body.get("fallback") or []),
+            "field_action":{"binding":field_binding,"policy":safe_structured(policy),"reason":reason,"evidence":safe_structured(evidence),"expected_result":expected_result,"risk_assessment":safe_structured(risk),"verify_criterion":safe_structured(verify_criterion)},
         }
-        payload = {"result": "FIELD_ACTION_AVAILABLE", "request_id": clean_text(body.get("request_id"), 128) or str(uuid4()), "license": license_state, "case_id": case_id, "execution_packages": []}
+        payload={"result":"FIELD_ACTION_AVAILABLE","request_id":clean_text(body.get("request_id"),128) or str(uuid4()),"license":license_state,"case_id":case_id,"command_id":command_id,"action_policy":safe_structured(policy),"execution_packages":[]}
         if not bool(license_state["active"]):
-            payload["result"] = "FIELD_ACTION_LICENSE_BLOCKED"
+            payload["result"]="FIELD_ACTION_LICENSE_BLOCKED"
         else:
-            payload["execution_packages"] = [self.package_for(client_id=client_id, disease_id="FIELD-UNCLASSIFIED", card=card, execution_actor="field_suzie")]
-        self.db.event("field_action_request", client_id, {"case_id": case_id, "primitive": primitive, "exact_target": safe_structured(exact_target), "result": payload["result"]})
+            package=self.package_for(client_id=client_id,disease_id="FIELD-UNCLASSIFIED",card=card,execution_actor="field_suzie",field_binding=field_binding)
+            payload["execution_packages"]=[package]
+            self.command_bridge.store_signed_package(client_id=client_id,command_id=command_id,package=package)
+            self.command_bridge.set_execution_state(client_id=client_id,command_id=command_id,state="SIGNED")
+            self.v2_ext.runtime.mark_resolution_verifying(case_id)
+        self.db.event("field_action_request",client_id,{"case_id":case_id,"command_id":command_id,"action_name":action_name,"primitive":primitive,"exact_target":safe_structured(exact_target),"policy":safe_structured(policy),"result":payload["result"]})
         return self.signed(payload)
 
     async def diagnose(self, request: web.Request) -> web.Response:
@@ -2158,6 +2381,43 @@ class DoctorServer:
         )
         return self.signed(payload)
 
+    async def repair_reconcile(self, request: web.Request) -> web.Response:
+        body, client = await self.authenticated_body(request)
+        client_id = str(client["client_id"])
+        repairs = body.get("repairs") if isinstance(body.get("repairs"), list) else []
+        capabilities = sorted({str(x) for x in (body.get("field_action_capabilities") or []) if str(x)})
+        active_keys=set()
+        routed=[]
+        for item in repairs[:200]:
+            if not isinstance(item,dict):
+                continue
+            domain=clean_text(item.get("domain"),160)
+            issue_id=clean_text(item.get("issue_id"),240)
+            if not domain or not issue_id or item.get("active") is False or item.get("dismissed_version"):
+                continue
+            problem_key=f"repair:{domain}:{issue_id}"
+            active_keys.add((domain,issue_id))
+            evidence={
+                "kind":"repair","problem_key":problem_key,"domain":domain,"issue_id":issue_id,
+                "active":True,"terminal_resolution_required":True,"is_fixable":bool(item.get("is_fixable")),
+                "ha_severity":str(item.get("severity") or "warning"),"translation_key":item.get("translation_key"),
+                "translation_placeholders":safe_structured(item.get("translation_placeholders") or {}),
+                "field_action_capabilities":capabilities,
+                "resolution_criterion":{"type":"ha_repair_absent","domain":domain,"issue_id":issue_id},
+            }
+            payload={"request_id":str(uuid4()),"problem_key":problem_key,"component":"repair","symptoms":str(item.get("translation_key") or issue_id),"evidence":evidence,"routing_intent":"PATIENT_JOURNAL_HOUSE_REVIEW"}
+            routed.append(self.v2_ext.runtime.journal_to_house(client_id,"repair_reconcile",payload,event_type="OBSERVATION",severity=("CRITICAL" if str(item.get("severity") or "").lower()=="critical" else "PROBLEM"),fingerprint=problem_key,priority=85))
+        resolved=[]
+        rows=self.v2_ext.runtime.conn.execute("select fingerprint,domain,issue_id,state from doctor_v2_resolutions where patient_id=? and terminal_resolution_required=1 and state<>'RESOLVED'",(client_id,)).fetchall()
+        for row in rows:
+            key=(str(row["domain"] or ""),str(row["issue_id"] or ""))
+            if key not in active_keys:
+                with self.v2_ext.runtime.conn:
+                    self.v2_ext.runtime.conn.execute("update doctor_v2_resolutions set state='RESOLVED',resolved_at=CURRENT_TIMESTAMP,next_recheck_at=NULL,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(client_id,str(row["fingerprint"])))
+                resolved.append(str(row["fingerprint"]))
+        self.db.event("repair_reconcile",client_id,{"active":len(active_keys),"routed":len(routed),"resolved":len(resolved)})
+        return self.signed({"result":"RECONCILED","active":len(active_keys),"routed":routed,"resolved":resolved})
+
     async def customer_feed(self, request: web.Request) -> web.Response:
         body, client = await self.authenticated_body(request)
         limit = max(1, min(200, int(body.get("limit") or 80)))
@@ -2239,6 +2499,8 @@ class DoctorServer:
         app.router.add_post("/v1/license", self.license_status)
         app.router.add_post("/v1/diagnose", self.diagnose)
         app.router.add_post("/v1/field-action", self.field_action)
+        app.router.add_post("/v1/field-action-resume", self.field_action_resume)
+        app.router.add_post("/v1/repair-reconcile", self.repair_reconcile)
         app.router.add_post("/v1/customer-feed", self.customer_feed)
         app.router.add_post("/v1/knowledge/reload", self.reload_knowledge)
 
@@ -2279,6 +2541,10 @@ class DoctorServer:
         app.router.add_post(
             "/v1/client/commands/poll",
             self.client_command_poll,
+        )
+        app.router.add_post(
+            "/v1/client/commands/state",
+            self.client_command_state,
         )
         app.router.add_post(
             "/v1/client/commands/result",

@@ -3,7 +3,7 @@
 Server-side component of Suzie Doctor.
 
 ## Runtime
-- Server version: 0.1.4-dev
+- Server version: 0.2.2-v2-dev
 - HTTPS API: 192.168.0.105:8790
 - Service: suzie-doctor-server.service
 - Master KB watcher/compiler: suzie-doctor-knowledge-compile.path

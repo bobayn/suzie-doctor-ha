@@ -195,3 +195,29 @@ CREATE TABLE IF NOT EXISTS doctor_v2_wilson_jobs (
 );
 CREATE INDEX IF NOT EXISTS doctor_v2_wilson_jobs_status_idx
     ON doctor_v2_wilson_jobs(status, wilson_job_id);
+
+CREATE TABLE IF NOT EXISTS doctor_v2_resolutions (
+    resolution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    problem_key TEXT,
+    domain TEXT,
+    issue_id TEXT,
+    terminal_resolution_required INTEGER NOT NULL DEFAULT 1 CHECK(terminal_resolution_required IN (0,1)),
+    state TEXT NOT NULL DEFAULT 'OPEN' CHECK(state IN ('OPEN','DISPATCHED','WAITING_HUMAN','VERIFYING','RESOLVED')),
+    current_house_job_id INTEGER,
+    current_field_case_id INTEGER,
+    last_event_id INTEGER,
+    last_card_version INTEGER,
+    human_requirement_json TEXT NOT NULL DEFAULT '{}',
+    capabilities_hash TEXT,
+    material_hash TEXT,
+    next_recheck_at TEXT,
+    resolved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(patient_id, fingerprint),
+    FOREIGN KEY(patient_id) REFERENCES doctor_v2_patient_cards(patient_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS doctor_v2_resolutions_state_idx
+    ON doctor_v2_resolutions(state, updated_at);
