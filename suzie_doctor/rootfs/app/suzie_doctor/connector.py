@@ -25,7 +25,7 @@ class ConnectorError(RuntimeError):
 def normalize_doctor_risk_assessment(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ConnectorError(
-            "state-changing doctor.diagnose requires Suzie Doctor risk_assessment"
+            "state-changing Doctor action requires Suzie Doctor risk_assessment"
         )
     allowed = {
         "harm_probability": {"LOW", "MEDIUM", "HIGH"},
@@ -47,6 +47,7 @@ def normalize_doctor_risk_assessment(value: Any) -> dict[str, str]:
 
 
 DiagnoseCallback = Callable[..., Awaitable[dict[str, Any]]]
+FieldActionCallback = Callable[..., Awaitable[dict[str, Any]]]
 
 
 class ConnectorCore:
@@ -59,6 +60,7 @@ class ConnectorCore:
         supervisor: SupervisorClient,
         protocol_engine: ProtocolEngine,
         diagnose_callback: DiagnoseCallback,
+        field_action_callback: FieldActionCallback | None = None,
         contract_path: str | Path = "/app/suite/connector_contract.json",
     ) -> None:
         self.suite = suite
@@ -67,6 +69,7 @@ class ConnectorCore:
         self.supervisor = supervisor
         self.protocol_engine = protocol_engine
         self.diagnose_callback = diagnose_callback
+        self.field_action_callback = field_action_callback
         self.contract_path = Path(contract_path)
         self.contract = self._load_contract()
         try:
@@ -151,6 +154,50 @@ class ConnectorCore:
         if tool_name == "doctor.skill":
             return self.skill.descriptor(
                 include_text=bool(args.get("include_text", False))
+            )
+
+        if tool_name == "doctor.action.request":
+            actor = str(trusted.get("execution_actor") or "").strip().lower()
+            case_id = int(trusted.get("case_id") or 0)
+            if actor != "field_suzie" or case_id <= 0:
+                raise ConnectorError("doctor.action.request is Field-Suzie Case only")
+            if self.field_action_callback is None:
+                raise ConnectorError("Field action callback is unavailable")
+            action = args.get("action")
+            exact_target = args.get("exact_target")
+            evidence = args.get("evidence")
+            verify_criterion = args.get("verify_criterion")
+            if not isinstance(action, dict) or not str(action.get("primitive") or "").strip():
+                raise ConnectorError("doctor.action.request requires action.primitive")
+            if not isinstance(exact_target, dict) or not exact_target:
+                raise ConnectorError("doctor.action.request requires structured exact_target")
+            if not isinstance(evidence, dict):
+                raise ConnectorError("doctor.action.request requires evidence object")
+            if not isinstance(verify_criterion, dict):
+                raise ConnectorError("doctor.action.request requires verify_criterion object")
+            risk_assessment = normalize_doctor_risk_assessment(args.get("risk_assessment"))
+            if not self.suite.compatible:
+                return {
+                    "result": "TREATMENT_BLOCKED",
+                    "reason": "suite_incompatible",
+                    "suite": self.suite.status(),
+                }
+            return await self.field_action_callback(
+                {
+                    "field_case_id": case_id,
+                    "action": dict(action),
+                    "exact_target": dict(exact_target),
+                    "reason": str(args.get("reason") or ""),
+                    "evidence": dict(evidence),
+                    "risk_assessment": risk_assessment,
+                    "expected_result": str(args.get("expected_result") or ""),
+                    "verify_criterion": dict(verify_criterion),
+                    "checkpoint": args.get("checkpoint"),
+                    "rollback": args.get("rollback"),
+                    "fallback": args.get("fallback"),
+                    "routing_intent": "FIELD_ACTION_REQUEST",
+                },
+                risk_assessment=risk_assessment,
             )
 
         if tool_name == "doctor.diagnose":

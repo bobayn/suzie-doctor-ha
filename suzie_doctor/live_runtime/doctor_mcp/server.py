@@ -52,7 +52,7 @@ mcp = MCPServer(
         "Case before any client action, use exact-client read-only diagnostics "
         "first, verify treatment, then call doctor.case.complete_next."
     ),
-    version="0.1.3-dev",
+    version="0.1.4-dev",
 )
 
 CLAIM_HANDLES: dict[str, dict[str, Any]] = {}
@@ -662,6 +662,55 @@ async def doctor_wilson_complete(
             "failed": bool(failed),
         },
     )
+
+
+@mcp.tool(
+    name="doctor.action.request",
+    description=(
+        "Field-Suzie only: request one exact-client, signed, one-shot structured action "
+        "when no suitable Disease/Protocol treatment exists. Requires autonomous risk "
+        "assessment and mandatory functional verify criterion. Family Doctor cannot use it."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+)
+async def doctor_action_request(
+    doctor_handle: str,
+    action: dict[str, Any],
+    exact_target: dict[str, Any],
+    reason: str,
+    evidence: dict[str, Any],
+    risk_assessment: dict[str, Any],
+    expected_result: str,
+    verify_criterion: dict[str, Any],
+    checkpoint: dict[str, Any] | None = None,
+    rollback: list[dict[str, Any]] | None = None,
+    fallback: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(action, dict) or not isinstance(exact_target, dict):
+        raise RuntimeError("action and exact_target must be objects")
+    if not isinstance(evidence, dict) or not isinstance(risk_assessment, dict):
+        raise RuntimeError("evidence and risk_assessment must be objects")
+    if not isinstance(verify_criterion, dict):
+        raise RuntimeError("verify_criterion must be an object")
+    state = await _active_handle(doctor_handle)
+    await _api(
+        "POST",
+        f"/v1/doctor/case/{int(state['case_id'])}/stage",
+        body={"claim_token": state["claim_token"], "stage": "TREATING"},
+    )
+    args = {
+        "action": dict(action),
+        "exact_target": dict(exact_target),
+        "reason": str(reason or ""),
+        "evidence": dict(evidence),
+        "risk_assessment": dict(risk_assessment),
+        "expected_result": str(expected_result or ""),
+        "verify_criterion": dict(verify_criterion),
+        "checkpoint": dict(checkpoint) if isinstance(checkpoint, dict) else None,
+        "rollback": list(rollback or []),
+        "fallback": list(fallback or []),
+    }
+    return await _invoke_client(doctor_handle, "doctor.action.request", args, wait_seconds=120)
 
 
 @mcp.tool(

@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.7-dev
+Version: 0.1.8-dev
 Schema: 1
 
 ## Purpose
@@ -26,9 +26,11 @@ Always follow this order:
 3. Prefer read-only diagnostics before any state change.
 4. Distinguish symptom, candidate Disease and confirmed Disease.
 5. Never execute treatment because a symptom merely resembles a known Disease.
-6. Only a server-confirmed confirmed_disease_id may enter the signed treatment path.
-7. Obtain treatment through Doctor Server and a validated, client-bound, unexpired
-   execution package.
+6. When a Disease is confirmed and a suitable executable Protocol exists, prefer the
+   signed `doctor.diagnose` Protocol path.
+7. For House-dispatched **Field Suzie only**, absence of a known Disease/Protocol, a
+   failed Protocol, or a need for a new treatment does not itself block treatment. Field
+   may use `doctor.action.request` for one exact, structured, signed one-shot action.
 8. Check preconditions and exact target identity.
 9. Create the required backup/checkpoint before destructive or non-trivial treatment.
 10. Execute only allowlisted Connector/ProtocolEngine operations.
@@ -71,6 +73,45 @@ rollback/fallback and exact target. AUTO_SAFE may run in safe_auto/full_trust.
 CONFIRM_REQUIRED may run by Family Doctor without Field AI only in full_trust; otherwise
 it requires Field review. MANUAL/WATCH/SUSPENDED never gain treatment permission from
 this exception.
+
+## Field Action Request
+
+`doctor.action.request` is the autonomous treatment path for a **House-dispatched Field
+Suzie** when the known Protocol path is absent, unsuitable or has failed. It is not
+available to Family/Local Doctor.
+
+Field Suzie decides the medical content: hypothesis, chosen action, contextual risk,
+expected result, functional verify criterion, and when to abandon the hypothesis. Doctor
+Core does not decide whether the treatment idea is medically correct; it enforces the
+mechanical safety envelope.
+
+A Field Action Request MUST include:
+
+- active Case binding and exact client;
+- one structured allowlisted `action` and structured `exact_target`;
+- reason and bounded evidence;
+- the normal autonomous `risk_assessment`;
+- expected_result;
+- a mandatory functional `verify_criterion`;
+- checkpoint when required;
+- rollback/fallback when relevant.
+
+Doctor Core MUST reject the request when exact client/Case binding is wrong, the primitive
+is not allowlisted, the Suite is incompatible, an owner absolute prohibition matches, a
+required checkpoint is missing, the same one-shot action was already completed in the
+Case, or mandatory verification cannot be expressed through a safe diagnostic primitive.
+
+The resulting package is `FIELD_ONE_SHOT`: client-bound, Case-bound by the command path,
+short-lived, one-action only, and executable only by Field Suzie. It is not an ACTIVE or
+EXPERIMENTAL Protocol and grants no reusable authority. Family Doctor never receives
+permission from it.
+
+`FIELD_ONE_SHOT` success requires treatment execution **and** mandatory functional verify
+PASS. Command accepted, process running, reload completed, or restart completed are not
+success by themselves. A successful new one-shot treatment is Case/Wilson evidence and
+may be marked `new_protocol_evidence=true`; it is not published Protocol fleet telemetry.
+A failed verify is valid diagnostic evidence: record it, do not repeat the same action
+blindly, update the differential diagnosis, and continue with the next safe hypothesis.
 
 ## Reversibility Before Destructive Action
 
@@ -202,7 +243,9 @@ A Field Case carrying `house_directive=VALIDATE_FIRST` MUST follow this sequence
    - reason and bounded evidence
 10. If the Experimental candidate does not achieve successful verify, continue the Case:
     diagnose independently, seek another safe treatment, use rollback/fallback where
-    appropriate, and only then choose the final Case outcome.
+    appropriate, and when no suitable known Protocol treatment exists use
+    `doctor.action.request` for a safe structured Field one-shot action. Only then choose
+    the final Case outcome.
 
 Doctor Server attests attempted Experimental treatment against the exact-client command
 journal. A self-reported attempt without a completed signed `doctor.diagnose execute=true`
@@ -239,6 +282,9 @@ rules.
   it under Field risk review when dispatched.
 - EXPERIMENTAL: unpublished executable candidate available only to an exact House-dispatched
   `VALIDATE_FIRST` Field Case through the signed treatment path. Family Doctor cannot execute it.
+- FIELD_ONE_SHOT: ephemeral signed Field execution package for one allowlisted action when
+  no suitable known Protocol treatment exists. It is not publishable status and never becomes
+  reusable Family Doctor authority by itself.
 - WATCH: diagnostic knowledge only; no treatment permission.
 - MANUAL: curated guidance only; ProtocolEngine must not execute treatment.
 - SUSPENDED: not executable.
@@ -275,6 +321,7 @@ The canonical tool namespace is surface-independent. Initial tools include:
 - doctor.suite
 - doctor.skill
 - doctor.diagnose
+- doctor.action.request
 - ha.config.read
 - ha.repairs.list
 - ha.notifications.list
@@ -298,8 +345,9 @@ a capability fact, not a reason to improvise a shell.
 - Resolve the required capabilities from the selected Protocol before treatment.
 - Prefer the most specialized adapter. Generic/emergency/admin access is never an
   automatic fallback for a missing specialized adapter.
-- Every state-changing operation needs an exact target or a signed execution package
-  whose client, Disease and Protocol binding supplies the exact target context.
+- Every state-changing operation needs an exact target and a signed execution package.
+  Protocol packages bind client/Disease/Protocol; Field one-shot packages bind the exact
+  client, active Field Case command path, exact target and one concrete action.
 - Check preconditions before checkpoint/treatment.
 - Checkpoint/backup support and rollback support are capability metadata and must be
   preserved through Web/API surface adapters.
@@ -337,9 +385,9 @@ Use the narrowest restart level that can actually affect the faulty subsystem:
    driver or other host-level scope and a Core restart cannot reasonably restore it.
 
 If the preferred targeted treatment capability is missing but a safe, relevant restart/reboot
-fallback is available through an allowed Connector capability or signed Protocol, Suzie Doctor
-MUST evaluate and use that fallback rather than escalating merely because the preferred tool is
-missing.
+fallback is available through an allowed Connector capability, signed Protocol, or signed
+Field one-shot action, Suzie Doctor MUST evaluate and use that fallback rather than escalating
+merely because the preferred tool is missing.
 
 A restart/reboot is allowed only when all of the following are true:
 
@@ -370,25 +418,40 @@ provide. Do not use HUMAN_ACTION_REQUIRED merely because treatment is risky or u
 Suzie Doctor must resolve that decision itself by further diagnosis, a safer alternative,
 a reversible path, or AVOID. After a person completes the bounded physical/credential
 step, repeat capability/precondition checks and verify the functional effect before
-resuming the same flow. A human step never bypasses the signed treatment path.
+resuming the same flow. A human step never bypasses the signed execution paths.
 
-## Signed treatment path
+## Signed execution paths
 
-doctor.diagnose is the only treatment-capable Connector tool in the initial Suite.
-When execute=false, it is diagnostic consultation. When execute=true, execution is
-still allowed only if Doctor Server returns a signed package that:
+There are two treatment-capable Connector paths.
 
-- verifies against the pinned server key;
-- is bound to this client;
-- is not expired;
-- matches Disease and Protocol identifiers;
-- contains only supported ProtocolEngine primitives;
-- passes Suite compatibility, Protocol status, trust-mode and autonomous-risk gates;
-- carries the structured risk_assessment made by Suzie Doctor when execution is requested.
+### Known Protocol path — `doctor.diagnose`
 
-Surface adapters MUST NOT add a second write path around this contract. They transport
-Suzie Doctor's structured risk_assessment unchanged and MUST NOT replace it with a human
-confirmation flag, static risk table or server-side risk verdict.
+When execute=false it is diagnostic consultation. When execute=true, execution requires a
+validated client-bound unexpired package for a confirmed Disease and executable Protocol.
+This remains the preferred path whenever suitable known treatment exists and it remains the
+only normal treatment path for Family/Local Doctor.
+
+### New Field treatment path — `doctor.action.request`
+
+This path exists only for an active House-dispatched Field Case. It does **not** require a
+known Disease or existing Protocol. Doctor Server signs one concrete structured action after
+mechanical validation; the client executes it through the same Connector Core and
+ProtocolEngine safety machinery.
+
+Both paths require packages that:
+
+- verify against the pinned server key;
+- are bound to the exact client and expire quickly;
+- contain only supported allowlisted ProtocolEngine primitives;
+- pass Suite compatibility and exact-target checks;
+- preserve owner absolute prohibitions;
+- carry Suzie Doctor's structured risk_assessment for Field treatment;
+- use required checkpoint/rollback rules and bounded attempts;
+- require functional verify for successful Field treatment.
+
+Surface adapters MUST NOT add a third write path around this contract. Web and API transport
+the same structured Field decision and MUST NOT replace it with a human confirmation flag,
+static risk table or server-side medical verdict.
 
 ## Surface parity
 

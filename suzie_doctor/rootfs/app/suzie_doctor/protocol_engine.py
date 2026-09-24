@@ -368,6 +368,7 @@ class ProtocolEngine:
         if protocol["status"] not in {
             "ACTIVE",
             "EXPERIMENTAL",
+            "FIELD_ONE_SHOT",
             "WATCH",
             "MANUAL",
             "SUSPENDED",
@@ -1655,6 +1656,9 @@ class ProtocolEngine:
         if status == "EXPERIMENTAL":
             if actor != "field_suzie":
                 return False, "experimental_field_only"
+        elif status == "FIELD_ONE_SHOT":
+            if actor != "field_suzie":
+                return False, "field_one_shot_field_only"
         elif status != "ACTIVE":
             return False, f"protocol_status_{status.lower()}"
         if automation_class == "DIAGNOSTIC_ONLY":
@@ -1783,6 +1787,7 @@ class ProtocolEngine:
         developer_override: bool = False,
     ) -> dict[str, Any]:
         card = self._validate_card(dict(card))
+        field_one_shot = str(card["protocol"]["status"]) == "FIELD_ONE_SHOT"
         env: dict[str, Any] = dict(context or {})
         started = monotonic()
         response: dict[str, Any] = {
@@ -1793,6 +1798,7 @@ class ProtocolEngine:
             "automation_class": card["automation_class"],
             "execution_actor": str(execution_actor or "field_suzie"),
             "simulated": simulated,
+            "execution_kind": "FIELD_ONE_SHOT" if field_one_shot else "PROTOCOL",
         }
         if isinstance(risk_assessment, dict):
             response["doctor_risk_assessment"] = dict(risk_assessment)
@@ -1807,12 +1813,16 @@ class ProtocolEngine:
                 response["result"] = "PRECONDITION_FAILED"
                 return response
 
-            response["diagnostics"] = await self._run_diagnostics(
-                card, env
-            )
-            confirmed = self._eval_conditions(
-                card.get("confirm"), env, default=False
-            )
+            if field_one_shot:
+                response["diagnostics"] = []
+                confirmed = bool(env.get("field_action_authorized") is True)
+            else:
+                response["diagnostics"] = await self._run_diagnostics(
+                    card, env
+                )
+                confirmed = self._eval_conditions(
+                    card.get("confirm"), env, default=False
+                )
             response["diagnosis_confirmed"] = confirmed
             if not confirmed:
                 response["result"] = "NOT_CONFIRMED"
@@ -2041,6 +2051,17 @@ class ProtocolEngine:
                 restart_level_used="none",
                 versions=versions,
             )
+            if field_one_shot:
+                # One-shot Field work is Case/Wilson evidence, not published
+                # Protocol fleet-effectiveness telemetry.
+                response["duration_ms"] = duration_ms
+                response["new_protocol_evidence"] = bool(
+                    response.get("result") == "SUCCESS"
+                    and response.get("verify_performed") is True
+                    and response.get("verify_passed") is True
+                )
+                return response
+
             telemetry = {
                 "telemetry_schema_version": 1,
                 "anonymous_installation_id":

@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.0-v2-dev"
+SERVER_VERSION = "0.2.1-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -43,11 +43,15 @@ ALLOWED_NETWORKS = [
 ]
 MAX_BODY = 256 * 1024
 
+FIELD_ACTION_PRIMITIVES = {"reload_config_entry", "reload_config_entry_verified", "reload_subsystem", "restart_addon", "restart_core"}
+FIELD_VERIFY_PRIMITIVES = {"addon_info", "config_entry_info", "config_entry_state", "core_memory_stability", "mqtt_probe", "network_primary_info", "read_host_metrics", "verify_recorder_write"}
+
 CLIENT_COMMAND_TOOLS = {
     "doctor.capabilities",
     "doctor.suite",
     "doctor.skill",
     "doctor.diagnose",
+    "doctor.action.request",
     "ha.config.read",
     "ha.repairs.list",
     "ha.notifications.list",
@@ -1086,6 +1090,7 @@ class DoctorServer:
                     "case.heartbeat",
                     "case.stage",
                     "case.complete_next",
+                    "action.request",
                 ],
                 "doctor_v2": {
                     "enabled": True,
@@ -1710,6 +1715,139 @@ class DoctorServer:
             "card": sanitized_card,
         }
 
+    def field_action_case_authorized(self, *, client_id: str, case_id: int) -> dict[str, Any]:
+        case = self.journal.get_case(int(case_id))
+        if str(case.get("client_id") or "") != str(client_id):
+            raise web.HTTPForbidden(text="Field Case belongs to another client")
+        if str(case.get("state") or "") not in {"CLAIMED", "TREATING", "VERIFYING"}:
+            raise web.HTTPForbidden(text="Field action requires an active claimed Case")
+        if not str(case.get("doctor_session_id") or ""):
+            raise web.HTTPForbidden(text="Field action requires House-dispatched Doctor session")
+        return case
+
+    def field_action_owner_prohibition(self, *, exact_target: dict[str, Any], action: dict[str, Any]) -> str | None:
+        haystack = canonical_json({"exact_target": safe_structured(exact_target), "action": safe_structured(action)}).decode("utf-8", errors="ignore").lower()
+        for item in self.config.get("owner_prohibitions") or []:
+            if not isinstance(item, dict):
+                continue
+            prohibition_id = clean_text(item.get("id"), 120) or "owner_prohibition"
+            matches = item.get("match_any") or []
+            if any(str(token).strip().lower() in haystack for token in matches if str(token).strip()):
+                return prohibition_id
+        return None
+
+    def field_action_already_attempted(self, *, case_id: int, action: dict[str, Any], exact_target: dict[str, Any]) -> bool:
+        wanted = canonical_json({"action": safe_structured(action), "exact_target": safe_structured(exact_target)})
+        rows = self.command_bridge.conn.execute(
+            """select arguments_json,result_json from doctor_client_commands
+               where case_id=? and tool_name='doctor.action.request' and status='COMPLETED'
+               order by completed_at desc""", (int(case_id),)
+        ).fetchall()
+        for row in rows:
+            try:
+                args = json.loads(str(row["arguments_json"] or "{}"))
+                result = json.loads(str(row["result_json"] or "{}"))
+            except Exception:
+                continue
+            prior = canonical_json({"action": safe_structured(args.get("action") or {}), "exact_target": safe_structured(args.get("exact_target") or {})})
+            if prior == wanted and any(isinstance(x, dict) for x in (result.get("execution_results") or [])):
+                return True
+        return False
+
+    async def field_action(self, request: web.Request) -> web.Response:
+        body, client = await self.authenticated_body(request)
+        client_id = str(client["client_id"])
+        license_state = self.db.license_state(client)
+        if clean_text(body.get("routing_intent"), 80) != "FIELD_ACTION_REQUEST":
+            raise web.HTTPBadRequest(text="Field action requires FIELD_ACTION_REQUEST routing")
+        try:
+            case_id = int(body.get("field_case_id"))
+        except Exception as exc:
+            raise web.HTTPBadRequest(text="Field action requires field_case_id") from exc
+        self.field_action_case_authorized(client_id=client_id, case_id=case_id)
+
+        action = body.get("action") if isinstance(body.get("action"), dict) else {}
+        exact_target = body.get("exact_target") if isinstance(body.get("exact_target"), dict) else {}
+        risk = body.get("risk_assessment") if isinstance(body.get("risk_assessment"), dict) else {}
+        verify_criterion = body.get("verify_criterion") if isinstance(body.get("verify_criterion"), dict) else {}
+        primitive = clean_text(action.get("primitive"), 120)
+        action_args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        reason = clean_text(body.get("reason"), 2000)
+        expected_result = clean_text(body.get("expected_result"), 2000)
+        if primitive not in FIELD_ACTION_PRIMITIVES:
+            raise web.HTTPBadRequest(text="Field action primitive is not allowlisted")
+        if not exact_target:
+            raise web.HTTPBadRequest(text="Field action requires exact_target")
+        if not reason or not expected_result:
+            raise web.HTTPBadRequest(text="Field action requires reason and expected_result")
+        if str(risk.get("decision") or "").upper() != "PROCEED":
+            return self.signed({"result": "FIELD_ACTION_AVOIDED", "license": license_state, "execution_packages": [], "case_id": case_id})
+        prohibition = self.field_action_owner_prohibition(exact_target=exact_target, action=action)
+        if prohibition:
+            return self.signed({"result": "FIELD_ACTION_BLOCKED", "reason": "owner_prohibition", "owner_prohibition_id": prohibition, "license": license_state, "execution_packages": [], "case_id": case_id})
+        if self.field_action_already_attempted(case_id=case_id, action=action, exact_target=exact_target):
+            return self.signed({"result": "FIELD_ACTION_BLOCKED", "reason": "same_action_already_attempted_in_case", "license": license_state, "execution_packages": [], "case_id": case_id})
+
+        diagnostics = verify_criterion.get("diagnostics")
+        conditions = verify_criterion.get("conditions")
+        if not isinstance(diagnostics, list) or not diagnostics or len(diagnostics) > 4:
+            raise web.HTTPBadRequest(text="verify_criterion requires 1..4 diagnostics")
+        clean_diagnostics = []
+        for index, item in enumerate(diagnostics, 1):
+            if not isinstance(item, dict):
+                raise web.HTTPBadRequest(text="verify diagnostic must be an object")
+            verify_primitive = clean_text(item.get("primitive"), 120)
+            if verify_primitive not in FIELD_VERIFY_PRIMITIVES:
+                raise web.HTTPBadRequest(text="verify primitive is not allowlisted")
+            clean_diagnostics.append({"id": clean_text(item.get("id"), 120) or f"verify_{index}", "primitive": verify_primitive, "args": safe_structured(item.get("args") or {}), "save_as": clean_text(item.get("save_as"), 120) or f"verify_{index}"})
+        if conditions in (None, {}, []):
+            raise web.HTTPBadRequest(text="verify_criterion.conditions is required")
+
+        rollback = body.get("rollback") or []
+        if not isinstance(rollback, list):
+            raise web.HTTPBadRequest(text="rollback must be a list")
+        clean_rollback = []
+        for item in rollback:
+            if not isinstance(item, dict):
+                raise web.HTTPBadRequest(text="rollback step must be an object")
+            rollback_primitive = clean_text(item.get("primitive"), 120)
+            if rollback_primitive not in FIELD_ACTION_PRIMITIVES:
+                raise web.HTTPBadRequest(text="rollback primitive is not allowlisted")
+            clean_rollback.append({"step": clean_text(item.get("step"), 120) or "rollback", "primitive": rollback_primitive, "args": safe_structured(item.get("args") or {}), "max_attempts": 1})
+
+        checkpoint = body.get("checkpoint")
+        clean_checkpoint = {"required": False}
+        if isinstance(checkpoint, dict) and checkpoint.get("required"):
+            if clean_text(checkpoint.get("primitive"), 120) != "create_backup":
+                raise web.HTTPBadRequest(text="Field checkpoint supports create_backup only")
+            clean_checkpoint = {"required": True, "primitive": "create_backup", "args": safe_structured(checkpoint.get("args") or {})}
+
+        card = {
+            "schema_version": 1,
+            "disease_id": "FIELD-UNCLASSIFIED",
+            "title": "Field Suzie one-shot treatment",
+            "component": clean_text(exact_target.get("component"), 120) or "field",
+            "protocol": {"id": f"FIELD-ACTION-{case_id}-{uuid4()}", "version": "1", "status": "FIELD_ONE_SHOT"},
+            "automation_class": "CONFIRM_REQUIRED",
+            "diagnostics": clean_diagnostics,
+            "confirm": {"all": ["field_action_authorized == true"]},
+            "exclude": [],
+            "preconditions": [],
+            "checkpoint": clean_checkpoint,
+            "treatment": [{"step": "field_action", "primitive": primitive, "args": safe_structured(action_args), "max_attempts": 1}],
+            "verify": {"rerun_diagnostics": True, "success_when": "conditions", "conditions": safe_structured(conditions)},
+            "rollback": clean_rollback,
+            "fallback": safe_structured(body.get("fallback") or []),
+            "field_action": {"case_id": case_id, "exact_target": safe_structured(exact_target), "reason": reason, "evidence": safe_structured(body.get("evidence") or {}), "expected_result": expected_result, "risk_assessment": safe_structured(risk)},
+        }
+        payload = {"result": "FIELD_ACTION_AVAILABLE", "request_id": clean_text(body.get("request_id"), 128) or str(uuid4()), "license": license_state, "case_id": case_id, "execution_packages": []}
+        if not bool(license_state["active"]):
+            payload["result"] = "FIELD_ACTION_LICENSE_BLOCKED"
+        else:
+            payload["execution_packages"] = [self.package_for(client_id=client_id, disease_id="FIELD-UNCLASSIFIED", card=card, execution_actor="field_suzie")]
+        self.db.event("field_action_request", client_id, {"case_id": case_id, "primitive": primitive, "exact_target": safe_structured(exact_target), "result": payload["result"]})
+        return self.signed(payload)
+
     async def diagnose(self, request: web.Request) -> web.Response:
         body, client = await self.authenticated_body(request)
         client_id = str(client["client_id"])
@@ -2100,6 +2238,7 @@ class DoctorServer:
         app.router.add_post("/v1/enroll", self.enroll)
         app.router.add_post("/v1/license", self.license_status)
         app.router.add_post("/v1/diagnose", self.diagnose)
+        app.router.add_post("/v1/field-action", self.field_action)
         app.router.add_post("/v1/customer-feed", self.customer_feed)
         app.router.add_post("/v1/knowledge/reload", self.reload_knowledge)
 

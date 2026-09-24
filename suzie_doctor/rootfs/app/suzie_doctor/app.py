@@ -80,6 +80,7 @@ class Runtime:
             supervisor=self.supervisor,
             protocol_engine=self.protocol_engine,
             diagnose_callback=self.doctor_server_diagnose,
+            field_action_callback=self.doctor_server_field_action,
         )
         self.web_connector = WebConnectorAdapter(self.connector)
         self.api_connector = ApiConnectorAdapter(self.connector)
@@ -533,6 +534,72 @@ class Runtime:
                         "result": "PACKAGE_REJECTED",
                         "error": f"{type(exc).__name__}: {exc}",
                     })
+        response["execution_results"] = execution_results
+        self.server_status = {
+            "state": "ok",
+            "checked_at": datetime.now(UTC).isoformat(),
+            "client_id": self.doctor_server.client_id,
+            "license": response.get("license"),
+            "last_result": response.get("result"),
+        }
+        return response
+
+    async def doctor_server_field_action(
+        self,
+        request: dict[str, Any],
+        *,
+        risk_assessment: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.doctor_server is None:
+            raise DoctorServerError("Doctor Server is disabled")
+
+        await self.doctor_server.ensure_enrolled()
+        response = await self.doctor_server.field_action(dict(request))
+        execution_results: list[dict[str, Any]] = []
+        for package in response.get("execution_packages") or []:
+            try:
+                card = self.doctor_server.validate_execution_package(package)
+                primitives = self.protocol_engine._card_primitives(card)
+                unsupported = sorted(
+                    primitives - self.protocol_engine.SUPPORTED_PRIMITIVES
+                )
+                if unsupported:
+                    execution_results.append({
+                        "result": "UNSUPPORTED_PRIMITIVE",
+                        "protocol_id": (card.get("protocol") or {}).get("id"),
+                        "unsupported_primitives": unsupported,
+                    })
+                    continue
+                evidence = request.get("evidence")
+                execution_context = (
+                    dict(evidence.get("context"))
+                    if isinstance(evidence, dict)
+                    and isinstance(evidence.get("context"), dict)
+                    else {}
+                )
+                execution_context["field_action_authorized"] = True
+                execution_context["field_case_id"] = int(
+                    request.get("field_case_id") or 0
+                )
+                execution_context["exact_target"] = dict(
+                    request.get("exact_target") or {}
+                )
+                execution_results.append(
+                    await self.protocol_engine.execute_card(
+                        card,
+                        context=execution_context,
+                        trust_mode=self.options.trust_mode,
+                        risk_assessment=risk_assessment,
+                        execution_actor="field_suzie",
+                        simulated=False,
+                        developer_override=False,
+                    )
+                )
+            except Exception as exc:
+                execution_results.append({
+                    "result": "PACKAGE_REJECTED",
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
         response["execution_results"] = execution_results
         self.server_status = {
             "state": "ok",

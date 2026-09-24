@@ -1,9 +1,9 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.3-dev",
+  "version": "0.1.4-dev",
   "interface_version": 1,
   "canonical_core": true,
-  "treatment_path": "doctor.diagnose->signed_execution_package->ProtocolEngine",
+  "treatment_path": "doctor.diagnose|doctor.action.request -> signed_execution_package -> ProtocolEngine",
   "tools": [
     {
       "name": "doctor.capabilities",
@@ -138,6 +138,87 @@
       "family": "doctor",
       "target_policy": "signed_execution_package",
       "target_fields": [],
+      "checkpoint_support": "protocol_defined",
+      "rollback_support": "protocol_defined",
+      "confirmation_class": "autonomous_risk_review",
+      "decision_source": "suzie_doctor_autonomous_risk_assessment"
+    },
+    {
+      "name": "doctor.action.request",
+      "risk": "signed_treatment",
+      "arguments": [
+        "action",
+        "exact_target",
+        "reason",
+        "evidence",
+        "risk_assessment",
+        "expected_result",
+        "verify_criterion",
+        "checkpoint",
+        "rollback",
+        "fallback"
+      ],
+      "description": "Field-Suzie only request for a signed one-shot structured action when no suitable known Protocol treatment exists. Requires exact target, autonomous risk assessment and mandatory functional verify.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "object"
+          },
+          "exact_target": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "object"
+          },
+          "risk_assessment": {
+            "type": "object"
+          },
+          "expected_result": {
+            "type": "string"
+          },
+          "verify_criterion": {
+            "type": "object"
+          },
+          "checkpoint": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "rollback": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "fallback": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "exact_target",
+          "reason",
+          "evidence",
+          "risk_assessment",
+          "expected_result",
+          "verify_criterion"
+        ],
+        "additionalProperties": false
+      },
+      "adapter_id": "doctor.core",
+      "family": "doctor",
+      "target_policy": "exact_argument",
+      "target_fields": [
+        "exact_target"
+      ],
       "checkpoint_support": "protocol_defined",
       "rollback_support": "protocol_defined",
       "confirmation_class": "autonomous_risk_review",
@@ -417,7 +498,7 @@
   "adapters": [
     {
       "adapter_id": "doctor.core",
-      "adapter_version": "0.1.3-dev",
+      "adapter_version": "0.1.4-dev",
       "family": "doctor",
       "available": true,
       "health": "ready",
@@ -429,10 +510,12 @@
         "doctor.skill"
       ],
       "write_operations": [
-        "doctor.diagnose"
+        "doctor.diagnose",
+        "doctor.action.request"
       ],
       "dangerous_operations": [
-        "doctor.diagnose:execute=true"
+        "doctor.diagnose:execute=true",
+        "doctor.action.request"
       ],
       "confirmation_class": "autonomous_risk_review",
       "checkpoint_support": "protocol_defined",

@@ -274,6 +274,9 @@ class DoctorServerClient:
     async def diagnose(self, evidence: dict[str, Any]) -> dict[str, Any]:
         return await self._signed_post("/v1/diagnose", evidence)
 
+    async def field_action(self, request: dict[str, Any]) -> dict[str, Any]:
+        return await self._signed_post("/v1/field-action", request)
+
     async def customer_feed(self, limit: int = 80) -> dict[str, Any]:
         return await self._signed_post(
             "/v1/customer-feed",

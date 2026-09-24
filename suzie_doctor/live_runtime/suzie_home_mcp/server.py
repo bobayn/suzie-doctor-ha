@@ -1328,6 +1328,44 @@ async def doctor_supervisor_backups_list(doctor_handle: str, ctx: Context) -> di
 
 
 @mcp.tool(
+    name="doctor.action.request",
+    description=(
+        "Field-Suzie only signed one-shot structured action on the exact claimed client. "
+        "Requires risk assessment and mandatory functional verify criterion."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+)
+async def doctor_action_request(
+    action: dict[str, Any],
+    exact_target: dict[str, Any],
+    reason: str,
+    evidence: dict[str, Any],
+    risk_assessment: dict[str, Any],
+    expected_result: str,
+    verify_criterion: dict[str, Any],
+    doctor_handle: str,
+    ctx: Context,
+    checkpoint: dict[str, Any] | None = None,
+    rollback: list[dict[str, Any]] | None = None,
+    fallback: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    args = {
+        "doctor_handle": doctor_handle,
+        "action": dict(action or {}),
+        "exact_target": dict(exact_target or {}),
+        "reason": str(reason or ""),
+        "evidence": dict(evidence or {}),
+        "risk_assessment": dict(risk_assessment or {}),
+        "expected_result": str(expected_result or ""),
+        "verify_criterion": dict(verify_criterion or {}),
+        "checkpoint": dict(checkpoint) if isinstance(checkpoint, dict) else None,
+        "rollback": list(rollback or []),
+        "fallback": list(fallback or []),
+    }
+    return await _doctor_proxy(ctx, "doctor.action.request", args)
+
+
+@mcp.tool(
     name="doctor.diagnose",
     description=(
         "Consult/execute the signed Doctor protocol on the exact claimed client. "
