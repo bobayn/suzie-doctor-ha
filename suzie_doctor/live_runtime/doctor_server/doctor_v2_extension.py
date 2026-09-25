@@ -223,11 +223,11 @@ class V2Extension:
             if human_type not in {"PHYSICAL_ACTION","CREDENTIAL","OAUTH","MISSING_CAPABILITY"} or not human_reason:
                 raise web.HTTPBadRequest(text="House HUMAN_ACTION_REQUIRED requires human_requirement.type and reason")
             if human_type=="MISSING_CAPABILITY":
-                requested=str(human.get("capability") or human.get("action") or "").strip()
+                requested=str(human.get("capability") or "").strip()
                 if not requested:
-                    raise web.HTTPBadRequest(text="MISSING_CAPABILITY requires capability/action")
+                    raise web.HTTPBadRequest(text="MISSING_CAPABILITY requires exact human_requirement.capability")
                 available={str(x) for x in (trigger_evidence.get("field_action_capabilities") or []) if str(x)}
-                if requested in available or "doctor.action.request"==requested and available:
+                if requested in available or (requested=="doctor.action.request" and available):
                     raise web.HTTPConflict(text="House MISSING_CAPABILITY conflicts with available Field action capability; re-evaluate")
             result["human_requirement"]={"type":human_type,"reason":human_reason,"capability":str(human.get("capability") or ""),"action":str(human.get("action") or "")}
 

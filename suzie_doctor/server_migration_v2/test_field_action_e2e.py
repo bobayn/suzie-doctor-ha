@@ -70,7 +70,9 @@ def main():
     assert '/v1/field-action-resume' in server and 'deferred_result_submission' in app
     assert 'CONNECTION_LOST_EXPECTED' in server and 'VERIFY_PENDING' in app
     assert 'Field HUMAN_REQUIRED requires human_requirement.type and reason' in server
+    assert 'Field MISSING_CAPABILITY requires exact human_requirement.capability' in server
     assert 'House HUMAN_ACTION_REQUIRED requires human_requirement.type and reason' in extension
+    assert 'MISSING_CAPABILITY requires exact human_requirement.capability' in extension
     assert 'House MISSING_CAPABILITY conflicts with available Field action capability; re-evaluate' in extension
     with TemporaryDirectory() as td:
         b=ClientCommandBridge(Path(td)/'commands.db')

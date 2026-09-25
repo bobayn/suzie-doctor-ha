@@ -1,3 +1,8 @@
+## Doctor HUMAN gate patch — 2026-09-25
+
+- `MISSING_CAPABILITY` now requires exact machine-readable `human_requirement.capability` in both House and Field completion paths.
+- Free-text action descriptions can no longer bypass current Field capability checks such as `core.restart`.
+
 ## Doctor runtime patch — 2026-09-25
 
 - Field `doctor.diagnose` is now always bound to its active Case as `FIELD_CASE_DIAGNOSTIC` unless it is an Experimental validation request.
