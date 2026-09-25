@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.21-v2-dev"
+SERVER_VERSION = "0.2.22-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -2622,7 +2622,13 @@ class DoctorServer:
                join doctor_v2_field_queue q on q.source_house_decision_id=d.decision_id
                join doctor_cases c on c.case_id=q.legacy_case_id
                where r.patient_id=? and r.terminal_resolution_required=1 and r.state='RESOLVED'
-                 and c.state not in ('RESOLVED','HUMAN_REQUIRED','FAILED','CANCELLED')""",
+                 and c.state not in ('RESOLVED','HUMAN_REQUIRED','FAILED','CANCELLED')
+                 and not exists (
+                     select 1 from doctor_v2_resolutions live_r
+                     where live_r.patient_id=r.patient_id
+                       and live_r.current_field_case_id=c.case_id
+                       and live_r.state<>'RESOLVED'
+                 )""",
             (client_id,),
         ).fetchall()
         for row in retirement_rows:

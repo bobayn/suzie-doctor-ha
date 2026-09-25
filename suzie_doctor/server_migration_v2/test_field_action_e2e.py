@@ -135,6 +135,8 @@ def main():
     assert 'MISSING_CAPABILITY requires exact human_requirement.capability' in extension
     assert 'House MISSING_CAPABILITY conflicts with available Field action capability; re-evaluate' in extension
     assert 'REPAIR_RESOLUTION_SUPERSEDED' in server
+    assert 'current_field_case_id=c.case_id' in server
+    assert "live_r.state<>'RESOLVED'" in server
     assert 'retire_case(' in (LIVE/'case_journal.py').read_text()
     with TemporaryDirectory() as td:
         b=ClientCommandBridge(Path(td)/'commands.db')

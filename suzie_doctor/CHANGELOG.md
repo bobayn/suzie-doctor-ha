@@ -1,3 +1,8 @@
+## Doctor retirement active-resolution guard — 2026-09-25
+
+- Superseded Repair retirement now excludes any Case that is still the current Field Case of a non-RESOLVED resolution.
+- Historical links to older resolved fingerprints can no longer retire an actively treated semantic Repair Case.
+
 ## Doctor superseded Repair Case retirement — 2026-09-25
 
 - Repair reconciliation now retires non-terminal legacy Field Cases whose Repair resolution is already `RESOLVED/superseded`, provided no active state-changing Doctor command exists.
