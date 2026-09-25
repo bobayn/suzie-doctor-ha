@@ -461,7 +461,7 @@ class DoctorV2Store:
         origin=str(origin or "INTERNAL_FIELD").upper()
         if origin not in {"INTERNAL_FIELD","EXTERNAL_WILSON","LEGACY"}:
             raise DoctorV2StateError("invalid candidate origin")
-        initial_state="CANDIDATE" if origin=="EXTERNAL_WILSON" else "FIELD_TESTING"
+        initial_state="CANDIDATE" if origin in {"EXTERNAL_WILSON","LEGACY"} else "FIELD_TESTING"
         with self.conn:
             self.conn.execute(
                 """INSERT INTO doctor_v2_protocol_candidates(

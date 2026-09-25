@@ -1,3 +1,12 @@
+## Knowledge-base Experimental backfill — 2026-09-25
+
+- Added a deterministic audit/backfill pass across all normalized legacy Protocol Candidates.
+- Legacy WATCH candidates with complete machine treatment mappings are derived into Field-only EXPERIMENTAL 0/3 candidates; existing ACTIVE knowledge is left unchanged.
+- Derived candidates inherit only an explicit curated `factory_source_candidate_id` mapping lineage while keeping a new v2 protocol ID.
+- Legacy/backfilled candidates now enter v2 as `CANDIDATE 0/3`; internally discovered Field treatments continue to enter as `FIELD_TESTING 0/3`.
+- The audit records a disposition for every source candidate and rejects knowledge blocked by missing adapters, unsafe/manual recovery, credentials, physical work, exact-target gaps, or incomplete machine treatment.
+- Existing v2 candidates are deduplicated by Disease + machine mapping/action so Wilson-created treatments are not cloned by legacy backfill.
+
 ## Self-reproducing treatment knowledge loop — 2026-09-25
 
 - Wilson `NIGHTLY_RESEARCH` is now treatment-incident mining, not general news/research: every reviewed external incident must become an executable EXPERIMENTAL candidate or carry a structured rejection reason.

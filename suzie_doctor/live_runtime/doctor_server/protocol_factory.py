@@ -387,7 +387,9 @@ def map_treatment(
     positive_lowered = positive_action_text(action).lower()
     component = clean(disease.get("component"), 120).lower()
     risk = clean(candidate.get("risk"), 40).upper() or "MEDIUM"
-    source_candidate_id = clean(candidate.get("protocol_id"), 180)
+    source_candidate_id = clean(
+        candidate.get("factory_source_candidate_id"), 180
+    ) or clean(candidate.get("protocol_id"), 180)
 
     if (
         source_candidate_id not in SAFE_CONTEXT_DANGEROUS_OVERRIDES
@@ -1065,6 +1067,9 @@ def build_card(
     source_candidate_id = clean(
         candidate.get("protocol_id"), 180
     ) or "CANDIDATE-UNKNOWN"
+    mapping_source_candidate_id = clean(
+        candidate.get("factory_source_candidate_id"), 180
+    ) or source_candidate_id
     approval_key = f"{disease_id}|{source_candidate_id}"
     approved = approval_key in approved_keys
     risk = clean(candidate.get("risk"), 40).upper() or "MEDIUM"
@@ -1076,7 +1081,7 @@ def build_card(
     mapped = bool(mapping.get("mapped"))
     if mapped:
         mapping["complete"] = (
-            source_candidate_id in COMPLETE_MAPPING_OVERRIDES
+            mapping_source_candidate_id in COMPLETE_MAPPING_OVERRIDES
             or mapping_is_complete(
                 clean(candidate.get("action"), 5000),
                 str(mapping.get("kind") or ""),
@@ -1244,6 +1249,7 @@ def build_card(
             "deferred_treatment_blocker_class": deferred_treatment_blocker_class,
             "deferred_treatment_blocker_detail": deferred_treatment_blocker_detail,
             "source_candidate_id": source_candidate_id,
+            "mapping_source_candidate_id": mapping_source_candidate_id,
             "source_assessment": assessment,
             "source_automation_class": source_class,
             "source_risk": risk,

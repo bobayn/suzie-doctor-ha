@@ -6,6 +6,7 @@ ROOT=Path(__file__).resolve().parents[2]
 LIVE=ROOT/'suzie_doctor/live_runtime/doctor_server'
 sys.path.insert(0,str(LIVE))
 from doctor_v2_live import DoctorV2Runtime
+from protocol_factory import build_card
 
 
 def main():
@@ -30,6 +31,29 @@ def main():
             assert rt.house_priority_from_payload({'evidence':{'severity':'PROBLEM'}}) == 70
             assert rt.house_priority_from_payload({'evidence':{'severity':'LOW'}}) == 50
             assert rt.house_priority_from_payload({'evidence':{}}) == 50
+
+            legacy_state=rt.store.upsert_protocol_candidate(
+                protocol_id='EXP-LEGACY-STATE-001',origin='LEGACY',disease_id='DISEASE-LEGACY-STATE-001',
+                candidate={'protocol_id':'EXP-LEGACY-STATE-001','disease_id':'DISEASE-LEGACY-STATE-001','title':'legacy state test'}
+            )
+            assert legacy_state['state']=='CANDIDATE' and legacy_state['validation_stage']=='0/3'
+
+            # A v2 Experimental descendant keeps a new protocol_id, but may
+            # inherit only the explicitly curated machine mapping from its
+            # legacy source candidate. This is required for safe KB backfill.
+            gd={'disease_id':'DISEASE-KB-GOOGLE-979ECD6316','title':'Google sync poisoned by one exposed entity','component':'google'}
+            gc={
+                'protocol_id':'EXP-KB-LINEAGE-TEST','factory_source_candidate_id':'PROTOCOL-KB-CANDIDATE-A8B3968C87',
+                'disease_id':gd['disease_id'],'title':'Unexpose exact offending entity','component':'google',
+                'symptoms':['Google sync fails'],'checks':['identify exact offending entity'],
+                'action':'Binary-search exposed domains/entities, exclude the offending legacy entity, then resync.',
+                'verify':['Google sync succeeds after exact entity is unexposed'],'rollback':'re-expose exact entity',
+                'risk':'LOW','automation_class':'CONFIRM_REQUIRED',
+            }
+            gcard=build_card(gd,gc,approved_keys={gd['disease_id']+'|'+gc['protocol_id']})
+            assert gcard['factory']['mapping_kind']=='google_assistant_unexpose_context'
+            assert gcard['factory']['mapping_source_candidate_id']=='PROTOCOL-KB-CANDIDATE-A8B3968C87'
+            assert gcard['protocol']['status']=='ACTIVE' and gcard['treatment'][0]['primitive']=='google_assistant_set_exposed'
 
             # Wilson knowledge-loop contract v2: Nightly research cannot finish
             # with prose/news only; relevant successful incidents must be turned
