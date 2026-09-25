@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.22-v2-dev"
+SERVER_VERSION = "0.2.23-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -1073,9 +1073,39 @@ class DoctorServer:
     async def _reconcile_starting_dialogs(self) -> None:
         async with self.journal_gate:
             starting = self.journal.starting_sessions()
+        now = datetime.now(UTC)
         for session in starting:
             detail = session.get("detail") or {}
             if not detail.get("ui_sent"):
+                try:
+                    started = datetime.fromisoformat(str(session.get("created_at") or "").replace("Z", "+00:00"))
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=UTC)
+                    age = (now - started).total_seconds()
+                except Exception:
+                    age = float("inf")
+                start_timeout = max(15, min(180, int(self.config.get("dispatch_start_stale_seconds", 45))))
+                if age < start_timeout:
+                    continue
+                current_case_id = session.get("current_case_id")
+                if not current_case_id:
+                    continue
+                case_id = int(current_case_id)
+                self.v2_ext.release_field(case_id)
+                try:
+                    async with self.journal_gate:
+                        self.journal.fail_dispatch(
+                            case_id=case_id,
+                            session_id=str(session["session_id"]),
+                            reason="dispatch_start_timeout_without_ui_sent",
+                        )
+                    self.db.event(
+                        "web_dispatch_start_recovered",
+                        None,
+                        {"case_id":case_id,"session_id":session.get("session_id"),"age_seconds":int(age)},
+                    )
+                except JournalConflict:
+                    pass
                 continue
             tab_id = str(detail.get("tab_id") or "")
             current_case_id = session.get("current_case_id")

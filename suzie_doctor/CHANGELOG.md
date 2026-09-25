@@ -1,3 +1,8 @@
+## Doctor stale STARTING dispatch recovery — 2026-09-25
+
+- A Field Web session stuck in `STARTING/DISPATCHING` without `ui_sent` is now recovered after a bounded 45-second start timeout.
+- Recovery uses the normal `fail_dispatch` path, releases the Field reservation, records an audit event, and retries through persistent backoff instead of leaving a Case stranded forever.
+
 ## Doctor Call Lab submission confirmation — 2026-09-25
 
 - CDP submission verification now accepts a released composer plus creation of a new ChatGPT `/c/` conversation as reliable submission evidence, even before the user-message DOM has hydrated.

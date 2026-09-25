@@ -141,6 +141,9 @@ def main():
     call_lab=(LIVE.parent/'call_lab/server.py').read_text()
     assert 'conversation_created = bool(verified.get("conversationCreated"))' in call_lab
     assert 'composer_released and (text_visible or conversation_created)' in call_lab
+    assert 'dispatch_start_timeout_without_ui_sent' in server
+    assert 'dispatch_start_stale_seconds' in server
+    assert 'web_dispatch_start_recovered' in server
     assert "location.pathname.includes('/c/')" in call_lab
     with TemporaryDirectory() as td:
         b=ClientCommandBridge(Path(td)/'commands.db')
