@@ -147,11 +147,29 @@ def cdp_new_target(url: str) -> dict[str, Any]:
         return json.loads(r.read().decode("utf-8"))
 
 
+def cdp_close_target(target_id: str) -> bool:
+    value = str(target_id or "").strip()
+    if not value:
+        return False
+    try:
+        req = urllib.request.Request(
+            CDP_BASE + "/json/close/" + urllib.parse.quote(value, safe=""),
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=4) as r:
+            return 200 <= int(r.status) < 300
+    except Exception:
+        return False
+
+
 def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None) -> None:
     apps = list(apps or [])
+    page_id = ""
+    ws = None
     try:
         wait_cdp()
         page = cdp_new_target(target)
+        page_id = str(page.get("id") or "")
         ws_url = page.get("webSocketDebuggerUrl")
         if not ws_url:
             raise RuntimeError("no page websocket URL")
@@ -345,45 +363,80 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
         # composer contains an app-mention element.
         attached_apps = []
         for app in apps:
-            call("Input.insertText", {"text": " @" + app})
-            app_js = """
+            # ChatGPT 2026-09 UI: private plugins are selected through the
+            # composer's + menu search rather than the first visible app list.
+            picker_js = """
+(() => {
+  const b = document.querySelector('[data-testid="composer-plus-btn"]') ||
+            [...document.querySelectorAll('button')].find(x => /Добавить файлы и другое|Add files|Add/i.test(x.getAttribute('aria-label') || ''));
+  if (!b) return {ok:false, reason:'plus_button_not_found'};
+  const r=b.getBoundingClientRect();
+  const st=getComputedStyle(b);
+  const visible=r.width>0 && r.height>0 && st.display!=='none' && st.visibility!=='hidden' && st.opacity!=='0';
+  if (!visible || b.disabled || b.getAttribute('aria-disabled')==='true') return {ok:false, reason:'plus_button_not_ready'};
+  return {ok:true, x:r.left+r.width/2, y:r.top+r.height/2, expanded:b.getAttribute('aria-expanded')};
+})()
+"""
+            pr = call("Runtime.evaluate", {"expression": picker_js, "returnByValue": True})
+            pv = pr.get("result", {}).get("result", {}).get("value")
+            if not isinstance(pv, dict) or not pv.get("ok"):
+                raise RuntimeError(f"plugin_picker_open_failed:{app}:{pv}")
+            call("Input.dispatchMouseEvent", {"type":"mouseMoved","x":pv["x"],"y":pv["y"]})
+            call("Input.dispatchMouseEvent", {"type":"mousePressed","x":pv["x"],"y":pv["y"],"button":"left","buttons":1,"clickCount":1})
+            call("Input.dispatchMouseEvent", {"type":"mouseReleased","x":pv["x"],"y":pv["y"],"button":"left","buttons":0,"clickCount":1})
+            time.sleep(0.6)
+
+            # The opened + menu focuses its plugin/file/skill search field.
+            # Feed the private plugin name there with a trusted CDP text input.
+            call("Input.insertText", {"text": app})
+            time.sleep(0.9)
+
+            result_js = """
 (() => {
   const wanted = APP_PLACEHOLDER;
-  const buttons = [...document.querySelectorAll('button')];
-  const b = buttons.find(x => {
-    const r = x.getBoundingClientRect();
-    const st = getComputedStyle(x);
-    const visible = r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0';
-    const first = ((x.innerText || x.textContent || '').trim().split('\\n')[0] || '').trim();
-    return visible && !x.disabled && x.getAttribute('aria-disabled') !== 'true' && first === wanted;
-  });
-  if (!b) return {ok:false, reason:'app_suggestion_not_found', wanted};
-  b.click();
-  return {ok:true, wanted};
+  const visible = x => {
+    const r=x.getBoundingClientRect(), st=getComputedStyle(x);
+    return r.width>0 && r.height>0 && st.display!=='none' && st.visibility!=='hidden' && st.opacity!=='0';
+  };
+  const spans=[...document.querySelectorAll('span')].filter(visible).filter(x => (x.innerText || x.textContent || '').trim() === wanted);
+  for (const s of spans) {
+    const item = s.closest('[tabindex="0"][data-fill]') || s.closest('[tabindex="0"]') || s.closest('.__menu-item');
+    if (item && visible(item)) {
+      const r=item.getBoundingClientRect();
+      return {ok:true, x:r.left+r.width/2, y:r.top+r.height/2, tag:item.tagName, text:(item.innerText||item.textContent||'').trim()};
+    }
+  }
+  const labels=[...document.querySelectorAll('[data-fill],.__menu-item')].filter(visible)
+      .map(x => (x.innerText || x.textContent || '').trim()).filter(Boolean).slice(-40);
+  return {ok:false, reason:'plugin_search_result_not_found', wanted, labels};
 })()
 """.replace("APP_PLACEHOLDER", json.dumps(app))
-            deadline = time.time() + 12
-            selected = None
-            while time.time() < deadline:
-                rr = call("Runtime.evaluate", {"expression": app_js, "returnByValue": True, "awaitPromise": True})
-                selected = rr.get("result", {}).get("result", {}).get("value")
-                if isinstance(selected, dict) and selected.get("ok"):
-                    break
-                time.sleep(0.25)
+            rr = call("Runtime.evaluate", {"expression": result_js, "returnByValue": True})
+            selected = rr.get("result", {}).get("result", {}).get("value")
             if not isinstance(selected, dict) or not selected.get("ok"):
-                raise RuntimeError(f"app_attach_failed:{app}:{selected}")
+                raise RuntimeError(f"plugin_search_failed:{app}:{selected}")
+            call("Input.dispatchMouseEvent", {"type":"mouseMoved","x":selected["x"],"y":selected["y"]})
+            call("Input.dispatchMouseEvent", {"type":"mousePressed","x":selected["x"],"y":selected["y"],"button":"left","buttons":1,"clickCount":1})
+            call("Input.dispatchMouseEvent", {"type":"mouseReleased","x":selected["x"],"y":selected["y"],"button":"left","buttons":0,"clickCount":1})
+            time.sleep(0.4)
+
             verify_app_js = """
-(() => [...document.querySelectorAll('[app-mention-display-name]')].some(x => x.getAttribute('app-mention-display-name') === APP_PLACEHOLDER))()
+(() => {
+  const wanted = APP_PLACEHOLDER;
+  const oldMention = [...document.querySelectorAll('[app-mention-display-name]')].some(x => x.getAttribute('app-mention-display-name') === wanted);
+  const newPill = [...document.querySelectorAll('a[href*="/plugins/"][href*="plugin_detail_origin=inline_selection_pill"]')].some(x => (x.innerText || x.textContent || '').trim() === wanted);
+  return oldMention || newPill;
+})()
 """.replace("APP_PLACEHOLDER", json.dumps(app))
             verified = False
-            for _ in range(20):
+            for _ in range(30):
                 vr = call("Runtime.evaluate", {"expression": verify_app_js, "returnByValue": True})
                 verified = bool(vr.get("result", {}).get("result", {}).get("value"))
                 if verified:
                     break
                 time.sleep(0.15)
             if not verified:
-                raise RuntimeError(f"app_mention_not_verified:{app}")
+                raise RuntimeError(f"plugin_selection_not_verified:{app}")
             attached_apps.append(app)
         if attached_apps:
             update_job(job_id, "apps_attached", {"apps": attached_apps})
@@ -425,7 +478,10 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
           st.opacity !== '0';
   const enabled = !!b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   const v = el ? (('value' in el) ? el.value : el.textContent) : '';
-  const mentions = [...document.querySelectorAll('[app-mention-display-name]')].map(x => x.getAttribute('app-mention-display-name'));
+  const mentions = [
+    ...[...document.querySelectorAll('[app-mention-display-name]')].map(x => x.getAttribute('app-mention-display-name')),
+    ...[...document.querySelectorAll('a[href*="/plugins/"][href*="plugin_detail_origin=inline_selection_pill"]')].map(x => (x.innerText || x.textContent || '').trim())
+  ].filter(Boolean);
   const EXPECTED_APPS = EXPECTED_APPS_PLACEHOLDER;
   return {
     found: !!b,
@@ -558,11 +614,27 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
                         "text_visible_in_conversation": text_visible,
                     })
                     ws.close()
+                    ws = None
                     return
             time.sleep(0.2)
         raise RuntimeError(f"submission_not_confirmed: {verified}")
     except Exception as exc:
         update_job(job_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        if page_id:
+            closed = cdp_close_target(page_id)
+            if closed:
+                with LOCK:
+                    job = JOBS.get(job_id)
+                    if job is not None:
+                        detail = dict(job.get("detail") or {})
+                        detail["failed_tab_closed"] = True
+                        detail["failed_tab_id"] = page_id
+                        job["detail"] = detail
 
 
 def extension_fill(job_id: str, target: str, text: str) -> None:

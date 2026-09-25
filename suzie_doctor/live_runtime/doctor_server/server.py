@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.10-v2-dev"
+SERVER_VERSION = "0.2.11-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),

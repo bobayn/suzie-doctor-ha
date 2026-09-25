@@ -105,6 +105,8 @@ class CaseJournal:
                 dialog_ref TEXT,
                 assignment_seq INTEGER NOT NULL DEFAULT 0,
                 dispatch_token TEXT,
+                dispatch_failures INTEGER NOT NULL DEFAULT 0,
+                dispatch_retry_after TEXT,
                 claim_token_hash TEXT,
                 lease_expires TEXT,
                 created_at TEXT NOT NULL,
@@ -160,6 +162,17 @@ class CaseJournal:
                 ON doctor_journal_events(case_id, seq);
             """
         )
+        case_columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(doctor_cases)")
+        }
+        case_migrations = {
+            "dispatch_failures": "ALTER TABLE doctor_cases ADD COLUMN dispatch_failures INTEGER NOT NULL DEFAULT 0",
+            "dispatch_retry_after": "ALTER TABLE doctor_cases ADD COLUMN dispatch_retry_after TEXT",
+        }
+        for name, ddl in case_migrations.items():
+            if name not in case_columns:
+                self.conn.execute(ddl)
         self.conn.commit()
 
     def _begin(self) -> None:
@@ -610,6 +623,7 @@ class CaseJournal:
                 WHERE state='FOR_SUZIE'
                   AND doctor_session_id IS NULL
                   AND dialog_id IS NULL
+                  AND (dispatch_retry_after IS NULL OR datetime(dispatch_retry_after) <= datetime('now'))
                 ORDER BY priority DESC, case_id ASC
                 LIMIT 1
                 """
@@ -771,7 +785,8 @@ class CaseJournal:
                 """
                 UPDATE doctor_cases
                 SET state='ASSIGNED',dialog_id=?,dialog_ref=?,
-                    assigned_at=?,updated_at=?,dispatch_token=NULL
+                    assigned_at=?,updated_at=?,dispatch_token=NULL,
+                    dispatch_failures=0,dispatch_retry_after=NULL
                 WHERE case_id=?
                 """,
                 (dialog_id, dialog_id, now, now, int(case_id)),
@@ -803,17 +818,25 @@ class CaseJournal:
     ) -> None:
         self._begin()
         try:
-            now = iso()
+            now_dt = utcnow()
+            now = iso(now_dt)
+            row = self.conn.execute(
+                "SELECT dispatch_failures FROM doctor_cases WHERE case_id=?",
+                (int(case_id),),
+            ).fetchone()
+            failures = int(row["dispatch_failures"] or 0) + 1 if row else 1
+            delay_seconds = min(300, 15 * (2 ** min(failures - 1, 4)))
+            retry_after = iso(now_dt + timedelta(seconds=delay_seconds))
             self.conn.execute(
                 """
                 UPDATE doctor_cases
                 SET state='FOR_SUZIE',transport=NULL,doctor_session_id=NULL,
                     dialog_id=NULL,dialog_ref=NULL,assignment_seq=0,
-                    dispatch_token=NULL,updated_at=?
+                    dispatch_token=NULL,dispatch_failures=?,dispatch_retry_after=?,updated_at=?
                 WHERE case_id=? AND state='DISPATCHING'
                   AND doctor_session_id=?
                 """,
-                (now, int(case_id), session_id),
+                (failures, retry_after, now, int(case_id), session_id),
             )
             self.conn.execute(
                 """
@@ -828,7 +851,12 @@ class CaseJournal:
                 "WEB_DISPATCH_FAILED",
                 case_id=int(case_id),
                 session_id=session_id,
-                detail={"error": reason},
+                detail={
+                    "error": reason,
+                    "dispatch_failures": failures,
+                    "retry_after": retry_after,
+                    "retry_delay_seconds": delay_seconds,
+                },
             )
             self.conn.commit()
         except Exception:

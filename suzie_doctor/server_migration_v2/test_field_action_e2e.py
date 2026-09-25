@@ -10,6 +10,7 @@ APPROOT=ROOT/'suzie_doctor/rootfs/app'
 sys.path.insert(0,str(LIVE))
 sys.path.insert(0,str(APPROOT))
 from command_bridge import ClientCommandBridge
+from case_journal import CaseJournal
 from doctor_v2_live import DoctorV2Runtime
 from suzie_doctor.protocol_engine import ProtocolEngine
 
@@ -86,6 +87,10 @@ def main():
     assert '"subsystem.reload": {"primitive":"reload_subsystem"' not in server
     assert 'host.reboot exact_target.host must identify the local HAOS host' in server
     assert 'field_binding_sha256' in server and 'expected_field_binding' in client
+    call_lab=(ROOT/'suzie_doctor/live_runtime/call_lab/server.py').read_text()
+    assert 'def cdp_close_target(' in call_lab and 'failed_tab_closed' in call_lab
+    journal=(LIVE/'case_journal.py').read_text()
+    assert 'dispatch_retry_after' in journal and 'dispatch_failures' in journal
     assert '/v1/field-action-resume' in server and 'deferred_result_submission' in app
     assert 'CONNECTION_LOST_EXPECTED' in server and 'VERIFY_PENDING' in app
     assert 'Field HUMAN_REQUIRED requires human_requirement.type and reason' in server
@@ -105,6 +110,21 @@ def main():
         b.finish(client_id='client123',command_id=c['command_id'],result={'ok':True},error=None)
         assert b.get(c['command_id'])['status']=='COMPLETED'
         p2=b.poll(client_id='client123'); assert p2['command_id']==c2['command_id']
+    with TemporaryDirectory() as td:
+        j=CaseJournal(Path(td)/'journal.db')
+        case,created=j.escalate(client_id='client-backoff',source_key='backoff:test',source_request_id=None,summary='x',problem={'x':1})
+        assert created
+        first=j.reserve_web_dispatch(max_doctors=1); assert first and first['case']['case_id']==case['case_id']
+        j.fail_dispatch(case_id=case['case_id'],session_id=first['session_id'],reason='synthetic failure')
+        failed=j.get_case(case['case_id'])
+        assert int(failed['dispatch_failures'])==1 and failed['dispatch_retry_after']
+        assert j.reserve_web_dispatch(max_doctors=1) is None
+        with j.conn:
+            j.conn.execute("update doctor_cases set dispatch_retry_after=datetime('now','-1 second') where case_id=?",(case['case_id'],))
+        second=j.reserve_web_dispatch(max_doctors=1); assert second
+        j.finish_dispatch(case_id=case['case_id'],session_id=second['session_id'],dispatch_job_id='job2',dialog_id='dlg2',conversation_url='https://chatgpt.com/c/dlg2')
+        assigned=j.get_case(case['case_id'])
+        assert int(assigned['dispatch_failures'])==0 and assigned['dispatch_retry_after'] is None
     with TemporaryDirectory() as td:
         rt=DoctorV2Runtime(Path(td)/'v2.db',LIVE/'doctor_v2_schema.sql')
         a=rt.journal_to_house('patient-123456','test',repair_payload(['core.restart']),fingerprint='repair:hacs:x')

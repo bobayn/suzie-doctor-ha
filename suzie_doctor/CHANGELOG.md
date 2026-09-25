@@ -1,3 +1,10 @@
+## Doctor Web transport backpressure — 2026-09-25
+
+- Failed Call Lab CDP submissions now close their newly-created orphan Chromium tab instead of leaking it.
+- Legacy live Call Lab plugin-picker fixes were synchronized back into canonical source before the cleanup change.
+- Field Web dispatch now persists `dispatch_failures` and `dispatch_retry_after`; retries use bounded exponential backoff and successful dispatch resets the state.
+- This prevents retry storms from multiplying tabs and driving the dedicated Doctor Chromium into OOM/CDP failure.
+
 ## Doctor server fingerprint guard — 2026-09-25
 
 - Doctor Server now prefers the primary non-Repair `evidence.problem_key` for Patient Journal fingerprinting, even when an older client mistakenly promotes a related Repair key to the top level.
