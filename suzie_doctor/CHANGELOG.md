@@ -1,3 +1,9 @@
+## Doctor Call Lab accessibility fallback — 2026-09-25
+
+- Doctor jobs without required app/plugin selections now fall back once from failed CDP submission to the independent X11/AT-SPI accessibility transport.
+- The failed CDP tab is closed before fallback, preventing duplicate tabs and preserving one job/one prompt semantics.
+- App-aware jobs remain fail-closed rather than silently losing their required app selections.
+
 ## Doctor Call Lab trusted keyboard fallback — 2026-09-25
 
 - Submission verification no longer mistakes prompt text still present in the composer for a sent user message.

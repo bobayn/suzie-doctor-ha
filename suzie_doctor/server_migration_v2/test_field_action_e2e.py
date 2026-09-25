@@ -148,6 +148,9 @@ def main():
     assert 'Input.dispatchMouseEvent' in call_lab
     assert 'Input.dispatchKeyEvent' in call_lab
     assert 'keyboard_fallback_sent = False' in call_lab
+    assert '"fallback_transport": "accessibility"' in call_lab
+    assert 'if not apps:' in call_lab
+    assert 'accessibility_fill(job_id, target, text)' in call_lab
     assert 'textVisibleInConversation:userTexts.some' in call_lab
     assert 'DOM .click()' in call_lab
     with TemporaryDirectory() as td:

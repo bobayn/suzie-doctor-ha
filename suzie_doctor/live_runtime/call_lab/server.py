@@ -660,22 +660,31 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
             time.sleep(0.2)
         raise RuntimeError(f"submission_not_confirmed: {verified}")
     except Exception as exc:
-        update_job(job_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
+        error_text = f"{type(exc).__name__}: {exc}"
         if ws is not None:
             try:
                 ws.close()
             except Exception:
                 pass
-        if page_id:
-            closed = cdp_close_target(page_id)
-            if closed:
-                with LOCK:
-                    job = JOBS.get(job_id)
-                    if job is not None:
-                        detail = dict(job.get("detail") or {})
-                        detail["failed_tab_closed"] = True
-                        detail["failed_tab_id"] = page_id
-                        job["detail"] = detail
+        failed_tab_closed = bool(page_id and cdp_close_target(page_id))
+        # Doctor House/Field jobs do not need app/plugin selection.  When CDP
+        # can fill the composer but cannot produce a trusted submission, retry
+        # once through the independent X11/AT-SPI transport instead of opening
+        # another CDP tab.  Jobs that require explicit apps remain fail-closed.
+        if not apps:
+            update_job(job_id, "send_ready", {
+                "fallback_transport": "accessibility",
+                "cdp_error": error_text,
+                "failed_tab_closed": failed_tab_closed,
+                "failed_tab_id": page_id or None,
+            })
+            accessibility_fill(job_id, target, text)
+            return
+        update_job(job_id, "failed", {
+            "error": error_text,
+            "failed_tab_closed": failed_tab_closed,
+            "failed_tab_id": page_id or None,
+        })
 
 
 def extension_fill(job_id: str, target: str, text: str) -> None:
@@ -1123,7 +1132,7 @@ c.addEventListener("keydown",e=>{
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SuzieDoctorCallLab/0.4"
+    server_version = "SuzieDoctorCallLab/0.5"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
