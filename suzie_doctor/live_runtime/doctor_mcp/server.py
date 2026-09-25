@@ -52,7 +52,7 @@ mcp = MCPServer(
         "Case before any client action, use exact-client read-only diagnostics "
         "first, verify treatment, then call doctor.case.complete_next."
     ),
-    version="0.1.7-dev",
+    version="0.1.8-dev",
 )
 
 CLAIM_HANDLES: dict[str, dict[str, Any]] = {}

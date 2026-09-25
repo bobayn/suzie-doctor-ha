@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.5-dev",
+  "version": "0.1.6-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose|doctor.action.request -> signed_execution_package -> ProtocolEngine",
@@ -837,7 +837,8 @@
         "component"
       ],
       "attempt_limit": 1,
-      "cooldown_seconds": 300
+      "cooldown_seconds": 300,
+      "disconnect_expected": true
     },
     {
       "name": "host.reboot",
