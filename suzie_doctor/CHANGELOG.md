@@ -1,3 +1,9 @@
+## Doctor pending dispatch handoff — 2026-09-25
+
+- A live Call Lab job that remains in `trigger_received/tab_created/filled/send_ready` at the dispatcher deadline is handed off to recovery instead of being failed and requeued.
+- The same persisted `dispatch_job_id` remains authoritative until submission, explicit failure, or bounded stale timeout.
+- This closes the remaining retry-storm path where the original dispatcher could requeue a Case while recovery was correctly following the still-live Call Lab job.
+
 ## Doctor persistent pending Web dispatch — 2026-09-25
 
 - Call Lab `dispatch_job_id` is persisted immediately after `/api/run`, before UI submission is confirmed.

@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.25-v2-dev"
+SERVER_VERSION = "0.2.26-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -1050,6 +1050,19 @@ class DoctorServer:
                         return
                 await asyncio.sleep(0.5)
 
+            pending_state=str((last_job or {}).get("state") or "")
+            if pending_state in {"trigger_received","tab_created","filled","send_ready"}:
+                self.db.event(
+                    "web_dispatch_pending_handoff",
+                    case.get("client_id"),
+                    {
+                        "case_id":case_id,
+                        "session_id":session_id,
+                        "job_id":job_id,
+                        "state":pending_state,
+                    },
+                )
+                return
             raise TimeoutError(f"dispatch timeout; last_job={last_job}")
         except Exception as exc:
             if ui_sent:
