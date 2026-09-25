@@ -1,3 +1,8 @@
+## Doctor resolution pointer cleanup — 2026-09-25
+
+- `current_field_case_id` now tracks only an active Field Case and is cleared on House re-evaluation and Field completion.
+- Historical Case linkage remains in the immutable House/Field journals; resolution state no longer carries stale active pointers.
+
 ## Doctor Field action policy cleanup — 2026-09-25
 
 - Field one-shot Server allowlist now exactly matches the four published actions; hidden `subsystem.reload` was removed from Field policy while remaining available to normal Protocols.

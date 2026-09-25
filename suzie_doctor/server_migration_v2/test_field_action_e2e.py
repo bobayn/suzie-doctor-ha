@@ -95,12 +95,14 @@ def main():
         assert not a['deduplicated'] and b['deduplicated']
         rt.conn.execute("update doctor_v2_house_jobs set status='DONE' where house_job_id=?",(a['house_job_id'],))
         info=rt._repair_resolution_info(repair_payload(['core.restart']),'repair:hacs:x')
-        rt.conn.execute("update doctor_v2_resolutions set state='WAITING_HUMAN',human_requirement_json=?,capabilities_hash=?,material_hash=?,next_recheck_at=datetime('now','+15 minutes')",(rt._j({'type':'PHYSICAL_ACTION','reason':'bounded physical step'}),info['capabilities_hash'],info['material_hash']))
+        rt.conn.execute("update doctor_v2_resolutions set state='WAITING_HUMAN',current_field_case_id=99,human_requirement_json=?,capabilities_hash=?,material_hash=?,next_recheck_at=datetime('now','+15 minutes')",(rt._j({'type':'PHYSICAL_ACTION','reason':'bounded physical step'}),info['capabilities_hash'],info['material_hash']))
         rt.conn.commit()
         wait=rt.journal_to_house('patient-123456','test',repair_payload(['core.restart']),fingerprint='repair:hacs:x')
         assert wait['deduplicated'] and wait['resolution_state']=='WAITING_HUMAN'
         changed=rt.journal_to_house('patient-123456','test',repair_payload(['core.restart','host.reboot']),fingerprint='repair:hacs:x')
         assert not changed['deduplicated'] and changed['house_job_id']!=a['house_job_id']
+        current=rt.conn.execute("select current_field_case_id from doctor_v2_resolutions where patient_id='patient-123456' and fingerprint='repair:hacs:x'").fetchone()[0]
+        assert current is None
     asyncio.run(engine_checks())
     print('FIELD_ACTION_E2E_TEST_PASS')
 

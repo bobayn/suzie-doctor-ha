@@ -112,7 +112,7 @@ class DoctorV2Runtime:
             self.conn.execute(
                 """insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,current_house_job_id,last_card_version,human_requirement_json,capabilities_hash,material_hash,next_recheck_at,updated_at)
                    values(?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-                   on conflict(patient_id,fingerprint) do update set state=excluded.state,current_house_job_id=excluded.current_house_job_id,last_card_version=excluded.last_card_version,human_requirement_json=excluded.human_requirement_json,capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=excluded.next_recheck_at,updated_at=CURRENT_TIMESTAMP""",
+                   on conflict(patient_id,fingerprint) do update set state=excluded.state,current_house_job_id=excluded.current_house_job_id,current_field_case_id=NULL,last_card_version=excluded.last_card_version,human_requirement_json=excluded.human_requirement_json,capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=excluded.next_recheck_at,updated_at=CURRENT_TIMESTAMP""",
                 (str(row["patient_id"]),info["fingerprint"],info["problem_key"],info["domain"],info["issue_id"],state,int(job_id),int(row["card_version"]),self._j(human),info["capabilities_hash"],info["material_hash"],next_recheck))
 
     def mark_resolution_field_case(self, queue_id:int, case_id:int) -> None:
@@ -152,7 +152,7 @@ class DoctorV2Runtime:
         else:
             state="OPEN"; resolved=None; human={}; next_recheck=(datetime.now(UTC)+timedelta(minutes=5)).isoformat()
         with self.conn:
-            self.conn.execute("update doctor_v2_resolutions set state=?,human_requirement_json=?,next_recheck_at=?,resolved_at=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(state,self._j(human),next_recheck,resolved,str(row["patient_id"]),str(row["fingerprint"])))
+            self.conn.execute("update doctor_v2_resolutions set state=?,current_field_case_id=NULL,human_requirement_json=?,next_recheck_at=?,resolved_at=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(state,self._j(human),next_recheck,resolved,str(row["patient_id"]),str(row["fingerprint"])))
 
     def journal_to_house(self, patient_id: str, source: str, payload: dict[str,Any], *, event_type: str="OBSERVATION", severity: str|None=None, fingerprint: str|None=None, priority: int|None=None) -> dict[str,Any]:
         state={"latest_source":source,"latest":payload}
@@ -208,7 +208,7 @@ class DoctorV2Runtime:
                 self.conn.execute(
                     """insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,current_house_job_id,last_event_id,last_card_version,human_requirement_json,capabilities_hash,material_hash,updated_at)
                        values(?,?,?,?,?,'DISPATCHED',?,?,?,?,?,?,CURRENT_TIMESTAMP)
-                       on conflict(patient_id,fingerprint) do update set problem_key=excluded.problem_key,domain=excluded.domain,issue_id=excluded.issue_id,state='DISPATCHED',current_house_job_id=excluded.current_house_job_id,last_event_id=excluded.last_event_id,last_card_version=excluded.last_card_version,human_requirement_json='{}',capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=NULL,resolved_at=NULL,updated_at=CURRENT_TIMESTAMP""",
+                       on conflict(patient_id,fingerprint) do update set problem_key=excluded.problem_key,domain=excluded.domain,issue_id=excluded.issue_id,state='DISPATCHED',current_house_job_id=excluded.current_house_job_id,current_field_case_id=NULL,last_event_id=excluded.last_event_id,last_card_version=excluded.last_card_version,human_requirement_json='{}',capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=NULL,resolved_at=NULL,updated_at=CURRENT_TIMESTAMP""",
                     (str(patient_id),repair["fingerprint"],repair["problem_key"],repair["domain"],repair["issue_id"],int(row[0]),event_id,version,'{}',repair["capabilities_hash"],repair["material_hash"]))
         return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None,"deduplicated":False,"resolution_state":"DISPATCHED" if repair else None}
 
