@@ -94,7 +94,14 @@ class V2Extension:
             cursor=f"FIELD_ONE_SHOT:{int(case_id)}"
             existing=self.runtime.conn.execute("select wilson_job_id from doctor_v2_wilson_jobs where input_cursor=? limit 1",(cursor,)).fetchone()
             if not existing:
-                wilson_job_id=self.runtime.enqueue_wilson("HOURLY_REVIEW",{"reason":"FIELD_ONE_SHOT_EVIDENCE","case_id":int(case_id),"patient_id":str(client_id),"case_report":dict(result or {}),"publication_rule":"evidence_only_not_active"},cursor)
+                wilson_job_id=self.runtime.enqueue_wilson("HOURLY_REVIEW",{
+                    "knowledge_loop_contract_version":2,
+                    "reason":"FIELD_ONE_SHOT_EVIDENCE",
+                    "case_id":int(case_id),
+                    "patient_id":str(client_id),
+                    "case_report":dict(result or {}),
+                    "publication_rule":"candidate_then_3_internal_verified_then_publication",
+                },cursor)
         await self._finish_assignment("FIELD_SUZIE",assignment)
         return {
             "experimental_validation_recorded":bool(normalized_validation),
@@ -487,8 +494,16 @@ class V2Extension:
                     "outcome SUCCESS or FAILED, structured result. If batch contains "
                     "required_validations, return each in result.validations with the exact "
                     "protocol_id, episode_key, success and verified facts. Analyze positive "
-                    "and negative evidence; do not rewrite Field facts. 3/3 goes to publication "
-                    "review, never directly ACTIVE."
+                    "and negative evidence; do not rewrite Field facts. Your primary job is to "
+                    "manufacture reusable treatment knowledge, not summarize news. For NIGHTLY_RESEARCH, "
+                    "mine real technical incidents from issues/discussions/forums/docs, identify treatments "
+                    "that actually restored function, and return search_coverage plus incident_reviews. "
+                    "Every relevant successful treatment must become a structured EXPERIMENTAL protocol_candidate "
+                    "0/3 or be explicitly REJECTED with a concrete safety/applicability/evidence reason. "
+                    "Each candidate must include protocol_id, disease_id, embedded disease draft with diagnostic_criteria, "
+                    "symptoms/checks/action/verify/risk/automation_class and external_evidence URLs. External evidence "
+                    "never earns validation credit. For internal new_protocol_evidence, create/update a candidate or "
+                    "explicitly reject with reason. 3/3 goes to publication review, never directly ACTIVE."
                 )
             else:
                 text=(
@@ -601,7 +616,14 @@ class V2Extension:
         if due:
             exists=self.runtime.conn.execute("select 1 from doctor_v2_wilson_jobs where mode='NIGHTLY_RESEARCH' and input_cursor=? limit 1",(date,)).fetchone()
             if not exists:
-                self.runtime.enqueue_wilson("NIGHTLY_RESEARCH",{"research_date":date,"scope":"external docs/issues/forums/research","external_evidence_internal_confirmations":0},date)
+                self.runtime.enqueue_wilson("NIGHTLY_RESEARCH",{
+                    "knowledge_loop_contract_version":2,
+                    "research_date":date,
+                    "purpose":"TREATMENT_INCIDENT_MINING",
+                    "scope":"external technical incidents/issues/discussions/forums with observed treatment outcomes; not general news",
+                    "required_output":"search_coverage + incident_reviews + protocol_candidates",
+                    "external_evidence_internal_confirmations":0,
+                },date)
 
     async def run(self)->None:
         while True:

@@ -6,12 +6,12 @@ Experimental developer build of Suzie Doctor for Home Assistant.
 
 Current build versions:
 
-- App: 0.2.65-dev
+- App: 0.2.70-dev
 - Integration bridge: `0.2.5-dev`
 - Protocol Pack: `0.1.4-dev`
-- Suite: 0.1.11-dev
-- Connector Core: 0.1.5-dev
-- Skill Core: 0.1.9-dev
+- Suite: 0.1.14-dev
+- Connector Core: 0.1.7-dev
+- Skill Core: 0.1.11-dev
 
 The live test installation on Home Assistant OS / Raspberry Pi 5 currently has:
 

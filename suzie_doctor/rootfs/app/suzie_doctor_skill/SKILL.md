@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.9-dev
+Version: 0.1.11-dev
 Schema: 1
 
 ## Purpose
@@ -10,8 +10,7 @@ Suzie Field Doctor, Doctor Wilson and Family/Local Doctor. It is surface-indepen
 Web/ChatGPT and API runtimes use the same clinical method.
 
 Doctor House is the semantic dispatcher. Family/Local Doctor performs routine
-recommendations and approved deterministic Protocols. Doctor Wilson systematizes
-completed field work. Suzie Field Doctor is dispatched for complex investigation,
+recommendations and approved deterministic Protocols. Doctor Wilson mines external technical incidents and systematizes completed Field work into reusable treatment knowledge. Suzie Field Doctor is dispatched for complex investigation,
 unknown/ambiguous Disease, failed known treatment, or Experimental Protocol validation.
 
 The Master Knowledge Base remains on Doctor Server. This Skill defines how Field Suzie
@@ -225,9 +224,7 @@ has reasonable real-world validation grounds — House uses `DISPATCH_SUZIE` and
 - `validation_stage` = `0/3` | `1/3` | `2/3`
 - `house_directive` = `VALIDATE_FIRST`
 
-`VALIDATE_FIRST` means: independently confirm Disease and applicability; if safe and
-technically possible, try this Experimental Protocol first through the signed treatment
-path. If it is inapplicable, unsafe, unavailable, treatment fails, or verify fails, record
+`VALIDATE_FIRST` means: independently confirm Disease and applicability; when the candidate is safe, applicable and technically executable, Field MUST try this Experimental Protocol first through the signed treatment path before inventing a new treatment. If it is inapplicable, unsafe, unavailable, treatment fails, or verify fails, record
 negative validation evidence and continue independent Field diagnosis/treatment of the
 current patient. Failure of the candidate is never by itself permission to end the Case.
 
@@ -271,6 +268,53 @@ A Field Case carrying `house_directive=VALIDATE_FIRST` MUST follow this sequence
 Doctor Server attests attempted Experimental treatment against the exact-client command
 journal. A self-reported attempt without a completed signed `doctor.diagnose execute=true`
 for the same Case/candidate is not accepted as validation evidence.
+
+## Wilson Treatment Knowledge Factory
+
+Wilson is a treatment-knowledge producer, not a news summarizer.
+
+### External experience
+
+`NIGHTLY_RESEARCH` MUST mine concrete technical incidents from primary or near-primary
+sources such as issue trackers, maintainer discussions, release/fix threads, support
+forums and technical postmortems. The objective is to recover reusable chains:
+
+`symptom -> diagnosis/root cause -> treatment -> evidence that function recovered`.
+
+General news, product announcements and unverified anecdotes are not sufficient work.
+Every reviewed external incident MUST end in one of two governed outcomes:
+
+- `CANDIDATE_CREATED` / `CANDIDATE_UPDATED`: Wilson emits a structured EXPERIMENTAL
+  Protocol Candidate at 0/3, including an embedded draft Disease with diagnostic criteria,
+  treatment, functional verify, risk/automation class and source evidence URLs; or
+- `REJECTED`: Wilson records a concrete reason such as insufficient evidence, no successful
+  treatment, not applicable, unsafe, not machine-actionable, no diagnostic/verify criterion,
+  unsupported capability or duplicate knowledge.
+
+External evidence is allowed to create or strengthen a 0/3 Candidate but NEVER counts as
+1/3, 2/3 or 3/3. Only independent internal Field treatment episodes may advance validation.
+
+### Internal experience
+
+Every completed Field Case with `new_protocol_evidence=true` is mandatory Wilson material.
+Wilson MUST create/update a Protocol Candidate or explicitly reject the evidence with a
+concrete reason. A prose summary without that disposition is incomplete work.
+
+A Candidate may carry a draft Disease before that Disease exists in published Master KB.
+The draft Disease is experimental knowledge only. Field must independently establish its
+criteria before execution; publication of the Disease/Protocol remains separately governed.
+
+### Self-reproducing loop
+
+The intended loop is:
+
+`external/internal experience -> Wilson Candidate 0/3 -> House match -> VALIDATE_FIRST -> Field independent diagnosis -> Experimental treatment first -> functional verify -> Wilson validation -> 1/3 -> 2/3 -> 3/3 -> publication -> ACTIVE -> Family Doctor`.
+
+When a House-selected Candidate is confirmed applicable, safe and technically executable,
+Field MUST try that Experimental Protocol before inventing a new treatment. If it is unsafe,
+inapplicable, unavailable, execution fails or functional verify fails, record negative
+validation evidence and continue autonomous diagnosis/treatment. Candidate failure never ends
+the Case by itself.
 
 ## Wilson Experimental validation governance
 

@@ -31,6 +31,51 @@ def main():
             assert rt.house_priority_from_payload({'evidence':{'severity':'LOW'}}) == 50
             assert rt.house_priority_from_payload({'evidence':{}}) == 50
 
+            # Wilson knowledge-loop contract v2: Nightly research cannot finish
+            # with prose/news only; relevant successful incidents must be turned
+            # into Experimental 0/3 candidates or explicitly rejected.
+            ext_pid='EXP-EXT-001'; ext_disease='DISEASE-EXT-001'
+            nightly=rt.enqueue_wilson('NIGHTLY_RESEARCH',{
+                'knowledge_loop_contract_version':2,
+                'purpose':'TREATMENT_INCIDENT_MINING',
+                'research_date':'2026-09-25',
+            },'2026-09-25-contract-test')
+            assert rt.claim_wilson(nightly)
+            try:
+                rt.wilson_complete(nightly,{'summary':'news-like prose only'})
+                raise AssertionError('Nightly contract accepted prose-only result')
+            except RuntimeError as exc:
+                assert 'incident_reviews' in str(exc)
+            ext_candidate={
+                'protocol_id':ext_pid,'origin':'EXTERNAL_WILSON','disease_id':ext_disease,
+                'title':'External controlled recovery','component':'mqtt',
+                'symptoms':['subscriber stops receiving messages'],
+                'checks':['confirm broker reachable but target subscription stale'],
+                'action':'restart addon mosquitto after confirming the broker failure',
+                'verify':['original MQTT subscription receives a fresh message'],
+                'rollback':'none; restart is reversible runtime recovery',
+                'risk':'LOW','automation_class':'AUTO_SAFE',
+                'disease':{
+                    'disease_id':ext_disease,'title':'Stale MQTT broker runtime','component':'mqtt',
+                    'symptoms':['subscriber stops receiving messages'],
+                    'diagnostic_criteria':{'must':['broker path is the failed function','fresh MQTT message is not delivered']},
+                },
+                'external_evidence':[{'url':'https://github.com/example/project/issues/123','treatment_outcome':'SUCCESS'}],
+            }
+            ext_result={
+                'search_coverage':[{'source_type':'issue_tracker','queries':['mqtt restart recovery'],'sources_reviewed':1}],
+                'incident_reviews':[{
+                    'incident_key':'github-example-123','source_urls':['https://github.com/example/project/issues/123'],
+                    'treatment_outcome':'SUCCESS','applicability':'POSSIBLE',
+                    'disposition':'CANDIDATE_CREATED','protocol_id':ext_pid,
+                }],
+                'protocol_candidates':[ext_candidate],
+            }
+            out=rt.wilson_complete(nightly,ext_result,output_cursor='EXT:1')
+            assert out['status']=='DONE'
+            ext_snap=rt.store.protocol_candidate(ext_pid)
+            assert ext_snap and ext_snap['state']=='CANDIDATE' and ext_snap['validation_stage']=='0/3'
+            assert rt.conn.execute('select count(*) from doctor_v2_protocol_validation_episodes where protocol_id=?',(ext_pid,)).fetchone()[0]==0
             pid='EXP-TEST-001'; disease='DISEASE-TEST-001'; patient='patient-exp'
             rt.store.upsert_protocol_candidate(
                 protocol_id=pid,origin='INTERNAL_FIELD',disease_id=disease,
@@ -79,6 +124,16 @@ def main():
             })
             q=decided['field_queue']; assert q['house_directive']=='VALIDATE_FIRST'
             rt.set_field_legacy_case(int(q['queue_id']),101)
+            skipped={'experimental_validation':{
+                'protocol_id':pid,'independent_diagnosis_performed':True,'disease_confirmed':True,
+                'applicable':True,'attempted':False,'risk_decision':'PROCEED','treatment_result':'NOT_ATTEMPTED',
+                'verify_result':'NOT_RUN','continued_case_diagnosis':True,'reason':'wanted to improvise first','evidence':{},
+            }}
+            try:
+                rt.normalize_field_validation_result(101,patient,skipped)
+                raise AssertionError('VALIDATE_FIRST was allowed to skip a safe applicable candidate')
+            except ValueError as exc:
+                assert 'MUST be attempted' in str(exc)
             result={'experimental_validation':{
                 'protocol_id':pid,'independent_diagnosis_performed':True,'disease_confirmed':True,
                 'applicable':True,'attempted':True,'risk_decision':'PROCEED','treatment_result':'FAILED',

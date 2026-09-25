@@ -1,6 +1,6 @@
 {
   "suite_name": "Suzie Doctor Suite",
-  "suite_version": "0.1.13-dev",
+  "suite_version": "0.1.14-dev",
   "app_version": "0.2.70-dev",
   "connector": {
     "version": "0.1.7-dev",
@@ -9,7 +9,7 @@
     "schema_version": 1
   },
   "skill": {
-    "version": "0.1.10-dev",
+    "version": "0.1.11-dev",
     "schema_version": 1,
     "canonical_core": true,
     "connector_interface_version": 1
@@ -80,7 +80,10 @@
       "single_mutation_per_client": true,
       "repair_reconciliation": true,
       "semantic_repair_identity": true,
-      "preflight_rejection_is_not_treatment_attempt": true
+      "preflight_rejection_is_not_treatment_attempt": true,
+      "wilson_treatment_incident_mining": true,
+      "wilson_candidate_contract_required": true,
+      "field_validate_first_mandatory_when_applicable": true
     },
     "protocol_admission": {
       "legacy_statuses_grandfathered": true,

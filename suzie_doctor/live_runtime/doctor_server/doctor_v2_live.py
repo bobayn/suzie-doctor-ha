@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from doctor_v2_store import DoctorV2Store
+from protocol_factory import build_card as build_generated_protocol_card
 
 TERMINAL_CASE_STATES = {"RESOLVED","FAILED","HUMAN_REQUIRED","CANCELLED"}
 
@@ -714,6 +715,8 @@ class DoctorV2Runtime:
                 "match_reasons":reasons,
                 "candidate":{
                     "title":candidate.get("title"),
+                    "component":candidate.get("component"),
+                    "disease":candidate.get("disease"),
                     "symptoms":candidate.get("symptoms"),
                     "checks":candidate.get("checks"),
                     "action":candidate.get("action"),
@@ -798,6 +801,14 @@ class DoctorV2Runtime:
             raise ValueError("Experimental treatment attempt requires risk_decision=PROCEED")
         if treatment_result in {"SUCCESS","FAILED"} and not attempted:
             raise ValueError("treatment result requires attempted=true")
+        if disease_confirmed and applicable:
+            if risk_decision=="NOT_ASSESSED":
+                raise ValueError("confirmed applicable VALIDATE_FIRST candidate requires Field risk assessment")
+            if risk_decision=="PROCEED" and not attempted:
+                if treatment_result not in {"UNAVAILABLE","BLOCKED"}:
+                    raise ValueError("safe applicable VALIDATE_FIRST candidate MUST be attempted before creative Field treatment")
+                if not str(raw.get("reason") or "").strip():
+                    raise ValueError("unavailable/blocked VALIDATE_FIRST candidate requires concrete reason")
         success=(treatment_result=="SUCCESS" and verify_result=="PASS")
         verified=verify_result in {"PASS","FAIL"}
         continued=raw.get("continued_case_diagnosis")
@@ -837,6 +848,7 @@ class DoctorV2Runtime:
         if existing:
             return int(existing[0])
         batch={
+            "knowledge_loop_contract_version":2,
             "reason":"EXPERIMENTAL_FIELD_VALIDATION",
             "case_id":int(case_id),
             "required_validations":[dict(validation)],
@@ -901,10 +913,160 @@ class DoctorV2Runtime:
         if not r:return None
         d=dict(r); d["batch"]=self._loads(d.pop("batch_json",None)); d["result"]=self._loads(d.pop("result_json",None)); return d
 
+    @staticmethod
+    def _wilson_candidate_required_fields(item:dict[str,Any])->list[str]:
+        missing=[]
+        for key in ("protocol_id","disease_id","title","component","action"):
+            if not str(item.get(key) or "").strip():
+                missing.append(key)
+        for key in ("symptoms","checks","verify"):
+            value=item.get(key)
+            if not isinstance(value,list) or not [x for x in value if str(x).strip()]:
+                missing.append(key)
+        risk=str(item.get("risk") or "").upper().strip()
+        if risk not in {"LOW","MEDIUM","HIGH"}:
+            missing.append("risk")
+        auto=str(item.get("automation_class") or "").upper().strip()
+        if auto not in {"AUTO_SAFE","CONFIRM_REQUIRED","DIAGNOSTIC_ONLY"}:
+            missing.append("automation_class")
+        return missing
+
+    @staticmethod
+    def _wilson_validate_disease_snapshot(item:dict[str,Any])->None:
+        disease=item.get("disease")
+        if not isinstance(disease,dict):
+            raise RuntimeError("Experimental candidate requires embedded disease draft")
+        disease_id=str(item.get("disease_id") or "").strip()
+        if str(disease.get("disease_id") or "").strip()!=disease_id:
+            raise RuntimeError("candidate disease.disease_id must equal disease_id")
+        if not str(disease.get("title") or "").strip():
+            raise RuntimeError("candidate disease draft requires title")
+        if not str(disease.get("component") or item.get("component") or "").strip():
+            raise RuntimeError("candidate disease draft requires component")
+        criteria=disease.get("diagnostic_criteria")
+        if not isinstance(criteria,dict):
+            raise RuntimeError("candidate disease draft requires diagnostic_criteria")
+        must=[x for x in (criteria.get("must") or []) if str(x).strip()]
+        if not must:
+            raise RuntimeError("candidate disease diagnostic_criteria.must cannot be empty")
+
+    def _validate_wilson_knowledge_contract(
+        self, *, mode:str, batch:dict[str,Any], result:dict[str,Any]
+    )->None:
+        version=int(batch.get("knowledge_loop_contract_version") or 1)
+        if version<2:
+            return
+        candidates=[x for x in (result.get("protocol_candidates") or []) if isinstance(x,dict)]
+        candidate_ids=set()
+        for item in candidates:
+            missing=self._wilson_candidate_required_fields(item)
+            if missing:
+                raise RuntimeError("Wilson protocol_candidate missing/invalid: "+",".join(missing))
+            pid=str(item.get("protocol_id") or "").strip()
+            if pid in candidate_ids:
+                raise RuntimeError(f"duplicate Wilson protocol_id in result: {pid}")
+            candidate_ids.add(pid)
+            self._wilson_validate_disease_snapshot(item)
+            disease=dict(item.get("disease") or {})
+            approval_key=f"{str(item.get('disease_id') or '')}|{pid}"
+            try:
+                generated=build_generated_protocol_card(
+                    disease, item, approved_keys={approval_key}
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Wilson candidate {pid} cannot compile: {type(exc).__name__}: {exc}") from exc
+            factory=generated.get("factory") if isinstance(generated.get("factory"),dict) else {}
+            if not bool(factory.get("mapped")) or not bool(factory.get("complete_mapping")) or not (generated.get("treatment") or []):
+                raise RuntimeError(
+                    f"Wilson candidate {pid} is not machine-executable: "
+                    f"{factory.get('mapping_reason') or factory.get('blocker_class') or 'no complete treatment mapping'}"
+                )
+            origin=str(item.get("origin") or ("EXTERNAL_WILSON" if mode=="NIGHTLY_RESEARCH" else "INTERNAL_FIELD")).upper()
+            if mode=="NIGHTLY_RESEARCH" and origin!="EXTERNAL_WILSON":
+                raise RuntimeError("nightly research candidate origin must be EXTERNAL_WILSON")
+            if origin=="EXTERNAL_WILSON":
+                evidence=[x for x in (item.get("external_evidence") or []) if isinstance(x,dict)]
+                if not evidence or not any(str(x.get("url") or "").startswith(("https://","http://")) for x in evidence):
+                    raise RuntimeError("external Experimental candidate requires external_evidence URL")
+
+        if mode=="NIGHTLY_RESEARCH":
+            reviews=result.get("incident_reviews")
+            if not isinstance(reviews,list) or not reviews:
+                raise RuntimeError("NIGHTLY_RESEARCH must return non-empty incident_reviews; news summaries are not Wilson work")
+            seen=set()
+            for raw in reviews:
+                if not isinstance(raw,dict):
+                    raise RuntimeError("incident_reviews entries must be objects")
+                key=str(raw.get("incident_key") or "").strip()
+                if not key or key in seen:
+                    raise RuntimeError("each incident_review needs unique incident_key")
+                seen.add(key)
+                urls=[str(x) for x in (raw.get("source_urls") or []) if str(x).startswith(("https://","http://"))]
+                if not urls:
+                    raise RuntimeError(f"incident_review {key} requires source_urls")
+                outcome=str(raw.get("treatment_outcome") or "UNKNOWN").upper()
+                if outcome not in {"SUCCESS","FAILED","MIXED","UNKNOWN","NOT_TREATED"}:
+                    raise RuntimeError(f"incident_review {key} treatment_outcome invalid")
+                applicability=str(raw.get("applicability") or "UNKNOWN").upper()
+                if applicability not in {"APPLICABLE","POSSIBLE","NOT_APPLICABLE","UNKNOWN"}:
+                    raise RuntimeError(f"incident_review {key} applicability invalid")
+                disposition=str(raw.get("disposition") or "").upper()
+                if disposition not in {"CANDIDATE_CREATED","CANDIDATE_UPDATED","REJECTED"}:
+                    raise RuntimeError(f"incident_review {key} requires candidate/rejected disposition")
+                if disposition.startswith("CANDIDATE_"):
+                    pid=str(raw.get("protocol_id") or "").strip()
+                    if not pid or pid not in candidate_ids:
+                        raise RuntimeError(f"incident_review {key} candidate disposition must reference result.protocol_candidates")
+                else:
+                    reason=str(raw.get("rejection_reason") or "").strip()
+                    klass=str(raw.get("rejection_class") or "").upper().strip()
+                    allowed={"INSUFFICIENT_EVIDENCE","NO_SUCCESSFUL_TREATMENT","NOT_APPLICABLE","UNSAFE","NOT_MACHINE_ACTIONABLE","NO_DIAGNOSTIC_CRITERIA","NO_VERIFY_CRITERION","UNSUPPORTED_CAPABILITY","DUPLICATE"}
+                    if not reason or klass not in allowed:
+                        raise RuntimeError(f"incident_review {key} REJECTED requires rejection_class/rejection_reason")
+                if outcome=="SUCCESS" and applicability in {"APPLICABLE","POSSIBLE"} and disposition=="REJECTED":
+                    # Rejection is allowed, but Wilson must explicitly explain why a
+                    # successful external treatment cannot safely become an experiment.
+                    if len(str(raw.get("rejection_reason") or "").strip())<12:
+                        raise RuntimeError(f"incident_review {key} rejected successful treatment needs concrete reason")
+            if not isinstance(result.get("search_coverage"),list) or not result.get("search_coverage"):
+                raise RuntimeError("NIGHTLY_RESEARCH requires search_coverage")
+
+        if mode=="HOURLY_REVIEW":
+            reports=[]
+            if isinstance(batch.get("case_reports"),list):
+                reports.extend(x for x in batch.get("case_reports") if isinstance(x,dict))
+            if isinstance(batch.get("case_report"),dict):
+                reports.append({"case_id":batch.get("case_id"),"result":batch.get("case_report")})
+            evidence_cases=[]
+            for report in reports:
+                rr=report.get("result") if isinstance(report.get("result"),dict) else report
+                if isinstance(rr,dict) and rr.get("new_protocol_evidence") is True:
+                    evidence_cases.append(str(report.get("case_id") or batch.get("case_id") or ""))
+            if evidence_cases:
+                reviews=[x for x in (result.get("case_reviews") or []) if isinstance(x,dict)]
+                by_case={str(x.get("case_id") or ""):x for x in reviews}
+                for cid in evidence_cases:
+                    review=by_case.get(cid)
+                    if not review:
+                        raise RuntimeError(f"Wilson must review new_protocol_evidence Case {cid}")
+                    disposition=str(review.get("disposition") or "").upper()
+                    if disposition not in {"CANDIDATE_CREATED","CANDIDATE_UPDATED","REJECTED"}:
+                        raise RuntimeError(f"Case {cid} protocol evidence requires candidate/rejected disposition")
+                    if disposition.startswith("CANDIDATE_"):
+                        pid=str(review.get("protocol_id") or "").strip()
+                        if not pid or pid not in candidate_ids:
+                            raise RuntimeError(f"Case {cid} candidate disposition must reference result.protocol_candidates")
+                    elif not str(review.get("rejection_reason") or "").strip():
+                        raise RuntimeError(f"Case {cid} rejected protocol evidence requires rejection_reason")
+
     def wilson_complete(self, job_id:int, result:dict[str,Any], output_cursor:str|None=None, *, failed:bool=False)->dict[str,Any]:
         r=self.conn.execute("select * from doctor_v2_wilson_jobs where wilson_job_id=?",(int(job_id),)).fetchone()
         if not r or r["status"]!="CLAIMED": raise RuntimeError("Wilson job is not claimed")
         batch=self._loads(r["batch_json"])
+        if not failed:
+            self._validate_wilson_knowledge_contract(
+                mode=str(r["mode"] or ""), batch=batch, result=result
+            )
         required=[x for x in (batch.get("required_validations") or []) if isinstance(x,dict)]
         validations=[x for x in (result.get("validations") or []) if isinstance(x,dict)]
         if required and not failed:
@@ -935,15 +1097,11 @@ class DoctorV2Runtime:
                         origin=str(item.get("origin") or ("EXTERNAL_WILSON" if r["mode"]=="NIGHTLY_RESEARCH" else "INTERNAL_FIELD")).upper()
                         if origin not in {"INTERNAL_FIELD","EXTERNAL_WILSON"}:
                             origin="INTERNAL_FIELD"
-                        state="CANDIDATE" if origin=="EXTERNAL_WILSON" else "FIELD_TESTING"
-                        self.conn.execute(
-                            """insert into doctor_v2_protocol_candidates(protocol_id,origin,state,disease_id,candidate_json)
-                               values(?,?,?,?,?)
-                               on conflict(protocol_id) do update set
-                                 disease_id=coalesce(excluded.disease_id,doctor_v2_protocol_candidates.disease_id),
-                                 candidate_json=excluded.candidate_json,
-                                 updated_at=CURRENT_TIMESTAMP""",
-                            (pid,origin,state,item.get("disease_id"),self._j(item)),
+                        self.store.upsert_protocol_candidate(
+                            protocol_id=pid,
+                            origin=origin,
+                            disease_id=str(item.get("disease_id") or "") or None,
+                            candidate=item,
                         )
             for item in validations:
                 source=str(item.get("source") or "").upper()
@@ -1061,7 +1219,13 @@ class DoctorV2Runtime:
         rows=[dict(r) for r in self.conn.execute("select case_id,client_id,source_key,summary,disease_id,state,outcome,result_json,updated_at from doctor_cases where outcome is not null and case_id>? order by case_id",(cursor,))]
         if not rows:return None
         for r in rows:r["result"]=self._loads(r.pop("result_json",None))
-        return {"cursor_from":cursor,"cursor_to":max(r["case_id"] for r in rows),"case_reports":rows}
+        return {
+            "knowledge_loop_contract_version":2,
+            "reason":"FIELD_CASE_REPORT_REVIEW",
+            "cursor_from":cursor,
+            "cursor_to":max(r["case_id"] for r in rows),
+            "case_reports":rows,
+        }
 
     def recover_stranded_house_wilson(self)->list[dict[str,Any]]:
         recovered=[]

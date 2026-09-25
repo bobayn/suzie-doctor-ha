@@ -1,3 +1,14 @@
+## Self-reproducing treatment knowledge loop — 2026-09-25
+
+- Wilson `NIGHTLY_RESEARCH` is now treatment-incident mining, not general news/research: every reviewed external incident must become an executable EXPERIMENTAL candidate or carry a structured rejection reason.
+- New Wilson knowledge-loop contract v2 requires `search_coverage`, `incident_reviews`, and governed `protocol_candidates`; prose-only completion is rejected.
+- External evidence may create/strengthen a 0/3 candidate but never earns validation credit.
+- Verified Field one-shot evidence must be converted to a candidate or explicitly rejected; it can no longer disappear into a prose Wilson summary.
+- Candidates must include an embedded draft Disease with diagnostic criteria and must compile to a complete machine treatment through Protocol Factory.
+- Experimental candidates may execute against their draft Disease before Master KB publication; this does not publish the Disease or grant Family Doctor authority.
+- `VALIDATE_FIRST` is now enforced: once Field independently confirms Disease/applicability and decides `PROCEED`, the selected Experimental candidate must be attempted first unless it is concretely unavailable/blocked.
+- Three independent internal verified successes still progress 1/3 -> 2/3 -> 3/3 -> publication review; no candidate becomes ACTIVE directly.
+
 ## Doctor Call Lab accessibility hardening — 2026-09-25
 
 - Dedicated Doctor Chromium identity now follows its unique user-data profile across Chromium helper/renderer PIDs instead of requiring exact `browser.pid` ownership for X11/AT-SPI targets.

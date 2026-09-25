@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.26-v2-dev"
+SERVER_VERSION = "0.2.27-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -2017,7 +2017,21 @@ class DoctorServer:
         else:
             disease=self.knowledge.disease(str(disease_id))
             if disease is None:
-                return None,"disease_not_found",candidate
+                draft=raw.get("disease") if isinstance(raw.get("disease"),dict) else None
+                if not draft or str(draft.get("disease_id") or "").strip()!=str(disease_id):
+                    return None,"disease_not_found_and_no_matching_draft",candidate
+                criteria=draft.get("diagnostic_criteria") if isinstance(draft.get("diagnostic_criteria"),dict) else {}
+                must=[str(x).strip() for x in (criteria.get("must") or []) if str(x).strip()]
+                if not str(draft.get("title") or "").strip() or not must:
+                    return None,"experimental_disease_draft_incomplete",candidate
+                disease={
+                    "disease_id":str(disease_id),
+                    "title":str(draft.get("title") or raw.get("title") or disease_id),
+                    "component":str(draft.get("component") or raw.get("component") or "unknown"),
+                    "symptoms":list(draft.get("symptoms") or raw.get("symptoms") or []),
+                    "diagnostic_criteria":dict(criteria),
+                    "experimental_draft":True,
+                }
             approval_key=f"{disease_id}|{raw.get('protocol_id')}"
             try:
                 generated=build_generated_protocol_card(
@@ -2385,6 +2399,7 @@ class DoctorServer:
                     text="confirmed_disease_id does not match Experimental Protocol"
                 )
             confirmed = bool(confirmed_id == disease_id)
+            disease_draft = candidate_body.get("disease") if isinstance(candidate_body.get("disease"),dict) else {}
             payload: dict[str, Any] = {
                 "result": "EXPERIMENTAL_REQUIRES_CONFIRMED_DISEASE",
                 "request_id": clean_text(body.get("request_id"), 128) or str(uuid4()),
@@ -2395,9 +2410,11 @@ class DoctorServer:
                 "routing": "FIELD_EXPERIMENTAL_VALIDATION",
                 "disease": {
                     "disease_id": disease_id,
-                    "title": candidate_body.get("title"),
-                    "component": candidate_body.get("component"),
-                    "diagnosis_status": "EXPERIMENTAL",
+                    "title": candidate_body.get("title") or disease_draft.get("title"),
+                    "component": candidate_body.get("component") or disease_draft.get("component"),
+                    "diagnostic_criteria": safe_structured(disease_draft.get("diagnostic_criteria") or {}),
+                    "symptoms": safe_structured(candidate_body.get("symptoms") or disease_draft.get("symptoms") or []),
+                    "diagnosis_status": "EXPERIMENTAL_DRAFT" if disease_draft else "EXPERIMENTAL",
                     "confidence": None,
                 },
                 "experimental_protocol": {
