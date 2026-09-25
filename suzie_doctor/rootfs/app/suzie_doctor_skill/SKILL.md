@@ -86,7 +86,7 @@ Core does not decide whether the treatment idea is medically correct; it enforce
 mechanical safety envelope.
 
 The initial semantic Field action catalog is intentionally small: `integration.reload`,
-`addon.restart`, `core.restart`, and `host.reboot`. Connector Core maps these to existing
+`mount.reload`, `addon.restart`, `core.restart`, and `host.reboot`. Connector Core maps these to existing
 structured ProtocolEngine primitives. Each action publishes reversibility, blast radius,
 checkpoint requirement, rollback availability, exact-target fields, attempt limit and cooldown.
 There is still no arbitrary shell, eval, Python or generic service-call primitive.
@@ -106,6 +106,12 @@ Doctor Core MUST reject the request when exact client/Case binding is wrong, the
 is not allowlisted, the Suite is incompatible, an owner absolute prohibition matches, a
 required checkpoint is missing, the same one-shot action was already completed in the
 Case, or mandatory verification cannot be expressed through a safe diagnostic primitive.
+
+Field MUST obey the advertised mechanical policy exactly. If `rollback_available=false`,
+use `rollback=[]`; if `checkpoint_required=false`, do not invent a checkpoint. A request
+rejected before a signed package is issued is a **preflight/policy rejection**, not a
+treatment attempt and not evidence that the chosen treatment failed. Correct the request
+shape and retry only if the medical decision remains safe and applicable.
 
 The resulting package is `FIELD_ONE_SHOT`: client-bound, Case-bound by the command path,
 short-lived, one-action only, and executable only by Field Suzie. It is not an ACTIVE or
@@ -192,11 +198,14 @@ For a trigger with `terminal_resolution_required=true`, House MUST NOT choose `O
 `RECHECK_LATER`, or `IGNORE_AS_NOISE`. House must either `DISPATCH_SUZIE` for smart Field
 resolution or use `HUMAN_ACTION_REQUIRED` when owner action is genuinely necessary.
 
-A Field Case for an active Repair may close SUCCESS/RESOLVED only after an exact
-`ha.repairs.list` verification proves that the original `domain + issue_id` is absent.
-Process state, configuration changes, or a plausible explanation are not sufficient. If
-the Repair remains active, Field continues diagnosis or returns a truthful non-success
-outcome.
+A Field Case for an active Repair may close SUCCESS/RESOLVED only after the original
+functional Repair criterion is absent in fresh `ha.repairs.list` evidence. `issue_id` is
+not always a stable identity. When Home Assistant exposes a stable object placeholder such
+as `reference`, `entry_id`, `device_id`, `entity_id`, or `slug`, Doctor uses semantic
+identity (`domain + translation_key + identity placeholders`) and a rotated `issue_id` does
+**not** count as resolution. Process state, configuration changes, or a plausible explanation
+are not sufficient. If the semantic Repair remains active, Field continues diagnosis or
+returns a truthful non-success outcome.
 
 ## House Experimental Candidate routing
 

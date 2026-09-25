@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.19-v2-dev"
+SERVER_VERSION = "0.2.20-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -957,16 +957,22 @@ class DoctorServer:
                 "one-shot request under evidence.field_action_request with action, exact_target, reason, "
                 "evidence, expected_result, verify_criterion, checkpoint/rollback/fallback. The MCP maps "
                 "this to the same canonical doctor.action.request Core path. Never bypass Doctor Core and "
-                "never end the Case HUMAN/FAILED merely because the new tool name is absent from Web schema."
+                "never end the Case HUMAN/FAILED merely because the new tool name is absent from Web schema. "
+                "Before requesting an action, obey its advertised Field policy exactly: when rollback_available=false "
+                "send rollback=[]; when checkpoint_required=false do not invent a checkpoint. A pre-signature policy "
+                "rejection/HTTP 4xx is NOT a treatment attempt and does not prove the treatment failed; correct the "
+                "structured request and retry if the medical decision remains safe and applicable."
             )
             active_repair=problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else None
             if active_repair:
                 prompt += (
                     f" Active Home Assistant Repair: domain={active_repair.get('domain')} "
                     f"issue_id={active_repair.get('issue_id')}. This is an unresolved Doctor task, not an "
-                    "observation. Diagnose and resolve it safely. Before SUCCESS you MUST call ha.repairs.list "
-                    "and verify that this exact domain+issue_id is absent. If it remains active, do not report "
-                    "SUCCESS; continue diagnosis or use HUMAN_REQUIRED when owner action is genuinely required."
+                    "observation. Diagnose and resolve it safely. Before SUCCESS you MUST verify the original "
+                    "functional criterion. For a semantic Repair identity, a changed issue_id does NOT mean resolution: "
+                    "the same domain + translation_key + identity placeholders must be absent. If the semantic Repair "
+                    "remains active, do not report SUCCESS; continue diagnosis or use HUMAN_REQUIRED only when owner "
+                    "action is genuinely required."
                 )
             job = await self._call_lab_run(
                 method="cdp",

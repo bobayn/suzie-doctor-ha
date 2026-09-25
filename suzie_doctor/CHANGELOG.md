@@ -1,3 +1,9 @@
+## Doctor semantic Repair contract — 2026-09-25
+
+- Canonical Skill now includes `mount.reload`, semantic Repair identity, and the rule that a rotated HA `issue_id` is not resolution when the same semantic Repair remains active.
+- Field action policy rejections that occur before a signed package are explicitly not treatment attempts; Field must correct the request shape and may retry safely.
+- Field dispatch prompt now requires advertised rollback/checkpoint policy and semantic Repair verification.
+
 ## Doctor semantic Repair attestation and active-Field dedup — 2026-09-25
 
 - Server-side Repair SUCCESS attestation now matches semantic Repair identity rather than trusting transient issue IDs.
