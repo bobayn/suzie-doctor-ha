@@ -1,3 +1,8 @@
+## Doctor server fingerprint guard — 2026-09-25
+
+- Doctor Server now prefers the primary non-Repair `evidence.problem_key` for Patient Journal fingerprinting, even when an older client mistakenly promotes a related Repair key to the top level.
+- This prevents unrelated runtime findings from occupying a Repair fingerprint and blocking canonical Repair reconciliation.
+
 ## Doctor House fairness and fingerprint ownership — 2026-09-25
 
 - Primary findings now retain their own `problem_key`; related Repairs are context only and cannot hijack deduplication fingerprints.

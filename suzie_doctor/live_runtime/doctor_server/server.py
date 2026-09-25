@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.9-v2-dev"
+SERVER_VERSION = "0.2.10-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -2239,6 +2239,20 @@ class DoctorServer:
             "PATIENT_JOURNAL_HOUSE_REVIEW",
         }
         field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"
+        evidence_for_journal = body.get("evidence") if isinstance(body.get("evidence"), dict) else {}
+        journal_fingerprint = (
+            clean_text(body.get("fingerprint"), 200)
+            or clean_text(body.get("problem_key"), 200)
+            or None
+        )
+        # The primary evidence owns the journal fingerprint.  A stale/older client
+        # may accidentally promote a related Repair problem_key to the top level;
+        # never let that make an unrelated runtime finding block Repair resolution.
+        if (
+            str(evidence_for_journal.get("kind") or "") != "repair"
+            and clean_text(evidence_for_journal.get("problem_key"), 200)
+        ):
+            journal_fingerprint = clean_text(evidence_for_journal.get("problem_key"), 200)
         if field_case_route:
             try:
                 field_case_id = int(body.get("field_case_id"))
@@ -2262,7 +2276,7 @@ class DoctorServer:
                         "evidence": safe_structured(body.get("evidence") or body),
                     },
                     event_type="OBSERVATION",
-                    fingerprint=(clean_text(body.get("fingerprint"), 200) or clean_text(body.get("problem_key"), 200) or None),
+                    fingerprint=journal_fingerprint,
                 )
                 payload["result"] = "PATIENT_JOURNAL_HOUSE"
                 payload["patient_journal"] = journal
@@ -2362,7 +2376,7 @@ class DoctorServer:
                     "evidence": safe_structured(body.get("evidence") or body),
                 },
                 event_type="OBSERVATION",
-                fingerprint=(clean_text(body.get("fingerprint"), 200) or clean_text(body.get("problem_key"), 200) or None),
+                fingerprint=journal_fingerprint,
             )
             payload["result"] = "PATIENT_JOURNAL_HOUSE"
             payload["patient_journal"] = journal

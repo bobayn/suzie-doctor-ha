@@ -72,6 +72,9 @@ def main():
     assert 'doctor_v2_house_overbudget_recovered' in extension
     assert 'scheduler_yield_until' in (LIVE/'doctor_v2_schema.sql').read_text()
     assert 'Related findings are' in app and 'context only' in app
+    assert 'journal_fingerprint = (' in server
+    assert 'The primary evidence owns the journal fingerprint' in server
+    assert 'fingerprint=journal_fingerprint' in server
     assert 'FIELD_CASE_DIAGNOSTIC' in doctor_mcp
     assert 'evidence["field_case_id"] = int(state["case_id"])' in doctor_mcp
     assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server
