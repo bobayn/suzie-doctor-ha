@@ -276,6 +276,42 @@ class DoctorV2Runtime:
             r=self.conn.execute("select * from doctor_v2_house_jobs where house_job_id=?",(int(job_id),)).fetchone()
             return dict(r) if r else None
 
+    def preempt_house_for_higher_priority(self, job_id:int, dialog_id:str)->dict[str,Any]|None:
+        current=self.conn.execute(
+            "select house_job_id,priority,status from doctor_v2_house_jobs where house_job_id=?",
+            (int(job_id),),
+        ).fetchone()
+        if not current or str(current["status"])!="CLAIMED":
+            return None
+        higher=self.conn.execute(
+            "select house_job_id,priority from doctor_v2_house_jobs where status='WAITING' and priority>? order by priority desc,house_job_id limit 1",
+            (int(current["priority"]),),
+        ).fetchone()
+        if not higher:
+            return None
+        assignment=f"house:{int(job_id)}"
+        with self.conn:
+            changed=self.conn.execute(
+                "update doctor_v2_house_jobs set status='WAITING',claimed_dialog_id=NULL,claimed_at=NULL where house_job_id=? and status='CLAIMED' and claimed_dialog_id=?",
+                (int(job_id),str(dialog_id)),
+            ).rowcount
+            if changed!=1:
+                return None
+            self.conn.execute(
+                "update doctor_v2_web_dialogs set state='CLOSED_NATURAL',closed_at=CURRENT_TIMESTAMP where dialog_id=? and state='OPEN'",
+                (str(dialog_id),),
+            )
+            self.conn.execute(
+                "update doctor_v2_role_slots set state='FREE',assignment_id=NULL,updated_at=CURRENT_TIMESTAMP where role='HOUSE' and assignment_id=? and state='BUSY'",
+                (assignment,),
+            )
+        return {
+            "preempted_job_id":int(job_id),
+            "preempted_priority":int(current["priority"]),
+            "higher_job_id":int(higher["house_job_id"]),
+            "higher_priority":int(higher["priority"]),
+        }
+
     @staticmethod
     def _experimental_text(value: Any) -> str:
         try:

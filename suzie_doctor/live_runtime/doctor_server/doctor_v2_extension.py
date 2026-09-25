@@ -463,6 +463,16 @@ class V2Extension:
         try:
             result=self.runtime.dialog_end(dialog_id,ordinal,"WATCHDOG_10M")
         except Exception:return
+        if role=="HOUSE":
+            try:
+                job_id=int(assignment.split(":",1)[1])
+            except Exception:
+                job_id=0
+            preempt=(self.runtime.preempt_house_for_higher_priority(job_id,dialog_id) if job_id else None)
+            if preempt:
+                self.server.db.event("doctor_v2_house_priority_preempted",None,preempt)
+                self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_preempted_house_{job_id}")
+                return
         if result.get("continue_same_dialog"):
             nxt=self.runtime.open_session(dialog_id,{"continuation":True,"assignment_id":assignment})
             url=self._project_url(role).rstrip("/")+"/c/"+dialog_id

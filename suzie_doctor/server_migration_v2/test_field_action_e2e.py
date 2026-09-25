@@ -64,6 +64,8 @@ def main():
     assert 'canonical_tool' in doctor_mcp and 'doctor.action.request' in doctor_mcp
     assert 'schema, NOT MISSING_CAPABILITY' in server
     assert 'evidence.field_action_request' in server
+    assert 'preempt_house_for_higher_priority' in extension
+    assert 'doctor_v2_house_priority_preempted' in extension
     assert 'FIELD_CASE_DIAGNOSTIC' in doctor_mcp
     assert 'evidence["field_case_id"] = int(state["case_id"])' in doctor_mcp
     assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server
@@ -109,6 +111,20 @@ def main():
         assert not changed['deduplicated'] and changed['house_job_id']!=a['house_job_id']
         current=rt.conn.execute("select current_field_case_id from doctor_v2_resolutions where patient_id='patient-123456' and fingerprint='repair:hacs:x'").fetchone()[0]
         assert current is None
+    with TemporaryDirectory() as td:
+        rt=DoctorV2Runtime(Path(td)/'priority.db',LIVE/'doctor_v2_schema.sql')
+        low=rt.journal_to_house('patient-priority','test',{'evidence':{'kind':'runtime','problem_key':'low'}},fingerprint='low',priority=50)
+        low_id=int(low['house_job_id'])
+        slot=rt.role_acquire('HOUSE',f'house:{low_id}')
+        assert slot=='house-1'
+        rt.dialog_open('dlg-low','HOUSE',f'house:{low_id}','house',1)
+        assert rt.claim_house(low_id,'dlg-low')
+        high=rt.journal_to_house('patient-priority','test',{'evidence':{'kind':'repair','problem_key':'high'}},fingerprint='high',priority=85)
+        pre=rt.preempt_house_for_higher_priority(low_id,'dlg-low')
+        assert pre and pre['higher_job_id']==int(high['house_job_id']) and pre['higher_priority']==85
+        assert rt.conn.execute('select status from doctor_v2_house_jobs where house_job_id=?',(low_id,)).fetchone()[0]=='WAITING'
+        assert rt.conn.execute("select state from doctor_v2_role_slots where slot_id='house-1'").fetchone()[0]=='FREE'
+        assert rt.conn.execute("select state from doctor_v2_web_dialogs where dialog_id='dlg-low'").fetchone()[0]=='CLOSED_NATURAL'
     asyncio.run(engine_checks())
     print('FIELD_ACTION_E2E_TEST_PASS')
 

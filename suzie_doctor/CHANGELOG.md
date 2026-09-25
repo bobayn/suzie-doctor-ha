@@ -1,3 +1,9 @@
+## Doctor House priority preemption — 2026-09-25
+
+- At a 10-minute House session boundary, a claimed lower-priority House job yields the single House slot when a strictly higher-priority waiting job exists.
+- The preempted job returns to WAITING, its completed dialog/session history is preserved, and it is redispatched later; no House decision is rewritten.
+- This prevents long low-priority investigations from starving terminal Repairs and other higher-priority Doctor work.
+
 ## Doctor stale-surface compatibility transport — 2026-09-25
 
 - Field Web sessions with cached MCP schemas can use existing `doctor.diagnose` with `execute=true` and `evidence.field_action_request`; Doctor MCP maps it to the same canonical `doctor.action.request` Core path.
