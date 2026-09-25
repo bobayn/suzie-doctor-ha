@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.20-v2-dev"
+SERVER_VERSION = "0.2.21-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -2611,8 +2611,63 @@ class DoctorServer:
                 with self.v2_ext.runtime.conn:
                     self.v2_ext.runtime.conn.execute("update doctor_v2_resolutions set state='RESOLVED',resolved_at=CURRENT_TIMESTAMP,next_recheck_at=NULL,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(client_id,str(row["fingerprint"])))
                 resolved.append(str(row["fingerprint"]))
-        self.db.event("repair_reconcile",client_id,{"active":len(active_keys),"routed":len(routed),"resolved":len(resolved)})
-        return self.signed({"result":"RECONCILED","active":len(active_keys),"routed":routed,"resolved":resolved})
+
+        retired=[]
+        retirement_rows=self.v2_ext.runtime.conn.execute(
+            """select distinct c.case_id,c.state,c.dialog_id,r.fingerprint
+               from doctor_v2_resolutions r
+               join doctor_v2_patient_events e on e.patient_id=r.patient_id and e.fingerprint=r.fingerprint
+               join doctor_v2_house_jobs h on h.trigger_event_id=e.event_id
+               join doctor_v2_house_decisions d on d.house_job_id=h.house_job_id
+               join doctor_v2_field_queue q on q.source_house_decision_id=d.decision_id
+               join doctor_cases c on c.case_id=q.legacy_case_id
+               where r.patient_id=? and r.terminal_resolution_required=1 and r.state='RESOLVED'
+                 and c.state not in ('RESOLVED','HUMAN_REQUIRED','FAILED','CANCELLED')""",
+            (client_id,),
+        ).fetchall()
+        for row in retirement_rows:
+            case_id=int(row["case_id"])
+            commands=self.command_bridge.conn.execute(
+                """select tool_name,status,arguments_json from doctor_client_commands
+                   where case_id=? and status not in ('COMPLETED','FAILED','CANCELLED')""",
+                (case_id,),
+            ).fetchall()
+            active_mutation=False
+            for command in commands:
+                tool=str(command["tool_name"] or "")
+                if tool=="doctor.action.request":
+                    active_mutation=True; break
+                if tool=="doctor.diagnose":
+                    try:
+                        args=json.loads(command["arguments_json"] or "{}")
+                    except Exception:
+                        args={}
+                    if bool(args.get("execute")):
+                        active_mutation=True; break
+            if active_mutation:
+                continue
+            retired_case=self.journal.retire_case(
+                case_id,
+                reason="REPAIR_RESOLUTION_SUPERSEDED",
+                actor="doctor_reconcile",
+                detail={"fingerprint":str(row["fingerprint"] or "")},
+            )
+            with self.v2_ext.runtime.conn:
+                self.v2_ext.runtime.conn.execute(
+                    "update doctor_v2_field_queue set status='CANCELLED',updated_at=CURRENT_TIMESTAMP where legacy_case_id=? and status in ('WAITING','ASSIGNED','CLAIMED')",
+                    (case_id,),
+                )
+                self.v2_ext.runtime.conn.execute(
+                    "update doctor_v2_resolutions set current_field_case_id=NULL,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=? and current_field_case_id=?",
+                    (client_id,str(row["fingerprint"] or ""),case_id),
+                )
+            retired.append({"case_id":case_id,"fingerprint":str(row["fingerprint"] or "")})
+            dialog_id=str(retired_case.get("dialog_id") or "")
+            if dialog_id:
+                self._spawn(self._close_web_dialog_later(dialog_id,1.0),f"retire_repair_case_{case_id}")
+
+        self.db.event("repair_reconcile",client_id,{"active":len(active_keys),"routed":len(routed),"resolved":len(resolved),"retired":len(retired)})
+        return self.signed({"result":"RECONCILED","active":len(active_keys),"routed":routed,"resolved":resolved,"retired":retired})
 
     async def customer_feed(self, request: web.Request) -> web.Response:
         body, client = await self.authenticated_body(request)

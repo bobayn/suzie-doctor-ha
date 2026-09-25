@@ -134,6 +134,8 @@ def main():
     assert 'House HUMAN_ACTION_REQUIRED requires human_requirement.type and reason' in extension
     assert 'MISSING_CAPABILITY requires exact human_requirement.capability' in extension
     assert 'House MISSING_CAPABILITY conflicts with available Field action capability; re-evaluate' in extension
+    assert 'REPAIR_RESOLUTION_SUPERSEDED' in server
+    assert 'retire_case(' in (LIVE/'case_journal.py').read_text()
     with TemporaryDirectory() as td:
         b=ClientCommandBridge(Path(td)/'commands.db')
         c=b.enqueue(client_id='client123',case_id=7,tool_name='doctor.action.request',arguments={'action':{'name':'core.restart'},'exact_target':{'component':'homeassistant_core'}},trusted_context={})
@@ -161,6 +163,15 @@ def main():
         j.finish_dispatch(case_id=case['case_id'],session_id=second['session_id'],dispatch_job_id='job2',dialog_id='dlg2',conversation_url='https://chatgpt.com/c/dlg2')
         assigned=j.get_case(case['case_id'])
         assert int(assigned['dispatch_failures'])==0 and assigned['dispatch_retry_after'] is None
+    with TemporaryDirectory() as td:
+        j=CaseJournal(Path(td)/'retire.db')
+        case,created=j.escalate(client_id='client-retire',source_key='repair:old',source_request_id=None,summary='legacy repair',problem={'problem_key':'repair:old'})
+        assert created and case['state']=='FOR_SUZIE'
+        retired=j.retire_case(case['case_id'],reason='REPAIR_RESOLUTION_SUPERSEDED',detail={'fingerprint':'repair:old'})
+        assert retired['state']=='CANCELLED'
+        closed=j.get_case(case['case_id'])
+        assert closed['state']=='CANCELLED' and closed['outcome']=='CANCELLED'
+        assert closed['result']['retirement_reason']=='REPAIR_RESOLUTION_SUPERSEDED'
     with TemporaryDirectory() as td:
         j=CaseJournal(Path(td)/'missing-dialog.db')
         case,_=j.escalate(client_id='client-missing',source_key='missing:test',source_request_id=None,summary='x',problem={'x':1})

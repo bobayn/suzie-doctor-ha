@@ -1,3 +1,9 @@
+## Doctor superseded Repair Case retirement — 2026-09-25
+
+- Repair reconciliation now retires non-terminal legacy Field Cases whose Repair resolution is already `RESOLVED/superseded`, provided no active state-changing Doctor command exists.
+- Retired Cases close as `CANCELLED` with audit evidence, linked Field queue entries are cancelled, stale resolution pointers are cleared, and any remaining Web dialog is closed.
+- This prevents pre-semantic-identity Repair Cases from continuing to consume Field capacity after the canonical Repair moved to a newer semantic resolution.
+
 ## Doctor semantic Repair contract — 2026-09-25
 
 - Canonical Skill now includes `mount.reload`, semantic Repair identity, and the rule that a rotated HA `issue_id` is not resolution when the same semantic Repair remains active.

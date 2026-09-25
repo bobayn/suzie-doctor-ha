@@ -1167,6 +1167,61 @@ class CaseJournal:
             self.conn.rollback()
             raise
 
+    def retire_case(
+        self,
+        case_id: int,
+        *,
+        reason: str,
+        actor: str = "doctor_reconcile",
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._begin()
+        try:
+            row = self._case_row(int(case_id))
+            if str(row["state"]) in FINAL_CASE_STATES:
+                self.conn.commit()
+                return {"case_id": int(case_id), "already_terminal": True, "state": str(row["state"])}
+            now = iso()
+            session_id = str(row["doctor_session_id"] or "")
+            dialog_id = str(row["dialog_id"] or "")
+            result = {"retirement_reason": str(reason)}
+            if isinstance(detail, dict):
+                result.update(detail)
+            self.conn.execute(
+                """UPDATE doctor_cases
+                   SET state='CANCELLED',outcome='CANCELLED',result_json=?,
+                       claim_token_hash=NULL,lease_expires=NULL,dispatch_token=NULL,
+                       doctor_session_id=NULL,dialog_id=NULL,dialog_ref=NULL,
+                       closed_at=?,updated_at=?
+                   WHERE case_id=?""",
+                (_json(result), now, now, int(case_id)),
+            )
+            if session_id:
+                self.conn.execute(
+                    """UPDATE doctor_sessions
+                       SET status='CLOSED',current_case_id=NULL,closed_at=COALESCE(closed_at,?),
+                           updated_at=?,last_seen=?
+                       WHERE session_id=? AND current_case_id=?""",
+                    (now, now, now, session_id, int(case_id)),
+                )
+            self._event(
+                actor,
+                "CASE_RETIRED",
+                case_id=int(case_id),
+                session_id=(session_id or None),
+                detail={"reason": str(reason), **(detail or {})},
+            )
+            self.conn.commit()
+            return {
+                "case_id": int(case_id),
+                "state": "CANCELLED",
+                "dialog_id": dialog_id or None,
+                "session_id": session_id or None,
+            }
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def complete_and_next(
         self,
         *,
