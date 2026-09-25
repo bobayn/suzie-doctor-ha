@@ -775,7 +775,7 @@ class DoctorV2Runtime:
             ("WILSON","wilson:","doctor_v2_wilson_jobs","wilson_job_id"),
         ):
             slots=list(self.conn.execute(
-                "select slot_id,assignment_id from doctor_v2_role_slots where role=? and state='BUSY'",
+                "select slot_id,assignment_id,updated_at from doctor_v2_role_slots where role=? and state='BUSY'",
                 (role,),
             ))
             for slot in slots:
@@ -790,11 +790,22 @@ class DoctorV2Runtime:
                     dialog=self.current_dialog(role,assignment)
                     if dialog and str(dialog.get("state") or "")=="OPEN":
                         continue
-                # A BUSY reserved slot with a WAITING/DONE/missing job is also
-                # stranded. This can happen when the server is restarted while
-                # Web dispatch is still waiting for Call Lab/CDP and the job has
-                # not yet reached CLAIMED. Release the slot without rewriting
-                # the job; a WAITING job will be dispatched again normally.
+                elif job_status=="WAITING":
+                    # WAITING+BUSY is normal while _dispatch_new is still creating
+                    # the Web dialog.  Treat it as stranded only after the normal
+                    # Call Lab dispatch window has elapsed.  This prevents the
+                    # recovery loop from spawning duplicate pre-claim dispatches.
+                    try:
+                        slot_updated=datetime.fromisoformat(str(slot["updated_at"] or "").replace(" ","T",1))
+                        if slot_updated.tzinfo is None:
+                            slot_updated=slot_updated.replace(tzinfo=UTC)
+                        stale=(datetime.now(UTC)-slot_updated).total_seconds() >= 130
+                    except Exception:
+                        stale=True
+                    if not stale:
+                        continue
+                # A stale BUSY/WAITING slot, or BUSY slot whose job is already
+                # terminal/missing, is stranded and can be released safely.
                 with self.conn:
                     if job_status=="CLAIMED":
                         if role=="HOUSE":

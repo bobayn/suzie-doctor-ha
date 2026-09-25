@@ -147,6 +147,11 @@ def main():
             waiting=rt.next_house_waiting(); assert waiting
             wait_assignment=f"house:{int(waiting['house_job_id'])}"
             wait_slot=rt.role_acquire('HOUSE',wait_assignment); assert wait_slot == 'house-1'
+            # Fresh BUSY+WAITING is an in-flight pre-claim dispatch and must not
+            # be recovered, otherwise multiple Call Lab jobs can be spawned.
+            assert rt.recover_stranded_house_wilson()==[]
+            rt.conn.execute("update doctor_v2_role_slots set updated_at=datetime('now','-3 minutes') where slot_id='house-1'")
+            rt.conn.commit()
             wait_recovered=rt.recover_stranded_house_wilson()
             assert wait_recovered and wait_recovered[0]['assignment_id']==wait_assignment
             assert wait_recovered[0]['job_status']=='WAITING'
