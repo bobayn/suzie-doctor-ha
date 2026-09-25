@@ -66,6 +66,12 @@ def main():
     assert 'evidence.field_action_request' in server
     assert 'preempt_house_for_higher_priority' in extension
     assert 'doctor_v2_house_priority_preempted' in extension
+    assert 'house_quantum_exhausted' in extension
+    assert 'doctor_v2_house_quantum_yielded' in extension
+    assert 'recover_overbudget_house' in extension
+    assert 'doctor_v2_house_overbudget_recovered' in extension
+    assert 'scheduler_yield_until' in (LIVE/'doctor_v2_schema.sql').read_text()
+    assert 'Related findings are' in app and 'context only' in app
     assert 'FIELD_CASE_DIAGNOSTIC' in doctor_mcp
     assert 'evidence["field_case_id"] = int(state["case_id"])' in doctor_mcp
     assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server
@@ -125,6 +131,39 @@ def main():
         assert rt.conn.execute('select status from doctor_v2_house_jobs where house_job_id=?',(low_id,)).fetchone()[0]=='WAITING'
         assert rt.conn.execute("select state from doctor_v2_role_slots where slot_id='house-1'").fetchone()[0]=='FREE'
         assert rt.conn.execute("select state from doctor_v2_web_dialogs where dialog_id='dlg-low'").fetchone()[0]=='CLOSED_NATURAL'
+    with TemporaryDirectory() as td:
+        rt=DoctorV2Runtime(Path(td)/'quantum.db',LIVE/'doctor_v2_schema.sql')
+        first=rt.journal_to_house('patient-q','test',{'evidence':{'problem_key':'q1'}},fingerprint='q1',priority=85)
+        second=rt.journal_to_house('patient-q','test',{'evidence':{'problem_key':'q2'}},fingerprint='q2',priority=70)
+        first_id=int(first['house_job_id']); second_id=int(second['house_job_id'])
+        assert rt.role_acquire('HOUSE',f'house:{first_id}')=='house-1'
+        opened=rt.dialog_open('dlg-q','HOUSE',f'house:{first_id}','house',1)
+        assert rt.claim_house(first_id,'dlg-q')
+        rt.dialog_end('dlg-q',opened['ordinal'],'WATCHDOG_10M')
+        a=rt.open_session('dlg-q',{}); assert a['ordinal']==2
+        rt.dialog_end('dlg-q',a['ordinal'],'WATCHDOG_10M')
+        y=rt.house_quantum_exhausted(first_id,'dlg-q',max_sessions=2)
+        assert y and y['reason']=='HOUSE_QUANTUM_EXHAUSTED' and y['next_job_id']==second_id
+        row=rt.conn.execute('select status,scheduler_yield_until,scheduler_yield_count from doctor_v2_house_jobs where house_job_id=?',(first_id,)).fetchone()
+        assert row['status']=='WAITING' and row['scheduler_yield_until'] and int(row['scheduler_yield_count'])==1
+        nxt=rt.next_house_waiting(); assert int(nxt['house_job_id'])==second_id
+    with TemporaryDirectory() as td:
+        rt=DoctorV2Runtime(Path(td)/'legacy-overbudget.db',LIVE/'doctor_v2_schema.sql')
+        first=rt.journal_to_house('patient-o','test',{'evidence':{'problem_key':'o1'}},fingerprint='o1',priority=85)
+        second=rt.journal_to_house('patient-o','test',{'evidence':{'problem_key':'o2'}},fingerprint='o2',priority=70)
+        first_id=int(first['house_job_id']); second_id=int(second['house_job_id'])
+        assert rt.role_acquire('HOUSE',f'house:{first_id}')=='house-1'
+        opened=rt.dialog_open('dlg-o','HOUSE',f'house:{first_id}','house',1)
+        assert rt.claim_house(first_id,'dlg-o')
+        rt.dialog_end('dlg-o',opened['ordinal'],'WATCHDOG_10M')
+        a=rt.open_session('dlg-o',{}); assert a['ordinal']==2
+        rt.dialog_end('dlg-o',a['ordinal'],'WATCHDOG_10M')
+        current=rt.open_session('dlg-o',{})
+        assert current['ordinal']==3
+        rec=rt.recover_overbudget_house(max_sessions=2)
+        assert rec and rec['reason']=='HOUSE_LEGACY_OVERBUDGET' and rec['next_job_id']==second_id
+        assert rt.conn.execute('select status from doctor_v2_house_jobs where house_job_id=?',(first_id,)).fetchone()[0]=='WAITING'
+        assert rt.conn.execute("select state from doctor_v2_role_slots where slot_id='house-1'").fetchone()[0]=='FREE'
     asyncio.run(engine_checks())
     print('FIELD_ACTION_E2E_TEST_PASS')
 

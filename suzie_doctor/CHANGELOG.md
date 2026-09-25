@@ -1,3 +1,10 @@
+## Doctor House fairness and fingerprint ownership — 2026-09-25
+
+- Primary findings now retain their own `problem_key`; related Repairs are context only and cannot hijack deduplication fingerprints.
+- House scheduler persists `scheduler_yield_until` / `scheduler_yield_count` and enforces a two-session decision quantum when other House work is waiting.
+- Over-budget legacy House dialogs are recovered after restart, yielding the slot without rewriting prior House decisions.
+- Yielded House jobs automatically return after cooldown, preventing one stuck analysis from starving other unresolved Repairs.
+
 ## Doctor House priority preemption — 2026-09-25
 
 - At a 10-minute House session boundary, a claimed lower-priority House job yields the single House slot when a strictly higher-priority waiting job exists.

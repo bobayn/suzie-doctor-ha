@@ -1,7 +1,7 @@
 {
   "suite_name": "Suzie Doctor Suite",
   "suite_version": "0.1.11-dev",
-  "app_version": "0.2.65-dev",
+  "app_version": "0.2.66-dev",
   "connector": {
     "version": "0.1.5-dev",
     "interface_version": 1,

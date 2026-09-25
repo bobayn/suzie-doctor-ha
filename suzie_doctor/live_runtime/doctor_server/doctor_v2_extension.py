@@ -473,6 +473,11 @@ class V2Extension:
                 self.server.db.event("doctor_v2_house_priority_preempted",None,preempt)
                 self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_preempted_house_{job_id}")
                 return
+            quantum=(self.runtime.house_quantum_exhausted(job_id,dialog_id,max_sessions=2) if job_id else None)
+            if quantum:
+                self.server.db.event("doctor_v2_house_quantum_yielded",None,quantum)
+                self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_quantum_house_{job_id}")
+                return
         if result.get("continue_same_dialog"):
             nxt=self.runtime.open_session(dialog_id,{"continuation":True,"assignment_id":assignment})
             url=self._project_url(role).rstrip("/")+"/c/"+dialog_id
@@ -526,6 +531,12 @@ class V2Extension:
                 recovered=self.runtime.recover_stranded_house_wilson()
                 if recovered:
                     self.server.db.event("doctor_v2_stranded_assignment_recovered",None,{"items":recovered})
+                overbudget=self.runtime.recover_overbudget_house(max_sessions=2)
+                if overbudget:
+                    self.server.db.event("doctor_v2_house_overbudget_recovered",None,overbudget)
+                    dialog_id=str((self.runtime.current_dialog("HOUSE",f"house:{overbudget['job_id']}") or {}).get("dialog_id") or "")
+                    if dialog_id:
+                        self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_overbudget_house_{overbudget['job_id']}")
                 self._schedule_wilson()
                 self.sync_field_slots()
                 for item in self.runtime.expired_sessions():

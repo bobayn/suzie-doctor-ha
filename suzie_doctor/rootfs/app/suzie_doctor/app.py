@@ -759,17 +759,10 @@ class Runtime:
             generic_findings = all_generic_findings
 
         for finding in generic_findings:
+            # The primary finding owns its fingerprint/problem_key. Related findings are
+            # context only. Re-keying a runtime error to a related Repair corrupts
+            # deduplication and can make an unrelated House job block Repair resolution.
             canonical_problem_key = str(finding.get("problem_key") or "")
-            related_findings = finding.get("related_findings")
-            if isinstance(related_findings, list):
-                for related in related_findings:
-                    if (
-                        isinstance(related, dict)
-                        and str(related.get("kind") or "") == "repair"
-                        and str(related.get("problem_key") or "")
-                    ):
-                        canonical_problem_key = str(related["problem_key"])
-                        break
             remote = await self.doctor_server_diagnose(
                 {
                     "request_id": str(uuid4()),

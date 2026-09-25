@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS doctor_v2_house_jobs (
     priority INTEGER NOT NULL DEFAULT 50,
     claimed_dialog_id TEXT,
     claimed_at TEXT,
+    scheduler_yield_until TEXT,
+    scheduler_yield_count INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(patient_id, trigger_event_id),

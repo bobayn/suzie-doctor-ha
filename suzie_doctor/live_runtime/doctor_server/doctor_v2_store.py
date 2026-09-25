@@ -58,6 +58,17 @@ class DoctorV2Store:
         for name, ddl in field_migrations.items():
             if name not in field_columns:
                 self.conn.execute(ddl)
+        house_columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(doctor_v2_house_jobs)")
+        }
+        house_migrations = {
+            "scheduler_yield_until": "ALTER TABLE doctor_v2_house_jobs ADD COLUMN scheduler_yield_until TEXT",
+            "scheduler_yield_count": "ALTER TABLE doctor_v2_house_jobs ADD COLUMN scheduler_yield_count INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, ddl in house_migrations.items():
+            if name not in house_columns:
+                self.conn.execute(ddl)
         with self.conn:
             self.conn.executemany(
                 """

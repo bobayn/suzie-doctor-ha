@@ -266,34 +266,40 @@ class DoctorV2Runtime:
         return {"entries":entries,"pending_count":pending}
 
     def next_house_waiting(self) -> dict[str,Any]|None:
-        r=self.conn.execute("select * from doctor_v2_house_jobs where status='WAITING' order by priority desc,house_job_id limit 1").fetchone()
+        r=self.conn.execute(
+            """select * from doctor_v2_house_jobs
+               where status='WAITING'
+                 and (scheduler_yield_until is null or datetime(scheduler_yield_until) <= datetime('now'))
+               order by priority desc,house_job_id limit 1"""
+        ).fetchone()
         return dict(r) if r else None
 
     def claim_house(self, job_id: int, dialog_id: str) -> dict[str,Any]|None:
         with self.conn:
-            n=self.conn.execute("update doctor_v2_house_jobs set status='CLAIMED',claimed_dialog_id=?,claimed_at=CURRENT_TIMESTAMP where house_job_id=? and status='WAITING'",(dialog_id,int(job_id))).rowcount
+            n=self.conn.execute("update doctor_v2_house_jobs set status='CLAIMED',claimed_dialog_id=?,claimed_at=CURRENT_TIMESTAMP,scheduler_yield_until=NULL where house_job_id=? and status='WAITING'",(dialog_id,int(job_id))).rowcount
             if n!=1: return None
             r=self.conn.execute("select * from doctor_v2_house_jobs where house_job_id=?",(int(job_id),)).fetchone()
             return dict(r) if r else None
 
-    def preempt_house_for_higher_priority(self, job_id:int, dialog_id:str)->dict[str,Any]|None:
+    def yield_house_scheduler(
+        self, job_id:int, dialog_id:str, *, cooldown_seconds:int=90, reason:str="HOUSE_QUANTUM"
+    )->dict[str,Any]|None:
         current=self.conn.execute(
-            "select house_job_id,priority,status from doctor_v2_house_jobs where house_job_id=?",
+            "select house_job_id,priority,status,scheduler_yield_count from doctor_v2_house_jobs where house_job_id=?",
             (int(job_id),),
         ).fetchone()
         if not current or str(current["status"])!="CLAIMED":
             return None
-        higher=self.conn.execute(
-            "select house_job_id,priority from doctor_v2_house_jobs where status='WAITING' and priority>? order by priority desc,house_job_id limit 1",
-            (int(current["priority"]),),
-        ).fetchone()
-        if not higher:
-            return None
         assignment=f"house:{int(job_id)}"
+        seconds=max(10,min(int(cooldown_seconds),900))
         with self.conn:
             changed=self.conn.execute(
-                "update doctor_v2_house_jobs set status='WAITING',claimed_dialog_id=NULL,claimed_at=NULL where house_job_id=? and status='CLAIMED' and claimed_dialog_id=?",
-                (int(job_id),str(dialog_id)),
+                """update doctor_v2_house_jobs
+                   set status='WAITING',claimed_dialog_id=NULL,claimed_at=NULL,
+                       scheduler_yield_until=datetime('now', ?),
+                       scheduler_yield_count=coalesce(scheduler_yield_count,0)+1
+                   where house_job_id=? and status='CLAIMED' and claimed_dialog_id=?""",
+                (f"+{seconds} seconds",int(job_id),str(dialog_id)),
             ).rowcount
             if changed!=1:
                 return None
@@ -306,11 +312,93 @@ class DoctorV2Runtime:
                 (assignment,),
             )
         return {
-            "preempted_job_id":int(job_id),
-            "preempted_priority":int(current["priority"]),
+            "job_id":int(job_id),
+            "priority":int(current["priority"]),
+            "cooldown_seconds":seconds,
+            "yield_count":int(current["scheduler_yield_count"] or 0)+1,
+            "reason":str(reason),
+        }
+
+    def preempt_house_for_higher_priority(self, job_id:int, dialog_id:str)->dict[str,Any]|None:
+        current=self.conn.execute(
+            "select house_job_id,priority,status from doctor_v2_house_jobs where house_job_id=?",
+            (int(job_id),),
+        ).fetchone()
+        if not current or str(current["status"])!="CLAIMED":
+            return None
+        higher=self.conn.execute(
+            """select house_job_id,priority from doctor_v2_house_jobs
+               where status='WAITING' and priority>?
+                 and (scheduler_yield_until is null or datetime(scheduler_yield_until) <= datetime('now'))
+               order by priority desc,house_job_id limit 1""",
+            (int(current["priority"]),),
+        ).fetchone()
+        if not higher:
+            return None
+        yielded=self.yield_house_scheduler(job_id,dialog_id,cooldown_seconds=90,reason="HIGHER_PRIORITY_WAITING")
+        if not yielded:
+            return None
+        yielded.update({
             "higher_job_id":int(higher["house_job_id"]),
             "higher_priority":int(higher["priority"]),
-        }
+        })
+        return yielded
+
+    def house_quantum_exhausted(self, job_id:int, dialog_id:str, *, max_sessions:int=2)->dict[str,Any]|None:
+        d=self.conn.execute(
+            "select session_count,state from doctor_v2_web_dialogs where dialog_id=? and assignment_id=?",
+            (str(dialog_id),f"house:{int(job_id)}"),
+        ).fetchone()
+        if not d or str(d["state"])!="OPEN" or int(d["session_count"] or 0)<max(1,int(max_sessions)):
+            return None
+        waiting=self.conn.execute(
+            """select house_job_id,priority from doctor_v2_house_jobs
+               where status='WAITING' and house_job_id<>?
+                 and (scheduler_yield_until is null or datetime(scheduler_yield_until) <= datetime('now'))
+               order by priority desc,house_job_id limit 1""",
+            (int(job_id),),
+        ).fetchone()
+        if not waiting:
+            return None
+        yielded=self.yield_house_scheduler(job_id,dialog_id,cooldown_seconds=120,reason="HOUSE_QUANTUM_EXHAUSTED")
+        if yielded:
+            yielded.update({"next_job_id":int(waiting["house_job_id"]),"next_priority":int(waiting["priority"])})
+        return yielded
+
+    def recover_overbudget_house(self, *, max_sessions:int=2)->dict[str,Any]|None:
+        row=self.conn.execute(
+            """select d.dialog_id,d.assignment_id,d.session_count,s.ordinal
+               from doctor_v2_web_dialogs d
+               join doctor_v2_web_sessions s on s.dialog_id=d.dialog_id and s.ended_at is null
+               where d.role='HOUSE' and d.state='OPEN' and d.session_count>?
+               order by d.opened_at limit 1""",
+            (max(1,int(max_sessions)),),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            job_id=int(str(row["assignment_id"]).split(":",1)[1])
+        except Exception:
+            return None
+        waiting=self.conn.execute(
+            """select house_job_id from doctor_v2_house_jobs
+               where status='WAITING' and house_job_id<>?
+                 and (scheduler_yield_until is null or datetime(scheduler_yield_until) <= datetime('now'))
+               order by priority desc,house_job_id limit 1""",
+            (job_id,),
+        ).fetchone()
+        if not waiting:
+            return None
+        try:
+            self.dialog_end(str(row["dialog_id"]),int(row["ordinal"]),"ERROR")
+        except Exception:
+            return None
+        yielded=self.yield_house_scheduler(
+            job_id,str(row["dialog_id"]),cooldown_seconds=120,reason="HOUSE_LEGACY_OVERBUDGET"
+        )
+        if yielded:
+            yielded["next_job_id"]=int(waiting["house_job_id"])
+        return yielded
 
     @staticmethod
     def _experimental_text(value: Any) -> str:
