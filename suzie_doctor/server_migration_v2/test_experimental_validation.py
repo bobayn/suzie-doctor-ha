@@ -136,6 +136,24 @@ def main():
                 "select state,assignment_id from doctor_v2_role_slots where slot_id='house-1'"
             ).fetchone()
             assert slotrow['state']=='FREE' and slotrow['assignment_id'] is None
+
+            # A server restart can leave the reserved slot BUSY before the job
+            # itself reached CLAIMED. That stale BUSY/WAITING pair must also heal.
+            rt.store.append_event(
+                patient_id=patient,event_type='OBSERVATION',source='stuck-waiting-test',
+                payload={'disease_id':disease,'symptom':'stuck waiting house'},
+                priority=78,create_house_job=True,
+            )
+            waiting=rt.next_house_waiting(); assert waiting
+            wait_assignment=f"house:{int(waiting['house_job_id'])}"
+            wait_slot=rt.role_acquire('HOUSE',wait_assignment); assert wait_slot == 'house-1'
+            wait_recovered=rt.recover_stranded_house_wilson()
+            assert wait_recovered and wait_recovered[0]['assignment_id']==wait_assignment
+            assert wait_recovered[0]['job_status']=='WAITING'
+            wait_job=rt.conn.execute('select status from doctor_v2_house_jobs where house_job_id=?',(int(waiting['house_job_id']),)).fetchone()
+            assert wait_job['status']=='WAITING'
+            wait_slotrow=rt.conn.execute("select state,assignment_id from doctor_v2_role_slots where slot_id='house-1'").fetchone()
+            assert wait_slotrow['state']=='FREE' and wait_slotrow['assignment_id'] is None
             print('EXPERIMENTAL_VALIDATION_CHAIN_TEST_PASS')
         finally:
             rt.store.close()

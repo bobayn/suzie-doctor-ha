@@ -785,27 +785,33 @@ class DoctorV2Runtime:
                 try: job_id=int(assignment.split(":",1)[1])
                 except Exception: continue
                 job=self.conn.execute(f"select status from {table} where {idcol}=?",(job_id,)).fetchone()
-                if not job or str(job["status"])!="CLAIMED":
-                    continue
-                dialog=self.current_dialog(role,assignment)
-                if dialog and str(dialog.get("state") or "")=="OPEN":
-                    continue
+                job_status=str(job["status"]) if job else "MISSING"
+                if job_status=="CLAIMED":
+                    dialog=self.current_dialog(role,assignment)
+                    if dialog and str(dialog.get("state") or "")=="OPEN":
+                        continue
+                # A BUSY reserved slot with a WAITING/DONE/missing job is also
+                # stranded. This can happen when the server is restarted while
+                # Web dispatch is still waiting for Call Lab/CDP and the job has
+                # not yet reached CLAIMED. Release the slot without rewriting
+                # the job; a WAITING job will be dispatched again normally.
                 with self.conn:
-                    if role=="HOUSE":
-                        self.conn.execute(
-                            "update doctor_v2_house_jobs set status='WAITING',claimed_dialog_id=NULL,claimed_at=NULL where house_job_id=? and status='CLAIMED'",
-                            (job_id,),
-                        )
-                    else:
-                        self.conn.execute(
-                            "update doctor_v2_wilson_jobs set status='WAITING' where wilson_job_id=? and status='CLAIMED'",
-                            (job_id,),
-                        )
+                    if job_status=="CLAIMED":
+                        if role=="HOUSE":
+                            self.conn.execute(
+                                "update doctor_v2_house_jobs set status='WAITING',claimed_dialog_id=NULL,claimed_at=NULL where house_job_id=? and status='CLAIMED'",
+                                (job_id,),
+                            )
+                        else:
+                            self.conn.execute(
+                                "update doctor_v2_wilson_jobs set status='WAITING' where wilson_job_id=? and status='CLAIMED'",
+                                (job_id,),
+                            )
                     self.conn.execute(
                         "update doctor_v2_role_slots set state='FREE',assignment_id=NULL,updated_at=CURRENT_TIMESTAMP where slot_id=? and assignment_id=?",
                         (str(slot["slot_id"]),assignment),
                     )
-                recovered.append({"role":role,"assignment_id":assignment,"job_id":job_id})
+                recovered.append({"role":role,"assignment_id":assignment,"job_id":job_id,"job_status":job_status})
         return recovered
 
     def has_open_wilson_mode(self,mode:str)->bool:
