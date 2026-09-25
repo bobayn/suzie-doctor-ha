@@ -1,3 +1,10 @@
+## Doctor persistent pending Web dispatch — 2026-09-25
+
+- Call Lab `dispatch_job_id` is persisted immediately after `/api/run`, before UI submission is confirmed.
+- Recovery now polls the same pending Call Lab job through `trigger_received/tab_created/filled/send_ready` instead of treating it as an unsent dispatch and creating another job.
+- Pending Call Lab jobs have a bounded stale timeout; only explicit `failed` or stale expiry requeues the Case.
+- This prevents accessibility-lock backlog and duplicate prompt storms when Web fallback is slow.
+
 ## Doctor related Repair semantic resolver — 2026-09-25
 
 - Runtime/HA findings that reference a Repair by an old transient `repair:<domain>:<issue_id>` key now resolve to the active semantic Repair resolution with the same domain/issue_id when available.

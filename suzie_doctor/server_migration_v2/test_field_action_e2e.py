@@ -177,6 +177,12 @@ def main():
         with j.conn:
             j.conn.execute("update doctor_cases set dispatch_retry_after=datetime('now','-1 second') where case_id=?",(case['case_id'],))
         second=j.reserve_web_dispatch(max_doctors=1); assert second
+        j.mark_dispatch_job_started(case_id=case['case_id'],session_id=second['session_id'],dispatch_job_id='job2')
+        pending=next(x for x in j.starting_sessions() if x['session_id']==second['session_id'])
+        assert pending['dispatch_job_id']=='job2' and pending['detail']['call_lab_pending'] is True and pending['detail']['ui_sent'] is False
+        j.mark_dispatch_progress(case_id=case['case_id'],session_id=second['session_id'],dispatch_job_id='job2',tab_id='tab2',transient_url='https://chatgpt.com/project')
+        progressed=next(x for x in j.starting_sessions() if x['session_id']==second['session_id'])
+        assert progressed['detail']['call_lab_pending'] is False and progressed['detail']['ui_sent'] is True
         j.finish_dispatch(case_id=case['case_id'],session_id=second['session_id'],dispatch_job_id='job2',dialog_id='dlg2',conversation_url='https://chatgpt.com/c/dlg2')
         assigned=j.get_case(case['case_id'])
         assert int(assigned['dispatch_failures'])==0 and assigned['dispatch_retry_after'] is None

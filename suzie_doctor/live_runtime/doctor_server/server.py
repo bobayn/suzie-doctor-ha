@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.24-v2-dev"
+SERVER_VERSION = "0.2.25-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -981,6 +981,10 @@ class DoctorServer:
             job_id = str(job.get("job_id") or "")
             if not job_id:
                 raise RuntimeError("call lab returned no job_id")
+            async with self.journal_gate:
+                self.journal.mark_dispatch_job_started(
+                    case_id=case_id, session_id=session_id, dispatch_job_id=job_id
+                )
 
             deadline = time.monotonic() + 100
             last_job: dict[str, Any] | None = None
@@ -1084,13 +1088,59 @@ class DoctorServer:
                     age = (now - started).total_seconds()
                 except Exception:
                     age = float("inf")
-                start_timeout = max(15, min(180, int(self.config.get("dispatch_start_stale_seconds", 45))))
-                if age < start_timeout:
-                    continue
                 current_case_id = session.get("current_case_id")
                 if not current_case_id:
                     continue
                 case_id = int(current_case_id)
+                dispatch_job_id = str(detail.get("dispatch_job_id") or session.get("dispatch_job_id") or "")
+                if dispatch_job_id:
+                    current = await self._call_lab_job(dispatch_job_id)
+                    if current:
+                        state = str(current.get("state") or "")
+                        if state == "submitted":
+                            job_detail = current.get("detail") or {}
+                            tab_id = str(job_detail.get("tab_id") or "")
+                            transient_url = str(job_detail.get("url") or "")
+                            if tab_id:
+                                try:
+                                    async with self.journal_gate:
+                                        self.journal.mark_dispatch_progress(
+                                            case_id=case_id, session_id=str(session["session_id"]),
+                                            dispatch_job_id=dispatch_job_id, tab_id=tab_id,
+                                            transient_url=transient_url,
+                                        )
+                                    final = await self._lookup_final_dialog(tab_id)
+                                    if final:
+                                        dialog_id, conversation_url = final
+                                        async with self.journal_gate:
+                                            self.journal.finish_dispatch(
+                                                case_id=case_id, session_id=str(session["session_id"]),
+                                                dispatch_job_id=dispatch_job_id, dialog_id=dialog_id,
+                                                conversation_url=conversation_url,
+                                            )
+                                        self.v2_ext.reserve_field(case_id)
+                                        self.v2_ext.bind_field_dialog(case_id, dialog_id)
+                                except JournalConflict:
+                                    pass
+                                continue
+                        if state == "failed":
+                            self.v2_ext.release_field(case_id)
+                            try:
+                                async with self.journal_gate:
+                                    self.journal.fail_dispatch(
+                                        case_id=case_id, session_id=str(session["session_id"]),
+                                        reason=f"call_lab_failed:{current.get('detail')}",
+                                    )
+                            except JournalConflict:
+                                pass
+                            continue
+                        if state in {"trigger_received","tab_created","filled","send_ready"}:
+                            pending_timeout = max(60, min(600, int(self.config.get("dispatch_call_lab_stale_seconds", 240))))
+                            if age < pending_timeout:
+                                continue
+                start_timeout = max(15, min(180, int(self.config.get("dispatch_start_stale_seconds", 45))))
+                if age < start_timeout:
+                    continue
                 self.v2_ext.release_field(case_id)
                 try:
                     async with self.journal_gate:
@@ -1102,7 +1152,7 @@ class DoctorServer:
                     self.db.event(
                         "web_dispatch_start_recovered",
                         None,
-                        {"case_id":case_id,"session_id":session.get("session_id"),"age_seconds":int(age)},
+                        {"case_id":case_id,"session_id":session.get("session_id"),"age_seconds":int(age),"dispatch_job_id":dispatch_job_id or None},
                     )
                 except JournalConflict:
                     pass

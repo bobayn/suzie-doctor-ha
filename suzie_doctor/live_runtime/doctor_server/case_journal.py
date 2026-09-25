@@ -824,6 +824,43 @@ class CaseJournal:
             self.conn.rollback()
             raise
 
+    def mark_dispatch_job_started(
+        self,
+        *,
+        case_id: int,
+        session_id: str,
+        dispatch_job_id: str,
+        actor: str = "doctor_server",
+    ) -> None:
+        self._begin()
+        try:
+            case = self._case_row(case_id)
+            session = self._session_row(session_id)
+            if case["state"] != "DISPATCHING" or case["doctor_session_id"] != session_id:
+                raise JournalConflict("dispatch reservation no longer owns case")
+            detail = _loads(session["detail_json"], {})
+            detail.update({
+                "dispatch_job_id": str(dispatch_job_id),
+                "call_lab_pending": True,
+                "ui_sent": False,
+            })
+            now = iso()
+            self.conn.execute(
+                """UPDATE doctor_sessions
+                   SET dispatch_job_id=?,updated_at=?,last_seen=?,detail_json=?
+                   WHERE session_id=?""",
+                (str(dispatch_job_id), now, now, _json(detail), session_id),
+            )
+            self._event(
+                actor, "WEB_DISPATCH_JOB_STARTED",
+                case_id=int(case_id), session_id=session_id,
+                detail={"dispatch_job_id": str(dispatch_job_id)},
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def mark_dispatch_progress(
         self,
         *,
@@ -846,6 +883,7 @@ class CaseJournal:
                     "dispatch_job_id": dispatch_job_id,
                     "tab_id": tab_id,
                     "transient_url": transient_url,
+                    "call_lab_pending": False,
                     "ui_sent": True,
                 }
             )
