@@ -58,6 +58,12 @@ def main():
     contract=json.loads((APPROOT/'suite/connector_contract.json').read_text())
     assert 'name="doctor.action.request"' in doctor_mcp
     assert 'name="doctor.action.request"' in home_mcp
+    assert 'async def _field_action_request_via_core(' in doctor_mcp
+    assert 'compatibility_request = evidence.pop("field_action_request", None)' in doctor_mcp
+    assert 'field_action_request compatibility transport requires execute=true' in doctor_mcp
+    assert 'canonical_tool' in doctor_mcp and 'doctor.action.request' in doctor_mcp
+    assert 'schema, NOT MISSING_CAPABILITY' in server
+    assert 'evidence.field_action_request' in server
     assert 'FIELD_CASE_DIAGNOSTIC' in doctor_mcp
     assert 'evidence["field_case_id"] = int(state["case_id"])' in doctor_mcp
     assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server

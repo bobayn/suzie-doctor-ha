@@ -1,3 +1,9 @@
+## Doctor stale-surface compatibility transport — 2026-09-25
+
+- Field Web sessions with cached MCP schemas can use existing `doctor.diagnose` with `execute=true` and `evidence.field_action_request`; Doctor MCP maps it to the same canonical `doctor.action.request` Core path.
+- The compatibility adapter shares one implementation with the direct tool and preserves exact Case/client binding, risk assessment, signed one-shot policy, single mutation and mandatory functional verify.
+- Field dispatch explicitly treats a missing new tool name in a stale Web schema as transport staleness, not `MISSING_CAPABILITY`.
+
 ## Doctor resolution pointer cleanup — 2026-09-25
 
 - `current_field_case_id` now tracks only an active Field Case and is cleared on House re-evaluation and Field completion.

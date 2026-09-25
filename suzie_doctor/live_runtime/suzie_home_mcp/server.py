@@ -1371,8 +1371,10 @@ async def doctor_action_request(
         "Consult/execute the signed Doctor protocol on the exact claimed client. "
         "For House VALIDATE_FIRST Cases, experimental_protocol_id stays bound to the "
         "active Case and may yield a Field-only signed EXPERIMENTAL package. execute=true "
-        "requires the structured autonomous risk_assessment made by Suzie Doctor; this "
-        "transport does not make that judgment."
+        "requires the structured autonomous risk_assessment made by Suzie Doctor. If a Web "
+        "surface has stale tool schema and does not list doctor.action.request, Field may put "
+        "a structured request in evidence.field_action_request; Doctor MCP maps it to the same "
+        "canonical doctor.action.request Core path. This transport does not make the risk judgment."
     ),
     annotations=ToolAnnotations(
         readOnlyHint=False,

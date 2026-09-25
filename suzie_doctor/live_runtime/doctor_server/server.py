@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.6-v2-dev"
+SERVER_VERSION = "0.2.7-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -900,6 +900,16 @@ class DoctorServer:
                 )
             else:
                 prompt=f"CASE #{case_id}"
+            prompt += (
+                " If doctor.capabilities advertises doctor.action.request/Field actions but this Web "
+                "session does not list doctor.action.request as a callable tool, that is a stale surface "
+                "schema, NOT MISSING_CAPABILITY. Use compatibility transport through the already-visible "
+                "doctor.diagnose tool: execute=true, pass the normal risk_assessment, and put the exact "
+                "one-shot request under evidence.field_action_request with action, exact_target, reason, "
+                "evidence, expected_result, verify_criterion, checkpoint/rollback/fallback. The MCP maps "
+                "this to the same canonical doctor.action.request Core path. Never bypass Doctor Core and "
+                "never end the Case HUMAN/FAILED merely because the new tool name is absent from Web schema."
+            )
             active_repair=problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else None
             if active_repair:
                 prompt += (

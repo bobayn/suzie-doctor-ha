@@ -52,7 +52,7 @@ mcp = MCPServer(
         "Case before any client action, use exact-client read-only diagnostics "
         "first, verify treatment, then call doctor.case.complete_next."
     ),
-    version="0.1.6-dev",
+    version="0.1.7-dev",
 )
 
 CLAIM_HANDLES: dict[str, dict[str, Any]] = {}
@@ -665,16 +665,8 @@ async def doctor_wilson_complete(
     )
 
 
-@mcp.tool(
-    name="doctor.action.request",
-    description=(
-        "Field-Suzie only: request one exact-client, signed, one-shot structured action "
-        "when no suitable Disease/Protocol treatment exists. Requires autonomous risk "
-        "assessment and mandatory functional verify criterion. Family Doctor cannot use it."
-    ),
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
-)
-async def doctor_action_request(
+async def _field_action_request_via_core(
+    *,
     doctor_handle: str,
     action: dict[str, Any],
     exact_target: dict[str, Any],
@@ -715,6 +707,36 @@ async def doctor_action_request(
 
 
 @mcp.tool(
+    name="doctor.action.request",
+    description=(
+        "Field-Suzie only: request one exact-client, signed, one-shot structured action "
+        "when no suitable Disease/Protocol treatment exists. Requires autonomous risk "
+        "assessment and mandatory functional verify criterion. Family Doctor cannot use it."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+)
+async def doctor_action_request(
+    doctor_handle: str,
+    action: dict[str, Any],
+    exact_target: dict[str, Any],
+    reason: str,
+    evidence: dict[str, Any],
+    risk_assessment: dict[str, Any],
+    expected_result: str,
+    verify_criterion: dict[str, Any],
+    checkpoint: dict[str, Any] | None = None,
+    rollback: list[dict[str, Any]] | None = None,
+    fallback: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return await _field_action_request_via_core(
+        doctor_handle=doctor_handle, action=action, exact_target=exact_target,
+        reason=reason, evidence=evidence, risk_assessment=risk_assessment,
+        expected_result=expected_result, verify_criterion=verify_criterion,
+        checkpoint=checkpoint, rollback=rollback, fallback=fallback,
+    )
+
+
+@mcp.tool(
     name="doctor.diagnose",
     description=(
         "Consult Doctor Server from the exact active Case client. execute=false "
@@ -743,6 +765,32 @@ async def doctor_diagnose(
         raise RuntimeError("execute=true requires Suzie Doctor risk_assessment")
     state = await _active_handle(doctor_handle)
     evidence = dict(evidence)
+    compatibility_request = evidence.pop("field_action_request", None)
+    if compatibility_request is not None:
+        if not execute:
+            raise RuntimeError("field_action_request compatibility transport requires execute=true")
+        if not isinstance(risk_assessment, dict):
+            raise RuntimeError("field_action_request compatibility transport requires risk_assessment")
+        if not isinstance(compatibility_request, dict):
+            raise RuntimeError("field_action_request must be an object")
+        result = await _field_action_request_via_core(
+            doctor_handle=doctor_handle,
+            action=dict(compatibility_request.get("action") or {}),
+            exact_target=dict(compatibility_request.get("exact_target") or {}),
+            reason=str(compatibility_request.get("reason") or ""),
+            evidence=dict(compatibility_request.get("evidence") or evidence),
+            risk_assessment=dict(risk_assessment),
+            expected_result=str(compatibility_request.get("expected_result") or ""),
+            verify_criterion=dict(compatibility_request.get("verify_criterion") or {}),
+            checkpoint=(dict(compatibility_request["checkpoint"]) if isinstance(compatibility_request.get("checkpoint"), dict) else None),
+            rollback=list(compatibility_request.get("rollback") or []),
+            fallback=list(compatibility_request.get("fallback") or []),
+        )
+        result = dict(result)
+        result["compatibility_transport"] = "doctor.diagnose"
+        result["canonical_tool"] = "doctor.action.request"
+        return result
+
     evidence["field_case_id"] = int(state["case_id"])
     if evidence.get("experimental_protocol_id"):
         evidence["routing_intent"] = "FIELD_EXPERIMENTAL_VALIDATION"
