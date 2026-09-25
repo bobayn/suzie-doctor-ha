@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import html
 import json
+import multiprocessing
 import os
+import queue as queue_module
 import random
 import subprocess
 import threading
@@ -704,6 +706,132 @@ def extension_fill(job_id: str, target: str, text: str) -> None:
         update_job(job_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
 
 
+def doctor_browser_process_ids() -> tuple[int, set[int]]:
+    try:
+        root_pid = int((LAB / "browser.pid").read_text().strip())
+    except Exception as exc:
+        raise RuntimeError(f"browser_pid_unavailable:{exc}") from exc
+    root_cmdline_path = Path(f"/proc/{root_pid}/cmdline")
+    if root_pid <= 1 or not root_cmdline_path.exists():
+        raise RuntimeError(f"browser_pid_not_alive:{root_pid}")
+    try:
+        root_cmdline = root_cmdline_path.read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+    except Exception as exc:
+        raise RuntimeError(f"browser_cmdline_unavailable:{root_pid}:{exc}") from exc
+    profile_arg = ""
+    for token in root_cmdline.split():
+        if token.startswith("--user-data-dir="):
+            profile_arg = token
+            break
+    if not profile_arg:
+        raise RuntimeError(f"browser_profile_arg_missing:{root_pid}")
+
+    seen: set[int] = {root_pid}
+    # Chromium helpers/renderers may be reparented, so PPid ancestry alone is
+    # not a stable browser identity.  The dedicated profile is unique to this
+    # Doctor browser and is inherited by all of its Chromium processes.
+    for proc_dir in Path("/proc").iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        try:
+            pid = int(proc_dir.name)
+            cmdline = (proc_dir / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except Exception:
+            continue
+        if profile_arg in cmdline and "chromium" in cmdline:
+            seen.add(pid)
+    return root_pid, seen
+
+
+def doctor_browser_accessibility_apps(desktop: Any) -> tuple[list[Any], dict[str, Any]]:
+    try:
+        browser_pid, browser_pids = doctor_browser_process_ids()
+    except Exception as exc:
+        return [], {"error": str(exc)}
+    apps: list[Any] = []
+    app_pids: list[int] = []
+    for i in range(desktop.childCount):
+        try:
+            app = desktop.getChildAtIndex(i)
+            pid = int(app.get_process_id())
+            if pid in browser_pids:
+                apps.append(app)
+                app_pids.append(pid)
+        except Exception:
+            continue
+    return apps, {
+        "browser_pid": browser_pid,
+        "browser_processes": len(browser_pids),
+        "accessibility_app_pids": app_pids,
+        "matches": len(apps),
+    }
+
+
+def doctor_browser_window_id() -> tuple[str, dict[str, Any]]:
+    browser_pid, browser_pids = doctor_browser_process_ids()
+    wm = subprocess.run(
+        ["wmctrl", "-lp"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=4,
+    ).stdout.splitlines()
+    windows: list[tuple[str, int, str]] = []
+    for line in wm:
+        parts = line.split(None, 4)
+        if len(parts) < 3 or not parts[2].isdigit():
+            continue
+        pid = int(parts[2])
+        if pid in browser_pids:
+            windows.append((parts[0], pid, parts[4] if len(parts) >= 5 else ""))
+    if len(windows) == 1:
+        wid, pid, title = windows[0]
+        return wid, {
+            "browser_pid": browser_pid,
+            "window_pid": pid,
+            "window_title": title,
+            "window_matches": 1,
+        }
+    if windows:
+        try:
+            active_raw = subprocess.run(
+                ["xdotool", "getactivewindow"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+            active = int(active_raw)
+            for wid, pid, title in windows:
+                if int(wid, 16) == active:
+                    return wid, {
+                        "browser_pid": browser_pid,
+                        "window_pid": pid,
+                        "window_title": title,
+                        "window_matches": len(windows),
+                        "selection": "active_window",
+                    }
+        except Exception:
+            pass
+        chatgpt = [w for w in windows if "chatgpt" in w[2].lower()]
+        if len(chatgpt) == 1:
+            wid, pid, title = chatgpt[0]
+            return wid, {
+                "browser_pid": browser_pid,
+                "window_pid": pid,
+                "window_title": title,
+                "window_matches": len(windows),
+                "selection": "unique_chatgpt_title",
+            }
+    raise RuntimeError(
+        "doctor_browser_window_not_unique:"
+        + json.dumps(
+            [{"window_id": wid, "pid": pid, "title": title} for wid, pid, title in windows],
+            ensure_ascii=False,
+        )
+    )
+
+
 def node_attrs(node: Any) -> dict[str, str]:
     out: dict[str, str] = {}
     try:
@@ -720,24 +848,11 @@ def find_accessible_composer() -> tuple[Any, dict[str, Any]] | tuple[None, dict[
     import pyatspi
 
     desktop = pyatspi.Registry.getDesktop(0)
-    try:
-        browser_pid = int((LAB / "browser.pid").read_text().strip())
-    except Exception as exc:
-        return None, {"error": f"browser_pid_unavailable:{exc}"}
-
-    browser_apps = []
-    for i in range(desktop.childCount):
-        try:
-            app = desktop.getChildAtIndex(i)
-            if int(app.get_process_id()) == browser_pid:
-                browser_apps.append(app)
-        except Exception:
-            continue
-    if len(browser_apps) != 1:
+    browser_apps, browser_meta = doctor_browser_accessibility_apps(desktop)
+    if not browser_apps:
         return None, {
-            "error": "doctor_browser_accessibility_target_not_unique",
-            "browser_pid": browser_pid,
-            "matches": len(browser_apps),
+            "error": "doctor_browser_accessibility_target_not_found",
+            **browser_meta,
         }
 
     candidates: list[tuple[int, Any, dict[str, Any]]] = []
@@ -822,24 +937,11 @@ def find_accessible_send_button() -> tuple[Any, dict[str, Any]] | tuple[None, di
     import pyatspi
 
     desktop = pyatspi.Registry.getDesktop(0)
-    try:
-        browser_pid = int((LAB / "browser.pid").read_text().strip())
-    except Exception as exc:
-        return None, {"error": f"browser_pid_unavailable:{exc}"}
-
-    browser_apps = []
-    for i in range(desktop.childCount):
-        try:
-            app = desktop.getChildAtIndex(i)
-            if int(app.get_process_id()) == browser_pid:
-                browser_apps.append(app)
-        except Exception:
-            continue
-    if len(browser_apps) != 1:
+    browser_apps, browser_meta = doctor_browser_accessibility_apps(desktop)
+    if not browser_apps:
         return None, {
-            "error": "doctor_browser_accessibility_target_not_unique",
-            "browser_pid": browser_pid,
-            "matches": len(browser_apps),
+            "error": "doctor_browser_accessibility_target_not_found",
+            **browser_meta,
         }
 
     stack = list(browser_apps)
@@ -866,6 +968,7 @@ def find_accessible_send_button() -> tuple[Any, dict[str, Any]] | tuple[None, di
                     "name": name,
                     "role": role,
                     "seen": seen,
+                    **browser_meta,
                 }))
             for i in range(node.childCount - 1, -1, -1):
                 try:
@@ -880,34 +983,118 @@ def find_accessible_send_button() -> tuple[Any, dict[str, Any]] | tuple[None, di
     return candidates[0]
 
 
-def accessibility_fill(job_id: str, target: str, text: str) -> None:
-    with ACCESSIBILITY_LOCK:
-        _accessibility_fill_locked(job_id, target, text)
+def _accessibility_emit(
+    job_id: str,
+    state: str,
+    detail: dict[str, Any] | None = None,
+    progress_queue: Any | None = None,
+) -> None:
+    payload = {"state": state, "detail": dict(detail or {})}
+    if progress_queue is not None:
+        progress_queue.put(payload)
+        return
+    update_job(job_id, state, payload["detail"])
 
 
-def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
+def _accessibility_worker(target: str, text: str, progress_queue: Any) -> None:
     try:
-        browser_pid = int((LAB / "browser.pid").read_text().strip())
-        wm = subprocess.run(
-            ["wmctrl", "-lp"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.splitlines()
-        windows = []
-        for line in wm:
-            parts = line.split(None, 4)
-            if len(parts) >= 3 and parts[2].isdigit() and int(parts[2]) == browser_pid:
-                windows.append(parts[0])
-        if len(windows) != 1:
-            raise RuntimeError(f"doctor_browser_window_not_unique:{windows}")
-        window_id = windows[0]
+        _accessibility_fill_locked("", target, text, progress_queue=progress_queue)
+    except BaseException as exc:
+        try:
+            progress_queue.put({
+                "state": "failed",
+                "detail": {"error": f"{type(exc).__name__}: {exc}"},
+            })
+        except Exception:
+            pass
 
+
+def accessibility_fill(job_id: str, target: str, text: str) -> None:
+    if not ACCESSIBILITY_LOCK.acquire(timeout=5.0):
+        update_job(job_id, "failed", {"error": "accessibility_lock_timeout"})
+        return
+    ctx = multiprocessing.get_context("spawn")
+    progress_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_accessibility_worker,
+        args=(target, text, progress_queue),
+        daemon=True,
+    )
+    terminal = False
+    try:
+        proc.start()
+        deadline = time.monotonic() + 65.0
+        while time.monotonic() < deadline:
+            try:
+                message = progress_queue.get(timeout=0.25)
+            except queue_module.Empty:
+                if not proc.is_alive():
+                    break
+                continue
+            state = str(message.get("state") or "")
+            detail = message.get("detail") if isinstance(message.get("detail"), dict) else {}
+            if state in {"tab_created", "filled", "send_ready", "submitted", "failed"}:
+                update_job(job_id, state, detail)
+                if state in {"submitted", "failed"}:
+                    terminal = True
+            if terminal and not proc.is_alive():
+                break
+        proc.join(timeout=0.5)
+        while True:
+            try:
+                message = progress_queue.get_nowait()
+            except queue_module.Empty:
+                break
+            state = str(message.get("state") or "")
+            detail = message.get("detail") if isinstance(message.get("detail"), dict) else {}
+            if state in {"tab_created", "filled", "send_ready", "submitted", "failed"}:
+                update_job(job_id, state, detail)
+                if state in {"submitted", "failed"}:
+                    terminal = True
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=3.0)
+            update_job(job_id, "failed", {
+                "error": "accessibility_hard_timeout",
+                "timeout_seconds": 65,
+            })
+            terminal = True
+        if not terminal:
+            update_job(job_id, "failed", {
+                "error": f"accessibility_worker_exited_without_terminal_state:exitcode={proc.exitcode}",
+            })
+    except Exception as exc:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=3.0)
+        update_job(job_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        try:
+            progress_queue.close()
+            progress_queue.join_thread()
+        except Exception:
+            pass
+        ACCESSIBILITY_LOCK.release()
+
+
+def _accessibility_fill_locked(
+    job_id: str,
+    target: str,
+    text: str,
+    *,
+    progress_queue: Any | None = None,
+) -> None:
+    emit = lambda state, detail=None: _accessibility_emit(
+        job_id, state, detail, progress_queue
+    )
+    try:
+        window_id, window_meta = doctor_browser_window_id()
         subprocess.run(
             ["wmctrl", "-ia", window_id],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=4,
         )
         time.sleep(0.2)
         subprocess.run(
@@ -915,6 +1102,7 @@ def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=4,
         )
         time.sleep(0.2)
         subprocess.run(
@@ -922,21 +1110,24 @@ def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=8,
         )
         subprocess.run(
             ["xdotool", "key", "--clearmodifiers", "Return"],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=4,
         )
-        update_job(job_id, "tab_created", {
+        emit("tab_created", {
             "url": target,
             "open": "keyboard_ctrl_t",
             "window_id": window_id,
+            **window_meta,
         })
-        deadline = time.time() + 35
+        deadline = time.monotonic() + 35.0
         last_meta: dict[str, Any] = {}
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             node, meta = find_accessible_composer()
             last_meta = meta
             if node is not None:
@@ -950,18 +1141,21 @@ def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    timeout=4,
                 )
                 subprocess.run(
                     ["xdotool", "key", "--clearmodifiers", "BackSpace"],
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    timeout=4,
                 )
                 subprocess.run(
                     ["xdotool", "type", "--clearmodifiers", "--delay", "10", "--", text],
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    timeout=20,
                 )
                 time.sleep(0.2)
                 actual = ""
@@ -971,21 +1165,22 @@ def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
                 except Exception:
                     pass
                 if text in actual or actual == text:
-                    update_job(job_id, "filled", {**meta, "actual": actual})
+                    emit("filled", {**meta, "actual": actual})
                     send_node, send_meta = find_accessible_send_button()
                     if send_node is None:
                         raise RuntimeError(f"send_button_not_found:{send_meta}")
                     action = send_node.queryAction()
                     if action.nActions < 1:
                         raise RuntimeError("send_button_has_no_action")
+                    emit("send_ready", {**send_meta})
                     action.doAction(0)
-                    verify_deadline = time.time() + 15
+                    verify_deadline = time.monotonic() + 15.0
                     last_after = actual
-                    while time.time() < verify_deadline:
+                    while time.monotonic() < verify_deadline:
                         time.sleep(0.25)
                         after_node, after_meta = find_accessible_composer()
                         if after_node is None:
-                            update_job(job_id, "submitted", {
+                            emit("submitted", {
                                 "send": "atspi_semantic_action",
                                 "verify": "composer_replaced",
                                 **send_meta,
@@ -997,7 +1192,7 @@ def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
                         except Exception:
                             last_after = ""
                         if text not in last_after:
-                            update_job(job_id, "submitted", {
+                            emit("submitted", {
                                 "send": "atspi_semantic_action",
                                 "verify": "composer_cleared",
                                 **send_meta,
@@ -1008,8 +1203,7 @@ def _accessibility_fill_locked(job_id: str, target: str, text: str) -> None:
             time.sleep(0.5)
         raise RuntimeError(f"accessible composer timeout: {last_meta}")
     except Exception as exc:
-        update_job(job_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
-
+        emit("failed", {"error": f"{type(exc).__name__}: {exc}"})
 
 def run_job(job: dict[str, Any]) -> None:
     method = str(job["method"])
@@ -1132,7 +1326,7 @@ c.addEventListener("keydown",e=>{
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SuzieDoctorCallLab/0.5"
+    server_version = "SuzieDoctorCallLab/0.6"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return

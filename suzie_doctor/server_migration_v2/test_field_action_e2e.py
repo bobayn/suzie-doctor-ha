@@ -154,6 +154,12 @@ def main():
     assert '"fallback_transport": "accessibility"' in call_lab
     assert 'if not apps:' in call_lab
     assert 'accessibility_fill(job_id, target, text)' in call_lab
+    assert 'def doctor_browser_process_ids()' in call_lab
+    assert '--user-data-dir=' in call_lab and 'browser_profile_arg_missing' in call_lab
+    assert 'def doctor_browser_window_id()' in call_lab
+    assert 'multiprocessing.get_context("spawn")' in call_lab
+    assert 'accessibility_hard_timeout' in call_lab
+    assert 'timeout_seconds": 65' in call_lab
     assert 'textVisibleInConversation:userTexts.some' in call_lab
     assert 'DOM .click()' in call_lab
     with TemporaryDirectory() as td:

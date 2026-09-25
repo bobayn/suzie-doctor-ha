@@ -1,3 +1,10 @@
+## Doctor Call Lab accessibility hardening — 2026-09-25
+
+- Dedicated Doctor Chromium identity now follows its unique user-data profile across Chromium helper/renderer PIDs instead of requiring exact `browser.pid` ownership for X11/AT-SPI targets.
+- X11 window selection prefers the dedicated browser process set, with deterministic active-window/title fallback when more than one matching window exists.
+- Accessibility fallback now runs in a separate spawned process under the global transport lock; a hard 65-second deadline terminates a stuck AT-SPI worker and releases the lock for subsequent jobs.
+- Accessibility progress is relayed back to Call Lab through IPC, preserving `tab_created/filled/send_ready/submitted/failed` states while keeping hung workers killable.
+
 ## Doctor pending dispatch handoff — 2026-09-25
 
 - A live Call Lab job that remains in `trigger_received/tab_created/filled/send_ready` at the dispatcher deadline is handed off to recovery instead of being failed and requeued.
