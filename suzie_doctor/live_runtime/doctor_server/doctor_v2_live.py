@@ -186,6 +186,29 @@ class DoctorV2Runtime:
                 (str(row["patient_id"]),info["fingerprint"],info["problem_key"],info["domain"],info["issue_id"],state,int(job_id),active_case_id,int(row["card_version"]),self._j(human),info["capabilities_hash"],info["material_hash"],next_recheck),
             )
 
+    def _resolution_target_for_case(self, case_id:int, fallback_patient:str|None=None, fallback_fingerprint:str|None=None) -> tuple[str,str]|None:
+        try:
+            row=self.conn.execute("select client_id,problem_json from doctor_cases where case_id=?",(int(case_id),)).fetchone()
+        except sqlite3.OperationalError:
+            row=None
+        patient=str((row["client_id"] if row else None) or fallback_patient or "")
+        problem=self._loads(row["problem_json"] if row else None)
+        candidates=[]
+        if isinstance(problem,dict):
+            for value in (problem.get("canonical_resolution_fingerprint"),):
+                if str(value or "").strip(): candidates.append(str(value).strip())
+            active=problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else {}
+            if str(active.get("problem_key") or "").strip(): candidates.append(str(active.get("problem_key")).strip())
+            pk=str(problem.get("problem_key") or "").strip()
+            if pk.startswith("repair:"): candidates.append(pk)
+        if str(fallback_fingerprint or "").strip(): candidates.append(str(fallback_fingerprint).strip())
+        if not patient:
+            return None
+        for fp in dict.fromkeys(candidates):
+            exists=self.conn.execute("select 1 from doctor_v2_resolutions where patient_id=? and fingerprint=?",(patient,fp)).fetchone()
+            if exists:return patient,fp
+        return None
+
     def mark_resolution_field_case(self, queue_id:int, case_id:int) -> None:
         row=self.conn.execute(
             """select e.patient_id,e.fingerprint from doctor_v2_field_queue q
@@ -193,8 +216,9 @@ class DoctorV2Runtime:
                join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
                join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
                where q.queue_id=?""",(int(queue_id),)).fetchone()
-        if row and row["fingerprint"]:
-            with self.conn:self.conn.execute("update doctor_v2_resolutions set state='DISPATCHED',current_field_case_id=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(int(case_id),str(row["patient_id"]),str(row["fingerprint"])))
+        target=self._resolution_target_for_case(int(case_id),str(row["patient_id"]) if row else None,str(row["fingerprint"]) if row else None)
+        if target:
+            with self.conn:self.conn.execute("update doctor_v2_resolutions set state='DISPATCHED',current_field_case_id=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(int(case_id),target[0],target[1]))
 
     def mark_resolution_verifying(self, case_id:int) -> None:
         row=self.conn.execute(
@@ -202,9 +226,10 @@ class DoctorV2Runtime:
                join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
                join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
                join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
-               where q.legacy_case_id=? limit 1""",(int(case_id),)).fetchone()
-        if row and row["fingerprint"]:
-            with self.conn:self.conn.execute("update doctor_v2_resolutions set state='VERIFYING',updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(str(row["patient_id"]),str(row["fingerprint"])))
+               where q.legacy_case_id=? order by q.queue_id desc limit 1""",(int(case_id),)).fetchone()
+        target=self._resolution_target_for_case(int(case_id),str(row["patient_id"]) if row else None,str(row["fingerprint"]) if row else None)
+        if target:
+            with self.conn:self.conn.execute("update doctor_v2_resolutions set state='VERIFYING',current_field_case_id=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(int(case_id),target[0],target[1]))
 
     def mark_resolution_field_finished(self, case_id:int, outcome:str, result:dict[str,Any]) -> None:
         row=self.conn.execute(
@@ -212,8 +237,9 @@ class DoctorV2Runtime:
                join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
                join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
                join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
-               where q.legacy_case_id=? limit 1""",(int(case_id),)).fetchone()
-        if not row or not row["fingerprint"]:return
+               where q.legacy_case_id=? order by q.queue_id desc limit 1""",(int(case_id),)).fetchone()
+        target=self._resolution_target_for_case(int(case_id),str(row["patient_id"]) if row else None,str(row["fingerprint"]) if row else None)
+        if not target:return
         normalized=str(outcome or "").upper()
         repair_verify=result.get("repair_verification") if isinstance(result,dict) and isinstance(result.get("repair_verification"),dict) else {}
         if normalized in {"SUCCESS","RESOLVED"} and repair_verify.get("active_after") is False:
@@ -223,7 +249,7 @@ class DoctorV2Runtime:
         else:
             state="OPEN"; resolved=None; human={}; next_recheck=(datetime.now(UTC)+timedelta(minutes=5)).isoformat()
         with self.conn:
-            self.conn.execute("update doctor_v2_resolutions set state=?,current_field_case_id=NULL,human_requirement_json=?,next_recheck_at=?,resolved_at=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(state,self._j(human),next_recheck,resolved,str(row["patient_id"]),str(row["fingerprint"])))
+            self.conn.execute("update doctor_v2_resolutions set state=?,current_field_case_id=NULL,human_requirement_json=?,next_recheck_at=?,resolved_at=?,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(state,self._j(human),next_recheck,resolved,target[0],target[1]))
 
     def journal_to_house(self, patient_id: str, source: str, payload: dict[str,Any], *, event_type: str="OBSERVATION", severity: str|None=None, fingerprint: str|None=None, priority: int|None=None) -> dict[str,Any]:
         state={"latest_source":source,"latest":payload}

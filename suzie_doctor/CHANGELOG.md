@@ -1,3 +1,9 @@
+## Doctor merged Field resolution targeting — 2026-09-25
+
+- Merged/related Field Cases now resolve the canonical terminal Repair via `canonical_resolution_fingerprint` or `active_repair.problem_key`, independent of which related House queue is encountered first.
+- `DISPATCHED`, `VERIFYING`, and Field completion all update the same canonical Repair resolution after Field dedup.
+- Isolated V2 migration tests remain compatible when the legacy `doctor_cases` table is absent.
+
 ## Doctor terminal Repair Field dedup — 2026-09-25
 
 - One unresolved terminal Repair resolution now owns at most one open Field Case.
