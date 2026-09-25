@@ -311,7 +311,7 @@ class V2Extension:
             previous_attempts=[]
             do_not_repeat=[]
             rows=self.server.command_bridge.conn.execute(
-                """select command_id,case_id,arguments_json,status,result_json,execution_state,created_at
+                """select command_id,case_id,arguments_json,status,result_json,execution_state,created_at,package_json
                    from doctor_client_commands where client_id=? and tool_name='doctor.action.request'
                    order by created_at desc limit 20""",(str(job["patient_id"]),)
             ).fetchall()
@@ -321,8 +321,14 @@ class V2Extension:
                 try: command_result=json.loads(str(row["result_json"] or "{}"))
                 except Exception: command_result={}
                 item={"command_id":str(row["command_id"]),"case_id":int(row["case_id"]),"action":args.get("action") or {},"exact_target":args.get("exact_target") or {},"execution_state":str(row["execution_state"] or ""),"status":str(row["status"] or ""),"created_at":str(row["created_at"] or ""),"result":command_result}
+                signed_package=False
+                try:
+                    signed_package=bool(json.loads(str(row["package_json"] or "{}")))
+                except Exception:
+                    signed_package=False
+                item["signed_package"]=signed_package
                 previous_attempts.append(item)
-                if str(row["execution_state"] or "")=="VERIFIED_FAIL":
+                if signed_package and str(row["execution_state"] or "")=="VERIFIED_FAIL":
                     do_not_repeat.append({"action":item["action"],"exact_target":item["exact_target"],"reason":"previous_verified_fail"})
             problem_key=str((active_repair or {}).get("problem_key") or trigger_evidence.get("problem_key") or trigger_event.get("fingerprint") or "")
             original_criterion=(active_repair or {}).get("resolution_criterion") or trigger_evidence.get("resolution_criterion")

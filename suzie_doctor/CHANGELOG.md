@@ -1,3 +1,9 @@
+## Doctor signed-attempt semantics — 2026-09-25
+
+- Field no-repeat and cooldown now count only requests that actually received a signed execution package.
+- Preflight/policy rejection remains audited but no longer poisons the Case as a treatment attempt.
+- Future Patient Cards add `do_not_repeat` only for signed Field actions that reached functional `VERIFIED_FAIL`.
+
 ## Doctor merged Field resolution targeting — 2026-09-25
 
 - Merged/related Field Cases now resolve the canonical terminal Repair via `canonical_resolution_fingerprint` or `active_repair.problem_key`, independent of which related House queue is encountered first.

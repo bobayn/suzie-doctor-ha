@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.16-v2-dev"
+SERVER_VERSION = "0.2.17-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -2067,6 +2067,7 @@ class DoctorServer:
             """select command_id,status,execution_state,created_at from doctor_client_commands
                where client_id=? and case_id=? and tool_name='doctor.action.request'
                  and command_id<>? and action_key is not null
+                 and package_json is not null and length(trim(package_json))>2
                order by created_at desc""",
             (client_id, case_id, command_id),
         ).fetchall()
@@ -2086,6 +2087,7 @@ class DoctorServer:
             rows = self.command_bridge.conn.execute(
                 """select command_id,arguments_json from doctor_client_commands
                    where client_id=? and tool_name='doctor.action.request' and command_id<>? and created_at>=?
+                     and package_json is not null and length(trim(package_json))>2
                    order by created_at desc""",
                 (client_id, command_id, cutoff),
             ).fetchall()

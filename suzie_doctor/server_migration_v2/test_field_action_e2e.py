@@ -94,6 +94,8 @@ def main():
     assert {x['name'] for x in contract['field_actions']} >= {'integration.reload','addon.restart','core.restart','host.reboot','mount.reload'}
     assert 'Field action command was already signed/executed' in server
     assert 'same Field action already attempted in this Case' in server
+    assert 'package_json is not null and length(trim(package_json))>2' in server
+    assert 'signed_package and str(row["execution_state"] or "")=="VERIFIED_FAIL"' in extension
     assert '"subsystem.reload": {"primitive":"reload_subsystem"' not in server
     assert 'host.reboot exact_target.host must identify the local HAOS host' in server
     assert 'field_binding_sha256' in server and 'expected_field_binding' in client
