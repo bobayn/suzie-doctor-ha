@@ -1,3 +1,8 @@
+## Doctor Field action policy cleanup — 2026-09-25
+
+- Field one-shot Server allowlist now exactly matches the four published actions; hidden `subsystem.reload` was removed from Field policy while remaining available to normal Protocols.
+- `host.reboot` now validates that the exact target is the local HAOS host.
+
 ## Doctor HUMAN gate patch — 2026-09-25
 
 - `MISSING_CAPABILITY` now requires exact machine-readable `human_requirement.capability` in both House and Field completion paths.
