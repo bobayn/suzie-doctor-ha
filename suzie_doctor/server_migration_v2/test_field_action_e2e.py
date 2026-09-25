@@ -138,6 +138,10 @@ def main():
     assert 'current_field_case_id=c.case_id' in server
     assert "live_r.state<>'RESOLVED'" in server
     assert 'retire_case(' in (LIVE/'case_journal.py').read_text()
+    call_lab=(LIVE.parent/'call_lab/server.py').read_text()
+    assert 'conversation_created = bool(verified.get("conversationCreated"))' in call_lab
+    assert 'composer_released and (text_visible or conversation_created)' in call_lab
+    assert "location.pathname.includes('/c/')" in call_lab
     with TemporaryDirectory() as td:
         b=ClientCommandBridge(Path(td)/'commands.db')
         c=b.enqueue(client_id='client123',case_id=7,tool_name='doctor.action.request',arguments={'action':{'name':'core.restart'},'exact_target':{'component':'homeassistant_core'}},trusted_context={})

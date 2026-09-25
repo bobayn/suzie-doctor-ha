@@ -582,10 +582,16 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
     document.querySelector("textarea") ||
     document.querySelector("div[contenteditable='true']");
   const v = el ? (('value' in el) ? el.value : el.textContent) : '';
+  const expected={json.dumps(text)};
+  const prefix=expected.slice(0, Math.min(180, expected.length));
+  const userTexts=[...document.querySelectorAll('[data-message-author-role="user"]')].map(x => (x.innerText || x.textContent || ''));
+  const bodyText=document.body ? (document.body.innerText || '') : '';
   return {{
     url:location.href,
     composer:v || '',
-    textVisibleInConversation:document.body.innerText.includes({json.dumps(text)})
+    textVisibleInConversation:bodyText.includes(expected) || userTexts.some(t => t.includes(expected) || (prefix && t.includes(prefix))),
+    conversationCreated:location.href !== {json.dumps(before_url)} && location.pathname.includes('/c/'),
+    userMessageCount:userTexts.length
   }};
 }})()
 """
@@ -604,7 +610,11 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
             if isinstance(verified, dict):
                 composer_released = str(verified.get("composer") or "") != text
                 text_visible = bool(verified.get("textVisibleInConversation"))
-                if composer_released and text_visible:
+                conversation_created = bool(verified.get("conversationCreated"))
+                # A new /c/ URL plus a released composer is reliable submission
+                # evidence for project-root prompts even when the message DOM has
+                # not hydrated yet.  Do not close that tab as a false failure.
+                if composer_released and (text_visible or conversation_created):
                     update_job(job_id, "submitted", {
                         "send": "semantic_dom_button",
                         "ready_stable_checks": stable_ready,
@@ -612,6 +622,8 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
                         "url_changed": str(verified.get("url") or "") != before_url,
                         "composer_released": composer_released,
                         "text_visible_in_conversation": text_visible,
+                        "conversation_created": conversation_created,
+                        "user_message_count": int(verified.get("userMessageCount") or 0),
                     })
                     ws.close()
                     ws = None
@@ -1082,7 +1094,7 @@ c.addEventListener("keydown",e=>{
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SuzieDoctorCallLab/0.1"
+    server_version = "SuzieDoctorCallLab/0.2"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return

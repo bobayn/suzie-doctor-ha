@@ -1,3 +1,8 @@
+## Doctor Call Lab submission confirmation — 2026-09-25
+
+- CDP submission verification now accepts a released composer plus creation of a new ChatGPT `/c/` conversation as reliable submission evidence, even before the user-message DOM has hydrated.
+- Failed submissions still close their orphan tab; successful submissions are no longer falsely marked failed and prematurely closed just because the full prompt text is not immediately visible in the page body.
+
 ## Doctor retirement active-resolution guard — 2026-09-25
 
 - Superseded Repair retirement now excludes any Case that is still the current Field Case of a non-RESOLVED resolution.
