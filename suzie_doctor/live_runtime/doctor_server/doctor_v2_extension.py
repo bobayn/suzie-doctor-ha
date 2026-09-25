@@ -221,35 +221,53 @@ class V2Extension:
             related_candidates=[]
             result_problem_key=str(result.get("problem_key") or "").strip()
             if result_problem_key.startswith("repair:"):
-                related_candidates.append(result_problem_key)
+                related_candidates.append({"fingerprint":result_problem_key})
             result_evidence=result.get("evidence") if isinstance(result.get("evidence"),dict) else {}
             rd=str(result_evidence.get("repair_domain") or "").strip()
             ri=str(result_evidence.get("repair_issue_id") or "").strip()
             if rd and ri:
-                related_candidates.append(f"repair:{rd}:{ri}")
+                related_candidates.append({"fingerprint":f"repair:{rd}:{ri}","domain":rd,"issue_id":ri})
             related=trigger_evidence.get("related_findings")
             if isinstance(related,list):
                 for item in related:
                     if isinstance(item,dict) and str(item.get("kind") or "")=="repair":
-                        fp=str(item.get("problem_key") or "").strip()
-                        if fp:
-                            related_candidates.append(fp)
-            for fp in dict.fromkeys(related_candidates):
-                existing_resolution=self.runtime._resolution(str(job["patient_id"]),fp)
-                if not existing_resolution or str(existing_resolution.get("state") or "")=="RESOLVED":
+                        related_candidates.append({
+                            "fingerprint":str(item.get("problem_key") or "").strip(),
+                            "domain":str(item.get("domain") or "").strip(),
+                            "issue_id":str(item.get("issue_id") or "").strip(),
+                        })
+            seen=set()
+            for candidate in related_candidates:
+                key=(str(candidate.get("fingerprint") or ""),str(candidate.get("domain") or ""),str(candidate.get("issue_id") or ""))
+                if key in seen:
                     continue
+                seen.add(key)
+                context=self.runtime.resolve_active_repair_context(
+                    str(job["patient_id"]),
+                    candidate.get("fingerprint"),
+                    domain=candidate.get("domain"),
+                    issue_id=candidate.get("issue_id"),
+                )
+                if not context:
+                    continue
+                evidence=dict(context.get("evidence") or {})
                 active_repair={
-                    "domain":str(existing_resolution.get("domain") or ""),
-                    "issue_id":str(existing_resolution.get("issue_id") or ""),
-                    "problem_key":fp,
-                    "resolution_criterion":{
+                    "domain":str(evidence.get("domain") or ""),
+                    "issue_id":str(evidence.get("issue_id") or ""),
+                    "problem_key":str(context.get("fingerprint") or ""),
+                    "ha_severity":str(evidence.get("ha_severity") or "warning"),
+                    "is_fixable":bool(evidence.get("is_fixable")),
+                    "translation_key":evidence.get("translation_key"),
+                    "translation_placeholders":evidence.get("translation_placeholders") or {},
+                    "repair_identity":evidence.get("repair_identity") or {},
+                    "resolution_criterion":evidence.get("resolution_criterion") or {
                         "type":"ha_repair_absent",
-                        "domain":str(existing_resolution.get("domain") or ""),
-                        "issue_id":str(existing_resolution.get("issue_id") or ""),
+                        "domain":str(evidence.get("domain") or ""),
+                        "issue_id":str(evidence.get("issue_id") or ""),
                     },
                 }
                 result["active_repair"]=active_repair
-                result["resolution_fingerprint"]=fp
+                result["resolution_fingerprint"]=str(context.get("fingerprint") or "")
                 break
         if decision=="HUMAN_ACTION_REQUIRED":
             human=result.get("human_requirement") if isinstance(result.get("human_requirement"),dict) else {}

@@ -131,6 +131,62 @@ class DoctorV2Runtime:
             return {"case_id":int(case["case_id"]),"state":str(case["state"]),"source":"field_queue"}
         return None
 
+    def resolve_active_repair_context(
+        self, patient_id:str, fingerprint:str|None, *, domain:str|None=None, issue_id:str|None=None
+    ) -> dict[str,Any]|None:
+        fp=str(fingerprint or "").strip()
+        domain_s=str(domain or "").strip()
+        issue_s=str(issue_id or "").strip()
+        direct=self._resolution(str(patient_id),fp) if fp else None
+        resolution=direct if direct and str(direct.get("state") or "")!="RESOLVED" else None
+        if resolution is None:
+            if (not domain_s or not issue_s) and fp.startswith("repair:"):
+                parts=fp.split(":",2)
+                if len(parts)==3 and ":semantic:" not in fp:
+                    domain_s=domain_s or parts[1]
+                    issue_s=issue_s or parts[2]
+            if domain_s and issue_s:
+                row=self.conn.execute(
+                    """select * from doctor_v2_resolutions
+                       where patient_id=? and domain=? and issue_id=? and state<>'RESOLVED'
+                       order by case when fingerprint like 'repair:%:semantic:%' then 0 else 1 end, updated_at desc
+                       limit 1""",
+                    (str(patient_id),domain_s,issue_s),
+                ).fetchone()
+                if row:
+                    resolution=dict(row)
+        if resolution is None:
+            return None
+        canonical_fp=str(resolution.get("fingerprint") or "")
+        evidence={}
+        event=self.conn.execute(
+            """select payload_json from doctor_v2_patient_events
+               where patient_id=? and fingerprint=? order by event_id desc limit 1""",
+            (str(patient_id),canonical_fp),
+        ).fetchone()
+        if event:
+            payload=self._loads(event["payload_json"])
+            if isinstance(payload,dict) and isinstance(payload.get("evidence"),dict):
+                candidate=payload["evidence"]
+                if str(candidate.get("kind") or "")=="repair":
+                    evidence=dict(candidate)
+        if not evidence:
+            evidence={
+                "kind":"repair",
+                "problem_key":canonical_fp,
+                "domain":str(resolution.get("domain") or domain_s),
+                "issue_id":str(resolution.get("issue_id") or issue_s),
+                "active":True,
+                "terminal_resolution_required":True,
+                "resolution_criterion":{
+                    "type":"ha_repair_absent",
+                    "domain":str(resolution.get("domain") or domain_s),
+                    "issue_id":str(resolution.get("issue_id") or issue_s),
+                },
+            }
+        evidence["problem_key"]=canonical_fp
+        return {"fingerprint":canonical_fp,"resolution":resolution,"evidence":evidence}
+
     def active_field_case_for_house(self, job_id:int, resolution_fingerprint:str|None=None) -> dict[str,Any]|None:
         row=self.conn.execute(
             """select e.patient_id,e.fingerprint

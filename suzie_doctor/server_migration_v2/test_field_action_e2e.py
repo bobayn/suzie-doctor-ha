@@ -244,6 +244,23 @@ def main():
         assert merged['case_id']==case['case_id'] and len(merged['problem']['related_house_updates'])==1
         assert rt.conn.execute("select count(*) from doctor_cases where state not in ('RESOLVED','FAILED','HUMAN_REQUIRED','CANCELLED')").fetchone()[0]==1
     with TemporaryDirectory() as td:
+        rt=DoctorV2Runtime(Path(td)/'rotated-repair.db',LIVE/'doctor_v2_schema.sql')
+        semantic_fp='repair:hassio:semantic:issue_mount_mount_failed:abc123'
+        semantic_payload={'evidence':{
+            'kind':'repair','problem_key':semantic_fp,'domain':'hassio','issue_id':'rotated-id',
+            'active':True,'terminal_resolution_required':True,
+            'translation_key':'issue_mount_mount_failed',
+            'translation_placeholders':{'reference':'garage_camera_archive'},
+            'resolution_criterion':{'type':'ha_repair_absent','domain':'hassio','issue_id':'rotated-id','identity_mode':'semantic','translation_key':'issue_mount_mount_failed','identity_placeholders':{'reference':'garage_camera_archive'}},
+        }}
+        rt.journal_to_house('patient-rotated','repair',semantic_payload,fingerprint=semantic_fp,priority=85)
+        with rt.conn:
+            rt.conn.execute("insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,resolved_at) values(?,?,?,?,?,'RESOLVED',CURRENT_TIMESTAMP)",('patient-rotated','repair:hassio:rotated-id','repair:hassio:rotated-id','hassio','rotated-id'))
+        ctx=rt.resolve_active_repair_context('patient-rotated','repair:hassio:rotated-id',domain='hassio',issue_id='rotated-id')
+        assert ctx and ctx['fingerprint']==semantic_fp
+        assert ctx['evidence']['resolution_criterion']['identity_mode']=='semantic'
+        assert ctx['evidence']['translation_placeholders']['reference']=='garage_camera_archive'
+    with TemporaryDirectory() as td:
         rt=DoctorV2Runtime(Path(td)/'priority.db',LIVE/'doctor_v2_schema.sql')
         low=rt.journal_to_house('patient-priority','test',{'evidence':{'kind':'runtime','problem_key':'low'}},fingerprint='low',priority=50)
         low_id=int(low['house_job_id'])

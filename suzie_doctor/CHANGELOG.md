@@ -1,3 +1,9 @@
+## Doctor related Repair semantic resolver — 2026-09-25
+
+- Runtime/HA findings that reference a Repair by an old transient `repair:<domain>:<issue_id>` key now resolve to the active semantic Repair resolution with the same domain/issue_id when available.
+- Related House findings reuse the canonical Repair evidence and functional criterion from Patient Journal instead of reconstructing an issue-id-only verify rule.
+- This prevents direct Repair and related runtime/mount findings from spawning parallel Field Cases after Repair identity migration.
+
 ## Doctor Call Lab accessibility fallback — 2026-09-25
 
 - Doctor jobs without required app/plugin selections now fall back once from failed CDP submission to the independent X11/AT-SPI accessibility transport.
