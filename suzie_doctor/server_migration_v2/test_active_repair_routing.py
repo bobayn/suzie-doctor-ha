@@ -16,7 +16,9 @@ def main():
 
     assert 'HA Repair warning reclassified to OBSERVE' not in audit
     assert '"terminal_resolution_required": True' in audit
-    assert '"type": "ha_repair_absent"' in audit
+    assert 'repair_identity(' in audit
+    assert 'repair_verify_criterion(' in audit
+    assert 'identity=repair_identity(domain,issue_id,item.get("translation_key"),placeholders)' in server
     assert 'reason="repair_followup"' in app
     assert '"terminal_resolution_required", "is_fixable"' in app
     assert 'Active Home Assistant Repair requires DISPATCH_SUZIE or HUMAN_ACTION_REQUIRED until verified absent' in extension

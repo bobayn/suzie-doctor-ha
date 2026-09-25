@@ -13,6 +13,7 @@ from command_bridge import ClientCommandBridge
 from case_journal import CaseJournal
 from doctor_v2_live import DoctorV2Runtime
 from suzie_doctor.protocol_engine import ProtocolEngine
+from suzie_doctor.repair_identity import repair_identity, repair_verify_criterion
 
 class DB:
     def begin_protocol_run(self,**kw): return 1
@@ -23,9 +24,11 @@ class Sup:
     async def restart_core(self): raise TimeoutError('test disconnect')
     async def reload_mount_detailed(self,name): return {'ok':True,'name':name}
 class HA:
-    def __init__(self,active=False): self.active=active; self.calls=[]
+    def __init__(self,active=False,repairs=None): self.active=active; self.repairs=repairs; self.calls=[]
     async def call_service(self,d,s,data): self.calls.append((d,s,data)); return True
-    async def list_repairs(self): return ([{'domain':'hacs','issue_id':'x','active':True}] if self.active else [])
+    async def list_repairs(self):
+        if self.repairs is not None: return self.repairs
+        return ([{'domain':'hacs','issue_id':'x','active':True}] if self.active else [])
 
 def risk():
     return {'harm_probability':'LOW','irreversibility':'REVERSIBLE','harm_magnitude':'LOW','decision':'PROCEED','rationale':'bounded regression'}
@@ -53,6 +56,17 @@ async def engine_checks():
     e3=ProtocolEngine(DB(),Sup(),HA(True),app_version='t',bridge_version='t',pack_version='t')
     failed=await e3.execute_card(card('reload_subsystem',{'subsystem':'automation'}),context={'field_action_authorized':True},risk_assessment=risk(),execution_actor='field_suzie')
     assert failed['result']=='FAILED' and failed['verify_passed'] is False and failed['new_protocol_evidence'] is False
+    old_ident=repair_identity(domain='hassio',issue_id='old-id',translation_key='issue_mount_mount_failed',translation_placeholders={'reference':'garage_camera_archive','storage_url':'/config/storage'})
+    new_ident=repair_identity(domain='hassio',issue_id='new-id',translation_key='issue_mount_mount_failed',translation_placeholders={'reference':'garage_camera_archive','storage_url':'/config/storage'})
+    assert old_ident['problem_key']==new_ident['problem_key'] and old_ident['identity_mode']=='semantic'
+    semantic=card('reload_mount',{'name':'garage_camera_archive'})
+    semantic['diagnostics'][0]['args']=repair_verify_criterion(old_ident)
+    rotated=[{'domain':'hassio','issue_id':'new-id','translation_key':'issue_mount_mount_failed','translation_placeholders':{'reference':'garage_camera_archive','storage_url':'/config/storage'},'active':True}]
+    sem_engine=ProtocolEngine(DB(),Sup(),HA(repairs=rotated),app_version='t',bridge_version='t',pack_version='t')
+    sem_fail=await sem_engine.verify_field_one_shot(semantic,context={})
+    assert sem_fail['verify_passed'] is False
+    sem_pass=await ProtocolEngine(DB(),Sup(),HA(repairs=[]),app_version='t',bridge_version='t',pack_version='t').verify_field_one_shot(semantic,context={})
+    assert sem_pass['verify_passed'] is True
     allowed=e2._treatment_allowed(card('reboot_host',{},True),trust_mode='full_trust',risk_assessment=risk(),execution_actor='family_doctor',developer_override=False)
     assert allowed[0] is False and allowed[1]=='field_one_shot_field_only'
 
@@ -83,6 +97,10 @@ def main():
     assert 'journal_fingerprint = (' in server
     assert 'The primary evidence owns the journal fingerprint' in server
     assert 'fingerprint=journal_fingerprint' in server
+    assert 'identity=repair_identity(domain,issue_id,item.get("translation_key"),placeholders)' in server
+    assert 'active_keys.add(problem_key)' in server
+    assert 'repair_verify_criterion(identity)' in server
+    assert 'current_field_case_id=NULL' not in (LIVE/'doctor_v2_live.py').read_text().split('def journal_to_house',1)[1].split('def customer_feed',1)[0]
     assert 'active_field_case_for_house' in extension
     assert 'merge_house_evidence' in extension
     assert 'resolution_fingerprint' in extension

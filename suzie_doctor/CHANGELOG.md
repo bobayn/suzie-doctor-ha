@@ -1,3 +1,10 @@
+## Doctor stable Repair identity — 2026-09-25
+
+- Active Home Assistant Repairs now use a semantic problem identity when HA exposes stable object placeholders such as `reference`, `entry_id`, `device_id`, `entity_id` or `slug`; otherwise the existing issue-id identity remains the fallback.
+- `ha_repair_absent` now verifies semantic identity, so a Repair cannot falsely PASS merely because Home Assistant rotated its `issue_id` while the same underlying fault remains active.
+- Repair reconciliation preserves a live Field Case pointer across repeated events for the same semantic problem while clearing stale/nonexistent pointers.
+- Audit and deterministic recommendation bookkeeping use the same identity helper as Field verification.
+
 ## Doctor signed-attempt semantics — 2026-09-25
 
 - Field no-repeat and cooldown now count only requests that actually received a signed execution package.

@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.17-v2-dev"
+SERVER_VERSION = "0.2.18-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -101,6 +101,53 @@ def b64d(value: str) -> bytes:
 def clean_text(value: Any, limit: int = 1000) -> str:
     text = str(value or "").replace("\x00", " ").strip()
     return text[:limit]
+
+
+REPAIR_IDENTITY_PLACEHOLDER_KEYS = (
+    "reference", "config_entry_id", "entry_id", "device_id", "entity_id",
+    "addon", "slug", "repository", "integration", "mount", "name",
+)
+
+
+def repair_identity(
+    domain: Any, issue_id: Any, translation_key: Any = None, translation_placeholders: Any = None
+) -> dict[str, Any]:
+    domain_s = clean_text(domain, 160)
+    issue_s = clean_text(issue_id, 240)
+    key_s = clean_text(translation_key, 240)
+    placeholders = translation_placeholders if isinstance(translation_placeholders, dict) else {}
+    identity_placeholders = {
+        key: clean_text(placeholders.get(key), 500)
+        for key in REPAIR_IDENTITY_PLACEHOLDER_KEYS
+        if clean_text(placeholders.get(key), 500)
+    }
+    if domain_s and key_s and identity_placeholders:
+        raw = json.dumps(
+            {"domain": domain_s, "translation_key": key_s, "identity_placeholders": identity_placeholders},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+        problem_key = f"repair:{domain_s}:semantic:{key_s}:{digest}"
+        mode = "semantic"
+    else:
+        problem_key = f"repair:{domain_s}:{issue_s}"
+        mode = "issue_id"
+    return {
+        "problem_key": problem_key, "identity_mode": mode, "domain": domain_s,
+        "issue_id": issue_s, "translation_key": key_s,
+        "identity_placeholders": identity_placeholders,
+    }
+
+
+def repair_verify_criterion(identity: dict[str, Any]) -> dict[str, Any]:
+    out = {"type": "ha_repair_absent", "domain": identity.get("domain", ""), "issue_id": identity.get("issue_id", "")}
+    if str(identity.get("identity_mode") or "") == "semantic":
+        out.update({
+            "identity_mode": "semantic",
+            "translation_key": identity.get("translation_key", ""),
+            "identity_placeholders": dict(identity.get("identity_placeholders") or {}),
+        })
+    return out
 
 
 def safe_structured(value: Any, depth: int = 0) -> Any:
@@ -2106,14 +2153,13 @@ class DoctorServer:
             repair = problem.get("active_repair") if isinstance(problem.get("active_repair"),dict) else {}
             original_criterion = repair.get("resolution_criterion") if isinstance(repair.get("resolution_criterion"),dict) else None
         if isinstance(original_criterion,dict) and str(original_criterion.get("type") or "") == "ha_repair_absent":
-            domain=str(original_criterion.get("domain") or "")
-            issue_id=str(original_criterion.get("issue_id") or "")
-            if str(verify_criterion.get("type") or "") == "ha_repair_absent":
-                if str(verify_criterion.get("domain") or "") != domain or str(verify_criterion.get("issue_id") or "") != issue_id:
-                    raise web.HTTPBadRequest(text="verify criterion does not match original Repair criterion")
+            repair_args={k:original_criterion.get(k) for k in ("domain","issue_id","identity_mode","translation_key","identity_placeholders") if original_criterion.get(k) not in (None,"",{})}
+            domain=str(repair_args.get("domain") or "")
+            if str(verify_criterion.get("type") or "") == "ha_repair_absent" and str(verify_criterion.get("domain") or "") not in {"",domain}:
+                raise web.HTTPBadRequest(text="verify criterion does not match original Repair criterion")
             verify_criterion={
-                "type":"ha_repair_absent","domain":domain,"issue_id":issue_id,
-                "diagnostics":[{"id":"original_functional_criterion","primitive":"ha_repair_absent","args":{"domain":domain,"issue_id":issue_id},"save_as":"original_functional_pass"}],
+                **repair_args,"type":"ha_repair_absent",
+                "diagnostics":[{"id":"original_functional_criterion","primitive":"ha_repair_absent","args":repair_args,"save_as":"original_functional_pass"}],
                 "conditions":{"all":[{"expr":"original_functional_pass == true"}]},
             }
         diagnostics = verify_criterion.get("diagnostics")
@@ -2516,22 +2562,24 @@ class DoctorServer:
             issue_id=clean_text(item.get("issue_id"),240)
             if not domain or not issue_id or item.get("active") is False or item.get("dismissed_version"):
                 continue
-            problem_key=f"repair:{domain}:{issue_id}"
-            active_keys.add((domain,issue_id))
+            placeholders=safe_structured(item.get("translation_placeholders") or {})
+            identity=repair_identity(domain,issue_id,item.get("translation_key"),placeholders)
+            problem_key=str(identity["problem_key"])
+            active_keys.add(problem_key)
             evidence={
                 "kind":"repair","problem_key":problem_key,"domain":domain,"issue_id":issue_id,
                 "active":True,"terminal_resolution_required":True,"is_fixable":bool(item.get("is_fixable")),
                 "ha_severity":str(item.get("severity") or "warning"),"translation_key":item.get("translation_key"),
-                "translation_placeholders":safe_structured(item.get("translation_placeholders") or {}),
+                "translation_placeholders":placeholders,"repair_identity":identity,
                 "field_action_capabilities":capabilities,
-                "resolution_criterion":{"type":"ha_repair_absent","domain":domain,"issue_id":issue_id},
+                "resolution_criterion":repair_verify_criterion(identity),
             }
             payload={"request_id":str(uuid4()),"problem_key":problem_key,"component":"repair","symptoms":str(item.get("translation_key") or issue_id),"evidence":evidence,"routing_intent":"PATIENT_JOURNAL_HOUSE_REVIEW"}
             routed.append(self.v2_ext.runtime.journal_to_house(client_id,"repair_reconcile",payload,event_type="OBSERVATION",severity=("CRITICAL" if str(item.get("severity") or "").lower()=="critical" else "PROBLEM"),fingerprint=problem_key,priority=85))
         resolved=[]
         rows=self.v2_ext.runtime.conn.execute("select fingerprint,domain,issue_id,state from doctor_v2_resolutions where patient_id=? and terminal_resolution_required=1 and state<>'RESOLVED'",(client_id,)).fetchall()
         for row in rows:
-            key=(str(row["domain"] or ""),str(row["issue_id"] or ""))
+            key=str(row["fingerprint"] or "")
             if key not in active_keys:
                 with self.v2_ext.runtime.conn:
                     self.v2_ext.runtime.conn.execute("update doctor_v2_resolutions set state='RESOLVED',resolved_at=CURRENT_TIMESTAMP,next_recheck_at=NULL,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=?",(client_id,str(row["fingerprint"])))

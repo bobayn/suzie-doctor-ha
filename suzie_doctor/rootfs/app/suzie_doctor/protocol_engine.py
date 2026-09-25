@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from .db import Database
+from .repair_identity import repair_matches_identity
 if TYPE_CHECKING:
     from .ha_api import HomeAssistantClient
     from .supervisor import SupervisorClient
@@ -1528,14 +1529,21 @@ class ProtocolEngine:
         if name == "ha_repair_absent":
             domain = str(resolved.get("domain") or "").strip()
             issue_id = str(resolved.get("issue_id") or "").strip()
-            if not domain or not issue_id:
-                raise ProtocolError("ha_repair_absent requires domain and issue_id")
+            identity = {
+                "domain": domain,
+                "issue_id": issue_id,
+                "identity_mode": str(resolved.get("identity_mode") or "issue_id"),
+                "translation_key": str(resolved.get("translation_key") or "").strip(),
+                "identity_placeholders": dict(resolved.get("identity_placeholders") or {}) if isinstance(resolved.get("identity_placeholders"), dict) else {},
+            }
+            if not domain or (identity["identity_mode"] != "semantic" and not issue_id):
+                raise ProtocolError("ha_repair_absent requires domain plus issue_id or semantic identity")
             repairs = await self.ha.list_repairs()
             items = repairs if isinstance(repairs, list) else (repairs.get("repairs", []) if isinstance(repairs, dict) else [])
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                if str(item.get("domain") or "") == domain and str(item.get("issue_id") or "") == issue_id:
+                if repair_matches_identity(item, identity):
                     if item.get("active", True) is not False and not item.get("dismissed_version"):
                         return False
             return True

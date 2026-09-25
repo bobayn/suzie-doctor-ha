@@ -103,24 +103,30 @@ class DoctorV2Runtime:
             (str(patient_id),str(fingerprint)),
         ).fetchone()
         if res and res["current_field_case_id"] is not None:
-            case=self.conn.execute(
-                "select case_id,state from doctor_cases where case_id=?",
-                (int(res["current_field_case_id"]),),
-            ).fetchone()
+            try:
+                case=self.conn.execute(
+                    "select case_id,state from doctor_cases where case_id=?",
+                    (int(res["current_field_case_id"]),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                case=None
             if case and str(case["state"]) not in terminal:
                 return {"case_id":int(case["case_id"]),"state":str(case["state"]),"source":"resolution"}
-        case=self.conn.execute(
-            """select c.case_id,c.state
-               from doctor_v2_field_queue q
-               join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
-               join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
-               join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
-               join doctor_cases c on c.case_id=q.legacy_case_id
-               where e.patient_id=? and e.fingerprint=?
-                 and c.state not in ('RESOLVED','HUMAN_REQUIRED','FAILED','CANCELLED')
-               order by c.case_id desc limit 1""",
-            (str(patient_id),str(fingerprint)),
-        ).fetchone()
+        try:
+            case=self.conn.execute(
+                """select c.case_id,c.state
+                   from doctor_v2_field_queue q
+                   join doctor_v2_house_decisions d on d.decision_id=q.source_house_decision_id
+                   join doctor_v2_house_jobs h on h.house_job_id=d.house_job_id
+                   join doctor_v2_patient_events e on e.event_id=h.trigger_event_id
+                   join doctor_cases c on c.case_id=q.legacy_case_id
+                   where e.patient_id=? and e.fingerprint=?
+                     and c.state not in ('RESOLVED','HUMAN_REQUIRED','FAILED','CANCELLED')
+                   order by c.case_id desc limit 1""",
+                (str(patient_id),str(fingerprint)),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            case=None
         if case:
             return {"case_id":int(case["case_id"]),"state":str(case["state"]),"source":"field_queue"}
         return None
@@ -301,12 +307,14 @@ class DoctorV2Runtime:
         event_id=self.store.append_event(patient_id=patient_id,event_type=event_type,source=source,payload=payload,severity=severity,fingerprint=fingerprint,create_house_job=True,priority=effective_priority)
         row=self.conn.execute("select house_job_id,status from doctor_v2_house_jobs where trigger_event_id=?",(event_id,)).fetchone()
         if repair and row:
+            active_case=self._active_field_case_for_resolution(str(patient_id),repair["fingerprint"])
+            active_case_id=int(active_case["case_id"]) if active_case else None
             with self.conn:
                 self.conn.execute(
-                    """insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,current_house_job_id,last_event_id,last_card_version,human_requirement_json,capabilities_hash,material_hash,updated_at)
-                       values(?,?,?,?,?,'DISPATCHED',?,?,?,?,?,?,CURRENT_TIMESTAMP)
-                       on conflict(patient_id,fingerprint) do update set problem_key=excluded.problem_key,domain=excluded.domain,issue_id=excluded.issue_id,state='DISPATCHED',current_house_job_id=excluded.current_house_job_id,current_field_case_id=NULL,last_event_id=excluded.last_event_id,last_card_version=excluded.last_card_version,human_requirement_json='{}',capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=NULL,resolved_at=NULL,updated_at=CURRENT_TIMESTAMP""",
-                    (str(patient_id),repair["fingerprint"],repair["problem_key"],repair["domain"],repair["issue_id"],int(row[0]),event_id,version,'{}',repair["capabilities_hash"],repair["material_hash"]))
+                    """insert into doctor_v2_resolutions(patient_id,fingerprint,problem_key,domain,issue_id,state,current_house_job_id,current_field_case_id,last_event_id,last_card_version,human_requirement_json,capabilities_hash,material_hash,updated_at)
+                       values(?,?,?,?,?,'DISPATCHED',?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                       on conflict(patient_id,fingerprint) do update set problem_key=excluded.problem_key,domain=excluded.domain,issue_id=excluded.issue_id,state='DISPATCHED',current_house_job_id=excluded.current_house_job_id,current_field_case_id=excluded.current_field_case_id,last_event_id=excluded.last_event_id,last_card_version=excluded.last_card_version,human_requirement_json='{}',capabilities_hash=excluded.capabilities_hash,material_hash=excluded.material_hash,next_recheck_at=NULL,resolved_at=NULL,updated_at=CURRENT_TIMESTAMP""",
+                    (str(patient_id),repair["fingerprint"],repair["problem_key"],repair["domain"],repair["issue_id"],int(row[0]),active_case_id,event_id,version,'{}',repair["capabilities_hash"],repair["material_hash"]))
         return {"patient_id":patient_id,"card_version":version,"event_id":event_id,"house_job_id":int(row[0]) if row else None,"house_status":row[1] if row else None,"deduplicated":False,"resolution_state":"DISPATCHED" if repair else None}
 
     def customer_feed(self, patient_id: str, limit: int=80) -> dict[str,Any]:

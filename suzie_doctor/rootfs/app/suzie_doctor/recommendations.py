@@ -8,6 +8,7 @@ from typing import Any
 from . import APP_VERSION
 from .db import Database
 from .ha_api import HomeAssistantClient
+from .repair_identity import repair_identity
 
 
 DEFER_META = "recommendation_executor_deferred"
@@ -222,7 +223,11 @@ class RecommendationExecutor:
     async def _execute_repair(self, issue: dict[str, Any]) -> dict[str, Any]:
         domain = str(issue.get("domain") or "")
         issue_id = str(issue.get("issue_id") or "")
-        key = f"repair:{domain}:{issue_id}"
+        key = str(repair_identity(
+            domain=domain, issue_id=issue_id,
+            translation_key=issue.get("translation_key"),
+            translation_placeholders=issue.get("translation_placeholders"),
+        )["problem_key"])
         base = {
             "kind": "repair",
             "key": key,

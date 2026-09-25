@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from .db import Database
 from .ha_api import HomeAssistantClient
 from .protocol_engine import ProtocolEngine
+from .repair_identity import repair_identity, repair_verify_criterion
 from .supervisor import SupervisorClient
 
 PROBLEM_ENTRY_STATES = {"setup_error", "setup_retry", "migration_error", "failed_unload"}
@@ -618,7 +619,16 @@ class Auditor:
                         continue
                     domain = str(issue.get("domain") or "unknown")
                     issue_id = str(issue.get("issue_id") or "unknown")
-                    key = f"repair:{domain}:{issue_id}"
+                    placeholders = issue.get("translation_placeholders")
+                    if not isinstance(placeholders, dict):
+                        placeholders = {}
+                    repair_id = repair_identity(
+                        domain=domain,
+                        issue_id=issue_id,
+                        translation_key=issue.get("translation_key"),
+                        translation_placeholders=placeholders,
+                    )
+                    key = str(repair_id["problem_key"])
                     title = str(issue.get("translation_key") or issue_id)
                     active = bool(issue.get("active", False))
                     dismissed = issue.get("dismissed_version")
@@ -657,9 +667,6 @@ class Auditor:
                     # must own it through a verified terminal result.
                     current_problem_keys.add(key)
                     doctor_severity = "CRITICAL" if severity == "critical" else "PROBLEM"
-                    placeholders = issue.get("translation_placeholders")
-                    if not isinstance(placeholders, dict):
-                        placeholders = {}
                     self.db.upsert_incident(
                         problem_key=key,
                         incident_type="repair_issue",
@@ -683,11 +690,8 @@ class Auditor:
                         "translation_key": issue.get("translation_key"),
                         "translation_placeholders": placeholders,
                         "breaks_in_ha_version": issue.get("breaks_in_ha_version"),
-                        "resolution_criterion": {
-                            "type": "ha_repair_absent",
-                            "domain": domain,
-                            "issue_id": issue_id,
-                        },
+                        "repair_identity": repair_id,
+                        "resolution_criterion": repair_verify_criterion(repair_id),
                     })
 
             entries = bridge.get("config_entries", [])
