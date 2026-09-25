@@ -316,8 +316,17 @@ class CaseJournal:
                 if isinstance(x, dict) and _json(x) not in seen:
                     values.append(x); seen.add(_json(x))
             problem["do_not_repeat"] = values[-50:]
-        if not problem.get("active_repair") and isinstance(item.get("active_repair"), dict):
-            problem["active_repair"] = item["active_repair"]
+        if isinstance(item.get("active_repair"), dict):
+            if not problem.get("active_repair"):
+                problem["active_repair"] = item["active_repair"]
+            repair_fp=str(item["active_repair"].get("problem_key") or "").strip()
+            if repair_fp:
+                problem["canonical_resolution_fingerprint"] = repair_fp
+            problem["terminal_resolution_required"] = True
+            if not problem.get("domain"):
+                problem["domain"] = str(item["active_repair"].get("domain") or "")
+            if not problem.get("issue_id"):
+                problem["issue_id"] = str(item["active_repair"].get("issue_id") or "")
         if not problem.get("original_functional_criterion") and isinstance(item.get("original_functional_criterion"), dict):
             problem["original_functional_criterion"] = item["original_functional_criterion"]
         with self.conn:
