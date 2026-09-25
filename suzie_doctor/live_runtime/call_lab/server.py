@@ -593,18 +593,19 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
   const expected={json.dumps(text)};
   const prefix=expected.slice(0, Math.min(180, expected.length));
   const userTexts=[...document.querySelectorAll('[data-message-author-role="user"]')].map(x => (x.innerText || x.textContent || ''));
-  const bodyText=document.body ? (document.body.innerText || '') : '';
   return {{
     url:location.href,
     composer:v || '',
-    textVisibleInConversation:bodyText.includes(expected) || userTexts.some(t => t.includes(expected) || (prefix && t.includes(prefix))),
+    textVisibleInConversation:userTexts.some(t => t.includes(expected) || (prefix && t.includes(prefix))),
     conversationCreated:location.href !== {json.dumps(before_url)} && location.pathname.includes('/c/'),
     userMessageCount:userTexts.length
   }};
 }})()
 """
         verified = None
-        verify_deadline = time.time() + 15
+        verify_started = time.time()
+        verify_deadline = verify_started + 15
+        keyboard_fallback_sent = False
         while time.time() < verify_deadline:
             check = call("Runtime.evaluate", {
                 "expression": verify_expression,
@@ -636,6 +637,26 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
                     ws.close()
                     ws = None
                     return
+                if (
+                    not keyboard_fallback_sent
+                    and time.time() - verify_started >= 2.0
+                    and str(verified.get("composer") or "") == text
+                    and not conversation_created
+                    and int(verified.get("userMessageCount") or 0) == 0
+                ):
+                    focus_expression = """
+(() => {
+  const el = document.querySelector('#prompt-textarea') || document.querySelector("textarea[data-id='root']") || document.querySelector('textarea') || document.querySelector("div[contenteditable='true']");
+  if (!el) return false;
+  el.focus();
+  return document.activeElement === el || el.contains(document.activeElement);
+})()
+"""
+                    call("Runtime.evaluate", {"expression": focus_expression, "returnByValue": True})
+                    call("Input.dispatchKeyEvent", {"type":"keyDown","key":"Enter","code":"Enter","windowsVirtualKeyCode":13,"nativeVirtualKeyCode":13})
+                    call("Input.dispatchKeyEvent", {"type":"keyUp","key":"Enter","code":"Enter","windowsVirtualKeyCode":13,"nativeVirtualKeyCode":13})
+                    keyboard_fallback_sent = True
+                    update_job(job_id, "send_ready", {"keyboard_fallback":"cdp_enter"})
             time.sleep(0.2)
         raise RuntimeError(f"submission_not_confirmed: {verified}")
     except Exception as exc:
@@ -1102,7 +1123,7 @@ c.addEventListener("keydown",e=>{
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SuzieDoctorCallLab/0.3"
+    server_version = "SuzieDoctorCallLab/0.4"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return

@@ -1,3 +1,9 @@
+## Doctor Call Lab trusted keyboard fallback — 2026-09-25
+
+- Submission verification no longer mistakes prompt text still present in the composer for a sent user message.
+- If trusted CDP mouse input leaves the original composer unchanged for two seconds and no conversation/user-message exists, Call Lab performs one trusted CDP Enter fallback after refocusing the composer.
+- The fallback is bounded and only runs with explicit evidence that the first send did not occur, avoiding duplicate Doctor prompts.
+
 ## Doctor Call Lab trusted send input — 2026-09-25
 
 - Send now uses browser-native CDP `Input.dispatchMouseEvent` on the resolved Send-button coordinates instead of DOM `.click()`.

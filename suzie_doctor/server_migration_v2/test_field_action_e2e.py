@@ -146,6 +146,9 @@ def main():
     assert 'web_dispatch_start_recovered' in server
     assert "location.pathname.includes('/c/')" in call_lab
     assert 'Input.dispatchMouseEvent' in call_lab
+    assert 'Input.dispatchKeyEvent' in call_lab
+    assert 'keyboard_fallback_sent = False' in call_lab
+    assert 'textVisibleInConversation:userTexts.some' in call_lab
     assert 'DOM .click()' in call_lab
     with TemporaryDirectory() as td:
         b=ClientCommandBridge(Path(td)/'commands.db')
