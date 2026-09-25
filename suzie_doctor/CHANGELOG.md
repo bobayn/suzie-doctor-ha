@@ -1,3 +1,8 @@
+## Doctor disruptive action deferred verify — 2026-09-25
+
+- Disconnect-tolerant Field actions now defer functional verification after transport timeout/loss instead of becoming immediate FAIL or retrying.
+- core.restart uses the persisted verify-only resume path; compatibility action strings are normalized to the canonical structured Field action.
+
 ## Doctor missing Web dialog recovery — 2026-09-25
 
 - Active Web Field Cases are reconciled against live Chromium dialog tabs every 15 seconds.

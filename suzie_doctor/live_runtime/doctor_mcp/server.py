@@ -668,7 +668,7 @@ async def doctor_wilson_complete(
 async def _field_action_request_via_core(
     *,
     doctor_handle: str,
-    action: dict[str, Any],
+    action: dict[str, Any] | str,
     exact_target: dict[str, Any],
     reason: str,
     evidence: dict[str, Any],
@@ -679,8 +679,12 @@ async def _field_action_request_via_core(
     rollback: list[dict[str, Any]] | None = None,
     fallback: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(action, str):
+        action = {"name": action.strip()}
     if not isinstance(action, dict) or not isinstance(exact_target, dict):
-        raise RuntimeError("action and exact_target must be objects")
+        raise RuntimeError("action must be a name string or object; exact_target must be an object")
+    if not str(action.get("name") or action.get("primitive") or "").strip():
+        raise RuntimeError("action requires name or primitive")
     if not isinstance(evidence, dict) or not isinstance(risk_assessment, dict):
         raise RuntimeError("evidence and risk_assessment must be objects")
     if not isinstance(verify_criterion, dict):
@@ -717,7 +721,7 @@ async def _field_action_request_via_core(
 )
 async def doctor_action_request(
     doctor_handle: str,
-    action: dict[str, Any],
+    action: dict[str, Any] | str,
     exact_target: dict[str, Any],
     reason: str,
     evidence: dict[str, Any],
@@ -775,7 +779,7 @@ async def doctor_diagnose(
             raise RuntimeError("field_action_request must be an object")
         result = await _field_action_request_via_core(
             doctor_handle=doctor_handle,
-            action=dict(compatibility_request.get("action") or {}),
+            action=compatibility_request.get("action") or {},
             exact_target=dict(compatibility_request.get("exact_target") or {}),
             reason=str(compatibility_request.get("reason") or ""),
             evidence=dict(compatibility_request.get("evidence") or evidence),

@@ -1809,6 +1809,19 @@ class ProtocolEngine:
     ) -> dict[str, Any]:
         card = self._validate_card(dict(card))
         field_one_shot = str(card["protocol"]["status"]) == "FIELD_ONE_SHOT"
+        field_meta = card.get("field_action") if isinstance(card.get("field_action"), dict) else {}
+        field_policy = field_meta.get("policy") if isinstance(field_meta.get("policy"), dict) else {}
+        disconnect_tolerated = bool(field_one_shot and field_policy.get("disconnect_expected"))
+
+        def _expected_transport_loss(exc: Exception) -> bool:
+            if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError)):
+                return True
+            name = type(exc).__name__.lower()
+            text = str(exc).lower()
+            return any(token in name for token in ("timeout", "disconnect", "connection", "closed")) or any(
+                token in text for token in ("timed out", "connection reset", "connection closed", "server disconnected", "cannot connect")
+            )
+
         env: dict[str, Any] = dict(context or {})
         started = monotonic()
         response: dict[str, Any] = {
@@ -1884,6 +1897,7 @@ class ProtocolEngine:
             attempts_total = 0
             treatment_results: list[dict[str, Any]] = []
             treatment_failed = False
+            disconnect_observed = False
             try:
                 checkpoint = card.get("checkpoint") or {}
                 if (
@@ -1915,6 +1929,7 @@ class ProtocolEngine:
                         1, min(3, int(step.get("max_attempts", 1)))
                     )
                     step_ok = False
+                    step_disconnect = False
                     last_value: Any = None
                     last_error: str | None = None
                     used_attempts = 0
@@ -1927,39 +1942,48 @@ class ProtocolEngine:
                                 step.get("args") or {},
                                 env,
                             )
-                            step_ok = bool(last_value is not False)
                             last_error = None
-                        except Exception as exc:
-                            last_error = (
-                                f"{type(exc).__name__}: {exc}"
+                            step_disconnect = bool(
+                                disconnect_tolerated and (
+                                    last_value is False
+                                    or (isinstance(last_value, dict) and last_value.get("disconnect_expected") is True)
+                                )
                             )
-                            step_ok = False
-                        if step_ok:
+                            step_ok = bool(last_value is not False) and not step_disconnect
+                        except Exception as exc:
+                            last_error = f"{type(exc).__name__}: {exc}"
+                            if disconnect_tolerated and _expected_transport_loss(exc):
+                                step_disconnect = True
+                                step_ok = False
+                            else:
+                                step_ok = False
+                        if step_disconnect or step_ok:
                             break
                     treatment_results.append(
                         {
                             "step": step.get("step"),
                             "primitive": primitive,
                             "attempts": used_attempts,
-                            "ok": step_ok,
+                            "ok": None if step_disconnect else step_ok,
                             "value": last_value,
                             "error": last_error,
+                            "disconnect_expected": bool(step_disconnect),
                         }
                     )
+                    if step_disconnect:
+                        disconnect_observed = True
+                        break
                     if not step_ok:
                         treatment_failed = True
                         break
 
                 response["treatment"] = treatment_results
-                field_meta = card.get("field_action") if isinstance(card.get("field_action"), dict) else {}
-                field_policy = field_meta.get("policy") if isinstance(field_meta.get("policy"), dict) else {}
-                disconnect_expected = bool(field_one_shot and field_policy.get("disconnect_expected"))
-                if disconnect_expected and not treatment_failed:
+                if disconnect_observed and not treatment_failed:
                     versions = await self._versions()
                     duration_ms = int((monotonic() - started) * 1000)
                     self.db.finish_protocol_run(
                         run_id, result="VERIFY_PENDING", attempt_count=max(1, attempts_total),
-                        restart_level_used="host_reboot", versions=versions,
+                        restart_level_used=str(field_meta.get("action_name") or field_meta.get("action") or "disconnect_expected"), versions=versions,
                     )
                     response["result"] = "CONNECTION_LOST_EXPECTED"
                     response["verify"] = []

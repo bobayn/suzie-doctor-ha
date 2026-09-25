@@ -20,6 +20,7 @@ class DB:
 class Sup:
     async def info(self): return {'homeassistant':'test','operating_system':'HAOS','arch':'aarch64'}
     async def reboot_host(self): return {'accepted':True}
+    async def restart_core(self): raise TimeoutError('test disconnect')
 class HA:
     def __init__(self,active=False): self.active=active; self.calls=[]
     async def call_service(self,d,s,data): self.calls.append((d,s,data)); return True
@@ -43,6 +44,11 @@ async def engine_checks():
     assert out2['result']=='CONNECTION_LOST_EXPECTED' and out2['verify_pending'] is True and out2['verify_performed'] is False
     verify=await e2.verify_field_one_shot(card('reboot_host',{},True),context={})
     assert verify['result']=='VERIFIED_PASS' and verify['verify_passed'] is True
+    e4=ProtocolEngine(DB(),Sup(),HA(False),app_version='t',bridge_version='t',pack_version='t')
+    pending=await e4.execute_card(card('restart_core',{},True),context={'field_action_authorized':True},risk_assessment=risk(),execution_actor='field_suzie')
+    assert pending['result']=='CONNECTION_LOST_EXPECTED' and pending['verify_pending'] is True and pending['treatment'][0]['attempts']==1 and pending['treatment'][0]['ok'] is None
+    resumed=await e4.verify_field_one_shot(card('restart_core',{},True),context={})
+    assert resumed['result']=='VERIFIED_PASS' and resumed['verify_passed'] is True
     e3=ProtocolEngine(DB(),Sup(),HA(True),app_version='t',bridge_version='t',pack_version='t')
     failed=await e3.execute_card(card('reload_subsystem',{'subsystem':'automation'}),context={'field_action_authorized':True},risk_assessment=risk(),execution_actor='field_suzie')
     assert failed['result']=='FAILED' and failed['verify_passed'] is False and failed['new_protocol_evidence'] is False
@@ -97,6 +103,8 @@ def main():
     assert '_reconcile_missing_web_dialogs' in server
     assert '/v1/field-action-resume' in server and 'deferred_result_submission' in app
     assert 'CONNECTION_LOST_EXPECTED' in server and 'VERIFY_PENDING' in app
+    assert '"core.restart": {"primitive":"restart_core"' in server and '"disconnect_expected":True' in server
+    assert 'action must be a name string or object' in doctor_mcp
     assert 'Field HUMAN_REQUIRED requires human_requirement.type and reason' in server
     assert 'Field MISSING_CAPABILITY requires exact human_requirement.capability' in server
     assert 'House HUMAN_ACTION_REQUIRED requires human_requirement.type and reason' in extension

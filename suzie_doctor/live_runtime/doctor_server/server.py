@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.12-v2-dev"
+SERVER_VERSION = "0.2.13-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -46,7 +46,7 @@ MAX_BODY = 256 * 1024
 FIELD_ACTION_POLICIES = {
     "integration.reload": {"primitive":"reload_config_entry_verified","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_INTEGRATION","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["entry_id"],"attempt_limit":1,"cooldown_seconds":60,"disconnect_expected":False},
     "addon.restart": {"primitive":"restart_addon","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_ADDON","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["slug"],"attempt_limit":1,"cooldown_seconds":120,"disconnect_expected":False},
-    "core.restart": {"primitive":"restart_core","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HOME_ASSISTANT_CORE","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["component"],"attempt_limit":1,"cooldown_seconds":300,"disconnect_expected":False},
+    "core.restart": {"primitive":"restart_core","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HOME_ASSISTANT_CORE","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["component"],"attempt_limit":1,"cooldown_seconds":300,"disconnect_expected":True},
     "host.reboot": {"primitive":"reboot_host","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HAOS_HOST","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["host"],"attempt_limit":1,"cooldown_seconds":600,"disconnect_expected":True},
 }
 FIELD_ACTION_PRIMITIVE_ALIASES = {v["primitive"]: k for k,v in FIELD_ACTION_POLICIES.items()}
