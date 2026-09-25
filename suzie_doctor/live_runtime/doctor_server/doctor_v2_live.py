@@ -263,6 +263,16 @@ class DoctorV2Runtime:
         repair=self._repair_resolution_info(payload,fingerprint)
         if repair:
             existing_resolution=self._resolution(str(patient_id),repair["fingerprint"])
+            active_field=self._active_field_case_for_resolution(str(patient_id),repair["fingerprint"])
+            if active_field:
+                return {
+                    "patient_id":patient_id,"card_version":version,
+                    "event_id":existing_resolution.get("last_event_id") if existing_resolution else None,
+                    "house_job_id":existing_resolution.get("current_house_job_id") if existing_resolution else None,
+                    "house_status":"DONE","deduplicated":True,
+                    "field_status":"ASSIGNED","legacy_case_id":int(active_field["case_id"]),
+                    "resolution_state":"VERIFYING" if str(active_field.get("state") or "")=="VERIFYING" else "DISPATCHED",
+                }
             open_task=self._resolution_open_task(str(patient_id),repair["fingerprint"])
             if open_task:
                 return {"patient_id":patient_id,"card_version":version,"event_id":int(open_task["event_id"]),"house_job_id":int(open_task["house_job_id"]),"house_status":open_task["house_status"],"deduplicated":True,"field_status":open_task.get("field_status"),"decision":open_task.get("decision"),"resolution_state":"DISPATCHED"}

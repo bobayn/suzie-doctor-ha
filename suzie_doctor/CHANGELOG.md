@@ -1,3 +1,9 @@
+## Doctor semantic Repair attestation and active-Field dedup — 2026-09-25
+
+- Server-side Repair SUCCESS attestation now matches semantic Repair identity rather than trusting transient issue IDs.
+- Repeated active Repair events are deduplicated directly against a live `current_field_case_id`; they no longer create fresh House jobs while a Field Case is already working the same semantic problem.
+- Resolution ingestion preserves a valid live Field pointer but clears stale/nonexistent pointers.
+
 ## Doctor stable Repair identity — 2026-09-25
 
 - Active Home Assistant Repairs now use a semantic problem identity when HA exposes stable object placeholders such as `reference`, `entry_id`, `device_id`, `entity_id` or `slug`; otherwise the existing issue-id identity remains the fallback.

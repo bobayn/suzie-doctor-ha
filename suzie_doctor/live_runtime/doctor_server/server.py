@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.18-v2-dev"
+SERVER_VERSION = "0.2.19-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -1814,6 +1814,11 @@ class DoctorServer:
             return result
         domain=str(repair.get("domain") or "")
         issue_id=str(repair.get("issue_id") or "")
+        identity=repair.get("repair_identity") if isinstance(repair.get("repair_identity"),dict) else repair_identity(
+            domain,issue_id,repair.get("translation_key"),repair.get("translation_placeholders")
+        )
+        expected_problem_key=str(identity.get("problem_key") or f"repair:{domain}:{issue_id}")
+        semantic_identity=str(identity.get("identity_mode") or "") == "semantic"
         action_rows=self.command_bridge.conn.execute(
             """select command_id from doctor_client_commands
                where case_id=? and tool_name='doctor.action.request' and status='COMPLETED' and execution_state='VERIFIED_PASS'
@@ -1825,13 +1830,23 @@ class DoctorServer:
             package=command.get("signed_package") if isinstance(command.get("signed_package"),dict) else {}
             card=package.get("card") if isinstance(package.get("card"),dict) else {}
             diagnostics=card.get("diagnostics") if isinstance(card.get("diagnostics"),list) else []
-            exact_verify=any(
-                isinstance(item,dict)
-                and str(item.get("primitive") or "")=="ha_repair_absent"
-                and str((item.get("args") or {}).get("domain") or "")==domain
-                and str((item.get("args") or {}).get("issue_id") or "")==issue_id
-                for item in diagnostics
-            )
+            exact_verify=False
+            for item in diagnostics:
+                if not isinstance(item,dict) or str(item.get("primitive") or "")!="ha_repair_absent":
+                    continue
+                args=item.get("args") if isinstance(item.get("args"),dict) else {}
+                if str(args.get("domain") or "") != domain:
+                    continue
+                if semantic_identity:
+                    exact_verify=(
+                        str(args.get("identity_mode") or "")=="semantic"
+                        and str(args.get("translation_key") or "")==str(identity.get("translation_key") or "")
+                        and dict(args.get("identity_placeholders") or {})==dict(identity.get("identity_placeholders") or {})
+                    )
+                else:
+                    exact_verify=str(args.get("issue_id") or "")==issue_id
+                if exact_verify:
+                    break
             executions=(command.get("result") or {}).get("execution_results") if isinstance(command.get("result"),dict) else []
             passed=any(isinstance(item,dict) and item.get("verify_performed") is True and item.get("verify_passed") is True for item in (executions or []))
             if exact_verify and passed:
@@ -1859,16 +1874,22 @@ class DoctorServer:
         for item in repairs:
             if not isinstance(item,dict):
                 continue
-            if str(item.get("domain") or "")==domain and str(item.get("issue_id") or "")==issue_id:
-                if item.get("active",True) is not False and not item.get("dismissed_version"):
-                    still_active=True
-                    break
+            if item.get("active",True) is False or item.get("dismissed_version"):
+                continue
+            item_identity=repair_identity(
+                item.get("domain"),item.get("issue_id"),item.get("translation_key"),item.get("translation_placeholders")
+            )
+            if str(item_identity.get("problem_key") or "") == expected_problem_key:
+                still_active=True
+                break
         if still_active:
             raise ValueError("Active HA Repair is still present; Case cannot close SUCCESS")
         out=dict(result)
         out["repair_verification"]={
             "domain":domain,
             "issue_id":issue_id,
+            "problem_key":expected_problem_key,
+            "identity_mode":identity.get("identity_mode"),
             "active_after":False,
             "verified_by":"ha.repairs.list",
             "signed_command_id":str(latest["command_id"]),

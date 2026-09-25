@@ -202,6 +202,9 @@ def main():
         rt.mark_resolution_house_decision(jid,{'decision':'DISPATCH_SUZIE'})
         case,_=j.escalate(client_id='patient-dedup',source_key=f"v2-house-decision:{dec['decision_id']}",source_request_id=None,summary='repair field',problem={'problem_key':'repair:hassio:x','field_action_capabilities':['mount.reload']},priority=75)
         rt.set_field_legacy_case(int(dec['field_queue']['queue_id']),int(case['case_id']))
+        same=rt.journal_to_house('patient-dedup','repair',payload,fingerprint='repair:hassio:x',priority=85)
+        assert same['deduplicated'] is True and same['legacy_case_id']==case['case_id'] and same['field_status']=='ASSIGNED'
+        assert rt.conn.execute('select count(*) from doctor_v2_house_jobs').fetchone()[0]==1
         related={'evidence':{'kind':'ha_runtime_error','problem_key':'ha_error:y','related_findings':[{'kind':'repair','problem_key':'repair:hassio:x','domain':'hassio','issue_id':'x'}]}}
         second=rt.journal_to_house('patient-dedup','runtime',related,fingerprint='ha_error:y',priority=75)
         jid2=int(second['house_job_id']); rt.role_acquire('HOUSE',f'house:{jid2}'); rt.dialog_open('dd2','HOUSE',f'house:{jid2}','house',1); assert rt.claim_house(jid2,'dd2')
