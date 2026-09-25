@@ -52,7 +52,7 @@ mcp = MCPServer(
         "Case before any client action, use exact-client read-only diagnostics "
         "first, verify treatment, then call doctor.case.complete_next."
     ),
-    version="0.1.5-dev",
+    version="0.1.6-dev",
 )
 
 CLAIM_HANDLES: dict[str, dict[str, Any]] = {}
@@ -743,9 +743,14 @@ async def doctor_diagnose(
         raise RuntimeError("execute=true requires Suzie Doctor risk_assessment")
     state = await _active_handle(doctor_handle)
     evidence = dict(evidence)
+    evidence["field_case_id"] = int(state["case_id"])
     if evidence.get("experimental_protocol_id"):
-        evidence["field_case_id"] = int(state["case_id"])
         evidence["routing_intent"] = "FIELD_EXPERIMENTAL_VALIDATION"
+    else:
+        # A diagnostic NO_MATCH inside an already House-dispatched Field Case
+        # must stay inside that Case.  It must never recursively create another
+        # Suzie Case through the generic auto-escalation path.
+        evidence["routing_intent"] = "FIELD_CASE_DIAGNOSTIC"
     if execute:
         await _api(
             "POST",

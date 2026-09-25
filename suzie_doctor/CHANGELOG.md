@@ -1,3 +1,9 @@
+## Doctor runtime patch — 2026-09-25
+
+- Field `doctor.diagnose` is now always bound to its active Case as `FIELD_CASE_DIAGNOSTIC` unless it is an Experimental validation request.
+- A Field diagnostic `NO_MATCH` stays inside the current Case and cannot recursively auto-escalate into duplicate Field Cases.
+- Regression coverage now checks single-mutation serialization and negative functional verification.
+
 ## 0.2.65-dev / Suite 0.1.11-dev — 2026-09-24
 
 - Completed the House-dispatched Field `doctor.action.request` end-to-end path without requiring a known Disease/Protocol.

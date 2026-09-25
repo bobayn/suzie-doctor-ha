@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.2-v2-dev"
+SERVER_VERSION = "0.2.3-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -2227,6 +2227,13 @@ class DoctorServer:
             "FAMILY_DOCTOR_PROTOCOL_OR_PATIENT_JOURNAL",
             "PATIENT_JOURNAL_HOUSE_REVIEW",
         }
+        field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"
+        if field_case_route:
+            try:
+                field_case_id = int(body.get("field_case_id"))
+            except Exception as exc:
+                raise web.HTTPBadRequest(text="FIELD_CASE_DIAGNOSTIC requires field_case_id") from exc
+            self.field_action_case_authorized(client_id=client_id, case_id=field_case_id)
 
         if disease is None:
             payload["message"] = (
@@ -2249,6 +2256,14 @@ class DoctorServer:
                 payload["result"] = "PATIENT_JOURNAL_HOUSE"
                 payload["patient_journal"] = journal
                 self.db.event("doctor_v2_patient_journal", client_id, journal)
+                return self.signed(payload)
+            if field_case_route:
+                payload["field_case_id"] = field_case_id
+                payload["message"] = (
+                    "No known Disease matched. Continue diagnosis inside the active Field Case; "
+                    "use doctor.action.request for a safe new one-shot treatment when appropriate."
+                )
+                self.db.event("field_case_diagnosis_no_match", client_id, {"case_id": field_case_id})
                 return self.signed(payload)
             if (
                 bool(self.config.get("auto_escalate_to_suzie", False))

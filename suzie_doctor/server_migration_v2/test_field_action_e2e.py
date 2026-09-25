@@ -42,6 +42,9 @@ async def engine_checks():
     assert out2['result']=='CONNECTION_LOST_EXPECTED' and out2['verify_pending'] is True and out2['verify_performed'] is False
     verify=await e2.verify_field_one_shot(card('reboot_host',{},True),context={})
     assert verify['result']=='VERIFIED_PASS' and verify['verify_passed'] is True
+    e3=ProtocolEngine(DB(),Sup(),HA(True),app_version='t',bridge_version='t',pack_version='t')
+    failed=await e3.execute_card(card('reload_subsystem',{'subsystem':'automation'}),context={'field_action_authorized':True},risk_assessment=risk(),execution_actor='field_suzie')
+    assert failed['result']=='FAILED' and failed['verify_passed'] is False and failed['new_protocol_evidence'] is False
     allowed=e2._treatment_allowed(card('reboot_host',{},True),trust_mode='full_trust',risk_assessment=risk(),execution_actor='family_doctor',developer_override=False)
     assert allowed[0] is False and allowed[1]=='field_one_shot_field_only'
 
@@ -55,9 +58,14 @@ def main():
     contract=json.loads((APPROOT/'suite/connector_contract.json').read_text())
     assert 'name="doctor.action.request"' in doctor_mcp
     assert 'name="doctor.action.request"' in home_mcp
+    assert 'FIELD_CASE_DIAGNOSTIC' in doctor_mcp
+    assert 'evidence["field_case_id"] = int(state["case_id"])' in doctor_mcp
+    assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server
+    assert 'field_case_diagnosis_no_match' in server
     assert any(x.get('name')=='doctor.action.request' for x in contract['tools'])
     assert {x['name'] for x in contract['field_actions']} >= {'integration.reload','addon.restart','core.restart','host.reboot'}
     assert 'Field action command was already signed/executed' in server
+    assert 'same Field action already attempted in this Case' in server
     assert 'field_binding_sha256' in server and 'expected_field_binding' in client
     assert '/v1/field-action-resume' in server and 'deferred_result_submission' in app
     assert 'CONNECTION_LOST_EXPECTED' in server and 'VERIFY_PENDING' in app
@@ -68,11 +76,14 @@ def main():
         b=ClientCommandBridge(Path(td)/'commands.db')
         c=b.enqueue(client_id='client123',case_id=7,tool_name='doctor.action.request',arguments={'action':{'name':'core.restart'},'exact_target':{'component':'homeassistant_core'}},trusted_context={})
         p=b.poll(client_id='client123'); assert p['command_id']==c['command_id']
+        c2=b.enqueue(client_id='client123',case_id=8,tool_name='doctor.action.request',arguments={'action':{'name':'addon.restart'},'exact_target':{'slug':'demo'}},trusted_context={})
+        assert b.poll(client_id='client123') is None  # single mutation / claimed command serializes client
         b.store_signed_package(client_id='client123',command_id=c['command_id'],package={'package_id':'p'})
         for state in ('SIGNED','EXECUTING','VERIFY_PENDING','VERIFIED_PASS'):
             b.set_execution_state(client_id='client123',command_id=c['command_id'],state=state)
         b.finish(client_id='client123',command_id=c['command_id'],result={'ok':True},error=None)
         assert b.get(c['command_id'])['status']=='COMPLETED'
+        p2=b.poll(client_id='client123'); assert p2['command_id']==c2['command_id']
     with TemporaryDirectory() as td:
         rt=DoctorV2Runtime(Path(td)/'v2.db',LIVE/'doctor_v2_schema.sql')
         a=rt.journal_to_house('patient-123456','test',repair_payload(['core.restart']),fingerprint='repair:hacs:x')
