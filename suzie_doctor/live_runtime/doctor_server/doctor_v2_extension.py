@@ -1,12 +1,15 @@
 from __future__ import annotations
 import asyncio
+import json
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 from aiohttp import web
 from doctor_v2_live import DoctorV2Runtime
+from knowledge_candidate_backfill import audit as audit_legacy_candidates
 
 HOUSE_PROJECT_URL="https://chatgpt.com/g/g-p-6ab184e457cc819182e5230e09fdfc18-doktor-khaus"
 WILSON_PROJECT_URL="https://chatgpt.com/g/g-p-6ab1850655508191afad64d3cc104b3a-doktor-vilson"
@@ -18,6 +21,40 @@ class V2Extension:
         self.tasks:set[asyncio.Task[Any]]=set()
         self.next_hourly=time.monotonic()+3600
         self.runtime.ensure_wilson_baseline()
+        self._reconcile_legacy_experimental_knowledge()
+
+    def _reconcile_legacy_experimental_knowledge(self)->None:
+        normalized_path=Path('/var/lib/suzie-doctor-server/knowledge/normalized_knowledge.json')
+        generated_path=Path('/var/lib/suzie-doctor-server/knowledge/generated_protocols.json')
+        report_path=Path('/var/lib/suzie-doctor-server/knowledge/v2_candidate_audit_latest.json')
+        if not normalized_path.exists() or not generated_path.exists():
+            return
+        try:
+            result=audit_legacy_candidates(
+                self.runtime,
+                json.loads(normalized_path.read_text(encoding='utf-8')),
+                json.loads(generated_path.read_text(encoding='utf-8')),
+                apply=True,
+            )
+            report_path.write_text(
+                json.dumps(result,ensure_ascii=False,indent=2)+'\n',
+                encoding='utf-8',
+            )
+            try:
+                report_path.chmod(0o640)
+            except Exception:
+                pass
+            self.server.db.event('doctor_v2_legacy_candidate_reconciled',None,{
+                'source_candidates':result.get('source_candidates'),
+                'counts':result.get('counts'),
+                'rejection_classes':result.get('rejection_classes'),
+                'inserted':len(result.get('inserted') or []),
+                'report_path':str(report_path),
+            })
+        except Exception as exc:
+            self.server.db.event('doctor_v2_legacy_candidate_reconcile_error',None,{
+                'error':f'{type(exc).__name__}: {exc}',
+            })
 
     def _spawn(self,coro,name:str)->None:
         t=asyncio.create_task(coro,name=name);self.tasks.add(t);t.add_done_callback(self.tasks.discard)
