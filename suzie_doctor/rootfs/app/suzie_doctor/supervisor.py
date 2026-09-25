@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import json
 from typing import Any
@@ -211,11 +212,29 @@ class SupervisorClient:
         except aiohttp.ClientResponseError:
             return False
 
+    async def _disruptive_post(self, path: str) -> dict[str, Any]:
+        try:
+            await self._request("POST", path, json={})
+            return {"accepted": True, "disconnect_expected": True}
+        except aiohttp.ClientResponseError:
+            # An explicit HTTP rejection is not an expected disconnect.
+            raise
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
+            # For restart/reboot the connection may disappear after the request has
+            # reached Supervisor.  This is ambiguous execution, never success.
+            # The caller must perform the original functional verify later.
+            return {
+                "accepted": None,
+                "disconnect_expected": True,
+                "transport_lost": True,
+                "transport_error": f"{type(exc).__name__}: {exc}",
+            }
+
     async def restart_core(self) -> Any:
-        return await self._request("POST", "/core/restart", json={})
+        return await self._disruptive_post("/core/restart")
 
     async def reboot_host(self) -> Any:
-        return await self._request("POST", "/host/reboot", json={})
+        return await self._disruptive_post("/host/reboot")
 
     async def list_discovery(self) -> dict[str, Any]:
         return await self._request("GET", "/discovery") or {}

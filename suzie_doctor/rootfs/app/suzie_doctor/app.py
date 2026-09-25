@@ -606,6 +606,7 @@ class Runtime:
                     "created_at":datetime.now(UTC).isoformat(),
                     "action":action,
                     "exact_target":exact_target,
+                    "verify_grace_seconds":max(30,min(600,int(policy.get("verify_grace_seconds") or 180))),
                 }
                 if disconnect_expected:
                     self.db.set_meta("field_action_pending_v1", json.dumps(pending, ensure_ascii=False, separators=(",",":")))
@@ -655,8 +656,16 @@ class Runtime:
             created = datetime.fromisoformat(str(pending.get("created_at") or ""))
         except Exception:
             created = datetime.now(UTC) - timedelta(minutes=20)
-        age = (datetime.now(UTC) - created).total_seconds()
+        now = datetime.now(UTC)
+        age = (now - created).total_seconds()
+        verify_grace_seconds=max(30,min(600,int(pending.get("verify_grace_seconds") or 180)))
         if age < 20:
+            return True
+        try:
+            last_verify_at=datetime.fromisoformat(str(pending.get("last_verify_at") or ""))
+        except Exception:
+            last_verify_at=None
+        if last_verify_at is not None and (now-last_verify_at).total_seconds() < 10:
             return True
         binding={"command_id":command_id,"field_case_id":case_id,"client_id":self.doctor_server.client_id,"exact_target":exact_target,"action_name":action_name}
         try:
@@ -667,9 +676,17 @@ class Runtime:
             await self.doctor_server.update_command_state(command_id=command_id,state="VERIFY_PENDING")
             verified=await self.protocol_engine.verify_field_one_shot(card,context=dict(pending.get("execution_context") or {}))
         except Exception as exc:
+            pending["last_verify_at"]=now.isoformat()
+            pending["last_verify_error"]=f"{type(exc).__name__}: {exc}"
+            self.db.set_meta("field_action_pending_v1", json.dumps(pending,ensure_ascii=False,separators=(",",":")))
             if age < 600:
                 return True
             verified={"result":"VERIFIED_FAIL","verify_performed":True,"verify_passed":False,"new_protocol_evidence":False,"error":f"{type(exc).__name__}: {exc}"}
+        if verified.get("verify_passed") is not True and age < verify_grace_seconds:
+            pending["last_verify_at"]=now.isoformat()
+            pending["last_verify"]=verified
+            self.db.set_meta("field_action_pending_v1", json.dumps(pending,ensure_ascii=False,separators=(",",":")))
+            return True
         await self.doctor_server.update_command_state(command_id=command_id,state="VERIFIED_PASS" if verified.get("verify_passed") is True else "VERIFIED_FAIL")
         result={"result":"FIELD_ACTION_RESUMED","execution_results":[verified]}
         await self.doctor_server.submit_command_result(command_id=command_id,result=result)

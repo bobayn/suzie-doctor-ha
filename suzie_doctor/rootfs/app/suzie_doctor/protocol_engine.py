@@ -49,6 +49,7 @@ class ProtocolEngine:
         "read_host_metrics",
         "reload_config_entry",
         "reload_config_entry_verified",
+        "reload_mount",
         "reload_subsystem",
         "restart_addon",
         "restart_core",
@@ -1405,8 +1406,19 @@ class ProtocolEngine:
             await self.ha.call_service("homeassistant", "check_config", {})
             return True
 
+        if name == "reload_mount":
+            mount_name = str(resolved.get("name") or "").strip()
+            if not mount_name:
+                raise ProtocolError("reload_mount requires name")
+            result = await self.supervisor.reload_mount_detailed(mount_name)
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                raise ProtocolError(f"mount reload failed: {result}")
+            return result
+
         if name == "restart_core":
-            await self.supervisor.restart_core()
+            disruptive = await self.supervisor.restart_core()
+            if bool(env.get("field_action_authorized") is True):
+                return disruptive or {"accepted": True, "disconnect_expected": True}
             timeout_seconds = max(
                 30,
                 min(300, int(resolved.get("timeout_seconds", 180))),
@@ -1424,8 +1436,10 @@ class ProtocolEngine:
             return False
 
         if name == "reboot_host":
-            await self.supervisor.reboot_host()
-            return {"accepted": True, "disconnect_expected": True}
+            disruptive = await self.supervisor.reboot_host()
+            result = dict(disruptive) if isinstance(disruptive, dict) else {"accepted": disruptive is not False}
+            result["disconnect_expected"] = True
+            return result
 
         if name == "create_backup":
             before = await self.supervisor.backups_info()
@@ -1943,13 +1957,18 @@ class ProtocolEngine:
                                 env,
                             )
                             last_error = None
-                            step_disconnect = bool(
-                                disconnect_tolerated and (
-                                    last_value is False
-                                    or (isinstance(last_value, dict) and last_value.get("disconnect_expected") is True)
-                                )
-                            )
-                            step_ok = bool(last_value is not False) and not step_disconnect
+                            if last_value is False:
+                                step_disconnect = False
+                                step_ok = False
+                            elif disconnect_tolerated:
+                                # A disruptive Field action must always leave inline
+                                # execution and enter deferred functional verification,
+                                # even when the POST itself returned cleanly.
+                                step_disconnect = True
+                                step_ok = False
+                            else:
+                                step_disconnect = False
+                                step_ok = True
                         except Exception as exc:
                             last_error = f"{type(exc).__name__}: {exc}"
                             if disconnect_tolerated and _expected_transport_loss(exc):

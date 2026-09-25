@@ -1,3 +1,15 @@
+## Doctor disruptive verify hardening and mount reload — 2026-09-25
+
+- `core.restart` and `host.reboot` now treat clean POST acceptance and transport loss as non-terminal disruptive execution and enter persisted deferred functional verification.
+- Deferred verify uses a bounded grace window with throttled rechecks before final `VERIFIED_FAIL`; the state-changing action is never reissued while the command remains claimed.
+- Supervisor distinguishes explicit HTTP rejection from ambiguous timeout/connection loss for disruptive POSTs.
+- Added structured `mount.reload` Field action backed by the existing Supervisor mount reload API, with exact mount name, one attempt and cooldown.
+
+## Doctor mount reload Field action — 2026-09-25
+
+- Added structured mount.reload via Supervisor mount reload with exact mount-name binding.
+- App 0.2.68-dev / Suite 0.1.12-dev / Connector 0.1.7-dev.
+
 ## Doctor disruptive action deferred verify — 2026-09-25
 
 - Disconnect-tolerant Field actions now defer functional verification after transport timeout/loss instead of becoming immediate FAIL or retrying.

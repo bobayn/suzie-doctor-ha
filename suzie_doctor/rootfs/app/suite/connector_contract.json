@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.6-dev",
+  "version": "0.1.7-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose|doctor.action.request -> signed_execution_package -> ProtocolEngine",
@@ -838,7 +838,8 @@
       ],
       "attempt_limit": 1,
       "cooldown_seconds": 300,
-      "disconnect_expected": true
+      "disconnect_expected": true,
+      "verify_grace_seconds": 180
     },
     {
       "name": "host.reboot",
@@ -852,7 +853,22 @@
       ],
       "attempt_limit": 1,
       "cooldown_seconds": 600,
-      "disconnect_expected": true
+      "disconnect_expected": true,
+      "verify_grace_seconds": 300
+    },
+    {
+      "name": "mount.reload",
+      "primitive": "reload_mount",
+      "reversibility": "REVERSIBLE_RUNTIME",
+      "blast_radius": "TARGET_MOUNT",
+      "checkpoint_required": false,
+      "rollback_available": false,
+      "exact_target_fields": [
+        "name"
+      ],
+      "attempt_limit": 1,
+      "cooldown_seconds": 60,
+      "disconnect_expected": false
     }
   ]
 }

@@ -21,6 +21,7 @@ class Sup:
     async def info(self): return {'homeassistant':'test','operating_system':'HAOS','arch':'aarch64'}
     async def reboot_host(self): return {'accepted':True}
     async def restart_core(self): raise TimeoutError('test disconnect')
+    async def reload_mount_detailed(self,name): return {'ok':True,'name':name}
 class HA:
     def __init__(self,active=False): self.active=active; self.calls=[]
     async def call_service(self,d,s,data): self.calls.append((d,s,data)); return True
@@ -87,7 +88,7 @@ def main():
     assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server
     assert 'field_case_diagnosis_no_match' in server
     assert any(x.get('name')=='doctor.action.request' for x in contract['tools'])
-    assert {x['name'] for x in contract['field_actions']} >= {'integration.reload','addon.restart','core.restart','host.reboot'}
+    assert {x['name'] for x in contract['field_actions']} >= {'integration.reload','addon.restart','core.restart','host.reboot','mount.reload'}
     assert 'Field action command was already signed/executed' in server
     assert 'same Field action already attempted in this Case' in server
     assert '"subsystem.reload": {"primitive":"reload_subsystem"' not in server

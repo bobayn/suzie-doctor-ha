@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.13-v2-dev"
+SERVER_VERSION = "0.2.14-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -45,6 +45,7 @@ MAX_BODY = 256 * 1024
 
 FIELD_ACTION_POLICIES = {
     "integration.reload": {"primitive":"reload_config_entry_verified","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_INTEGRATION","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["entry_id"],"attempt_limit":1,"cooldown_seconds":60,"disconnect_expected":False},
+    "mount.reload": {"primitive":"reload_mount","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_MOUNT","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["name"],"attempt_limit":1,"cooldown_seconds":60,"disconnect_expected":False},
     "addon.restart": {"primitive":"restart_addon","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_ADDON","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["slug"],"attempt_limit":1,"cooldown_seconds":120,"disconnect_expected":False},
     "core.restart": {"primitive":"restart_core","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HOME_ASSISTANT_CORE","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["component"],"attempt_limit":1,"cooldown_seconds":300,"disconnect_expected":True},
     "host.reboot": {"primitive":"reboot_host","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HAOS_HOST","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["host"],"attempt_limit":1,"cooldown_seconds":600,"disconnect_expected":True},
@@ -2030,7 +2031,7 @@ class DoctorServer:
                 raise web.HTTPBadRequest(text=f"Field action exact_target requires {field}")
             if field in action_args and str(action_args.get(field)) != str(exact_target.get(field)):
                 raise web.HTTPBadRequest(text=f"Field action target mismatch for {field}")
-            if field in {"entry_id","slug","subsystem"} and field not in action_args:
+            if field not in action_args:
                 action_args[field]=exact_target.get(field)
         if action_name == "core.restart" and str(exact_target.get("component") or "").lower() not in {"core","homeassistant_core","home assistant core"}:
             raise web.HTTPBadRequest(text="core.restart exact_target.component must identify Home Assistant Core")
