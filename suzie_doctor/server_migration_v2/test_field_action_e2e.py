@@ -91,6 +91,10 @@ def main():
     assert 'def cdp_close_target(' in call_lab and 'failed_tab_closed' in call_lab
     journal=(LIVE/'case_journal.py').read_text()
     assert 'dispatch_retry_after' in journal and 'dispatch_failures' in journal
+    assert 'def missing_dialog_candidates(' in journal and 'def recover_missing_dialog(' in journal
+    assert "SET state='FAILED',outcome='FAILED'" in journal
+    assert 'web_dialog_missing_command_protected' in server
+    assert '_reconcile_missing_web_dialogs' in server
     assert '/v1/field-action-resume' in server and 'deferred_result_submission' in app
     assert 'CONNECTION_LOST_EXPECTED' in server and 'VERIFY_PENDING' in app
     assert 'Field HUMAN_REQUIRED requires human_requirement.type and reason' in server
@@ -125,6 +129,22 @@ def main():
         j.finish_dispatch(case_id=case['case_id'],session_id=second['session_id'],dispatch_job_id='job2',dialog_id='dlg2',conversation_url='https://chatgpt.com/c/dlg2')
         assigned=j.get_case(case['case_id'])
         assert int(assigned['dispatch_failures'])==0 and assigned['dispatch_retry_after'] is None
+    with TemporaryDirectory() as td:
+        j=CaseJournal(Path(td)/'missing-dialog.db')
+        case,_=j.escalate(client_id='client-missing',source_key='missing:test',source_request_id=None,summary='x',problem={'x':1})
+        res=j.reserve_web_dispatch(max_doctors=1); assert res
+        j.finish_dispatch(case_id=case['case_id'],session_id=res['session_id'],dispatch_job_id='job',dialog_id='dlg-missing',conversation_url='https://chatgpt.com/c/dlg-missing')
+        with j.conn:
+            j.conn.execute("update doctor_sessions set last_seen=datetime('now','-5 minutes'),updated_at=datetime('now','-5 minutes') where session_id=?",(res['session_id'],))
+        candidates=j.missing_dialog_candidates(set(),grace_seconds=90); assert candidates and int(candidates[0]['case_id'])==case['case_id']
+        rec=j.recover_missing_dialog(case_id=case['case_id'],session_id=res['session_id'],max_requeues=2)
+        assert rec['action']=='REQUEUED' and j.get_case(case['case_id'])['state']=='FOR_SUZIE'
+        case2,_=j.escalate(client_id='client-missing',source_key='missing:terminal',source_request_id=None,summary='y',problem={'y':1})
+        res2=j.reserve_web_dispatch(max_doctors=1); assert res2
+        j.finish_dispatch(case_id=case2['case_id'],session_id=res2['session_id'],dispatch_job_id='job2',dialog_id='dlg-terminal',conversation_url='https://chatgpt.com/c/dlg-terminal')
+        terminal=j.recover_missing_dialog(case_id=case2['case_id'],session_id=res2['session_id'],max_requeues=0)
+        assert terminal['action']=='FAILED'
+        failed=j.get_case(case2['case_id']); assert failed['state']=='FAILED' and failed['outcome']=='FAILED'
     with TemporaryDirectory() as td:
         rt=DoctorV2Runtime(Path(td)/'v2.db',LIVE/'doctor_v2_schema.sql')
         a=rt.journal_to_house('patient-123456','test',repair_payload(['core.restart']),fingerprint='repair:hacs:x')

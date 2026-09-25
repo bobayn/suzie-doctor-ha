@@ -1,3 +1,10 @@
+## Doctor missing Web dialog recovery — 2026-09-25
+
+- Active Web Field Cases are reconciled against live Chromium dialog tabs every 15 seconds.
+- Missing dialog + stale heartbeat (>90 s) requeues the Case with backoff when no Field mutation command is active.
+- A queued/claimed `doctor.action.request` protects the Case from UI-loss requeue so restart/reboot resume cannot be duplicated.
+- Exhausted stale/missing-dialog recovery now ends as machine `FAILED` evidence, never `HUMAN_REQUIRED`; terminal Repairs remain unresolved and re-enter reconciliation.
+
 ## Doctor Web transport backpressure — 2026-09-25
 
 - Failed Call Lab CDP submissions now close their newly-created orphan Chromium tab instead of leaking it.

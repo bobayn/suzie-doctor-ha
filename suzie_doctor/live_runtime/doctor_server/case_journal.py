@@ -441,7 +441,7 @@ class CaseJournal:
                     self.conn.execute(
                         """
                         UPDATE doctor_cases
-                        SET state='HUMAN_REQUIRED',outcome='HUMAN_REQUIRED',
+                        SET state='FAILED',outcome='FAILED',
                             result_json=?,claim_token_hash=NULL,lease_expires=NULL,
                             closed_at=?,updated_at=?
                         WHERE case_id=?
@@ -458,8 +458,9 @@ class CaseJournal:
                     actions.append({
                         "case_id": case_id,
                         "session_id": session_id,
-                        "action": "HUMAN_REQUIRED",
+                        "action": "FAILED",
                         "reason": reason,
+                        "result": result,
                         "attempt": requeues + 1,
                     })
 
@@ -594,6 +595,91 @@ class CaseJournal:
         except Exception:
             self.conn.rollback()
             raise
+
+    def missing_dialog_candidates(
+        self, live_dialog_ids: set[str], *, grace_seconds: int = 90
+    ) -> list[dict[str, Any]]:
+        now = utcnow()
+        grace = max(30, int(grace_seconds))
+        rows = self.conn.execute(
+            """
+            SELECT c.case_id,c.client_id,c.state,c.dialog_id,c.doctor_session_id,
+                   c.updated_at AS case_updated,c.claimed_at,c.assigned_at,
+                   s.status AS session_status,s.last_seen,s.updated_at AS session_updated
+            FROM doctor_cases c JOIN doctor_sessions s ON s.session_id=c.doctor_session_id
+            WHERE c.transport='WEB' AND c.dialog_id IS NOT NULL
+              AND c.state IN ('ASSIGNED','CLAIMED','TREATING','VERIFYING')
+              AND s.status IN ('ASSIGNED','BUSY','CHECKING')
+            ORDER BY c.case_id
+            """
+        ).fetchall()
+        out=[]
+        for row in rows:
+            dialog_id=str(row["dialog_id"] or "")
+            if not dialog_id or dialog_id in live_dialog_ids:
+                continue
+            stamp=(
+                _parse_iso(row["last_seen"])
+                or _parse_iso(row["session_updated"])
+                or _parse_iso(row["case_updated"])
+                or _parse_iso(row["claimed_at"])
+                or _parse_iso(row["assigned_at"])
+            )
+            if stamp is None or (now-stamp).total_seconds() < grace:
+                continue
+            out.append(dict(row))
+        return out
+
+    def recover_missing_dialog(
+        self, *, case_id: int, session_id: str, max_requeues: int = 2,
+        actor: str = "doctor_server"
+    ) -> dict[str, Any]:
+        max_requeues=max(0,int(max_requeues))
+        self._begin()
+        try:
+            case=self._case_row(case_id)
+            if str(case["doctor_session_id"] or "") != str(session_id):
+                raise JournalConflict("case/session binding changed")
+            if str(case["state"] or "") not in {"ASSIGNED","CLAIMED","TREATING","VERIFYING"}:
+                raise JournalConflict("case no longer eligible for missing-dialog recovery")
+            session=self._session_row(session_id)
+            now_dt=utcnow(); now=iso(now_dt)
+            requeues=int(self.conn.execute(
+                "SELECT COUNT(*) FROM doctor_journal_events WHERE case_id=? AND action='CASE_REQUEUED_MISSING_DIALOG'",
+                (int(case_id),),
+            ).fetchone()[0])
+            detail=_loads(session["detail_json"],{})
+            detail.update({"stale_reason":"browser_dialog_missing","stale_at":now,"stale_case_state":str(case["state"] or "")})
+            self.conn.execute(
+                "UPDATE doctor_sessions SET status='EXPIRED',current_case_id=NULL,updated_at=?,last_seen=?,closed_at=?,detail_json=? WHERE session_id=?",
+                (now,now,now,_json(detail),session_id),
+            )
+            if requeues < max_requeues:
+                failures=int(case["dispatch_failures"] or 0)+1
+                delay=min(300,15*(2**min(failures-1,4)))
+                retry_after=iso(now_dt+timedelta(seconds=delay))
+                self.conn.execute(
+                    """UPDATE doctor_cases SET state='FOR_SUZIE',transport=NULL,doctor_session_id=NULL,
+                       dialog_id=NULL,dialog_ref=NULL,assignment_seq=0,dispatch_token=NULL,
+                       claim_token_hash=NULL,lease_expires=NULL,assigned_at=NULL,claimed_at=NULL,
+                       dispatch_failures=?,dispatch_retry_after=?,updated_at=? WHERE case_id=?""",
+                    (failures,retry_after,now,int(case_id)),
+                )
+                result={"action":"REQUEUED","case_id":int(case_id),"client_id":str(case["client_id"]),"session_id":session_id,"reason":"browser_dialog_missing","attempt":requeues+1,"retry_after":retry_after}
+                self._event(actor,"CASE_REQUEUED_MISSING_DIALOG",case_id=int(case_id),session_id=session_id,detail=result)
+            else:
+                report={"reason":"web_transport_missing_dialog_limit","stale_reason":"browser_dialog_missing","max_requeues":max_requeues,"previous_state":str(case["state"] or "")}
+                self.conn.execute(
+                    """UPDATE doctor_cases SET state='FAILED',outcome='FAILED',result_json=?,
+                       claim_token_hash=NULL,lease_expires=NULL,closed_at=?,updated_at=? WHERE case_id=?""",
+                    (_json(report),now,now,int(case_id)),
+                )
+                result={"action":"FAILED","case_id":int(case_id),"client_id":str(case["client_id"]),"session_id":session_id,"reason":"browser_dialog_missing","attempt":requeues+1,"result":report}
+                self._event(actor,"CASE_MISSING_DIALOG_LIMIT_REACHED",case_id=int(case_id),session_id=session_id,detail=result)
+            self.conn.commit()
+            return result
+        except Exception:
+            self.conn.rollback(); raise
 
     def reserve_web_dispatch(
         self,

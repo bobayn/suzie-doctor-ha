@@ -35,7 +35,7 @@ from command_bridge import ClientCommandBridge, CommandBridgeError
 from doctor_v2_extension import V2Extension
 from protocol_factory import build_card as build_generated_protocol_card
 
-SERVER_VERSION = "0.2.11-v2-dev"
+SERVER_VERSION = "0.2.12-v2-dev"
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ALLOWED_NETWORKS = [
     ipaddress.ip_network("192.168.0.0/24"),
@@ -544,6 +544,7 @@ class DoctorServer:
             str(Path(__file__).with_name("doctor_v2_schema.sql")),
         )
         self._dispatch_tasks: set[asyncio.Task[Any]] = set()
+        self._next_web_liveness_check = 0.0
         self._http: ClientSession | None = None
         self.knowledge = KnowledgeStore(
             config["knowledge_path"],
@@ -1044,16 +1045,93 @@ class DoctorServer:
             except JournalConflict:
                 continue
 
+    async def _live_web_dialog_ids(self) -> set[str] | None:
+        if not self._http:
+            return None
+        try:
+            async with self._http.get(
+                str(self.config["cdp_list_url"]), timeout=ClientTimeout(total=5)
+            ) as response:
+                if response.status != 200:
+                    return None
+                pages = await response.json()
+        except Exception:
+            return None
+        live: set[str] = set()
+        for page in pages if isinstance(pages, list) else []:
+            if str(page.get("type") or "") != "page":
+                continue
+            dialog_id = self._dialog_id_from_url(str(page.get("url") or ""))
+            if dialog_id:
+                live.add(dialog_id)
+        return live
+
+    def _case_has_active_field_command(self, case_id: int) -> bool:
+        row = self.command_bridge.conn.execute(
+            """select 1 from doctor_client_commands
+               where case_id=? and tool_name='doctor.action.request'
+                 and status in ('QUEUED','CLAIMED') limit 1""",
+            (int(case_id),),
+        ).fetchone()
+        return row is not None
+
+    async def _reconcile_missing_web_dialogs(self) -> None:
+        now_m = time.monotonic()
+        if now_m < self._next_web_liveness_check:
+            return
+        self._next_web_liveness_check = now_m + 15.0
+        live = await self._live_web_dialog_ids()
+        if live is None:
+            return
+        async with self.journal_gate:
+            candidates = self.journal.missing_dialog_candidates(
+                live, grace_seconds=int(self.config.get("missing_dialog_grace_seconds", 90))
+            )
+        for item in candidates:
+            case_id = int(item["case_id"])
+            if self._case_has_active_field_command(case_id):
+                self.db.event("web_dialog_missing_command_protected", item.get("client_id"), {"case_id":case_id,"dialog_id":item.get("dialog_id")})
+                continue
+            try:
+                async with self.journal_gate:
+                    recovered = self.journal.recover_missing_dialog(
+                        case_id=case_id,
+                        session_id=str(item.get("doctor_session_id") or ""),
+                        max_requeues=int(self.config.get("stale_session_max_requeues", 2)),
+                    )
+            except JournalConflict:
+                continue
+            self.db.event("web_dialog_missing_recovered", item.get("client_id"), recovered)
+            if recovered.get("action") == "FAILED":
+                await self.v2_ext.field_finished(
+                    case_id, str(item.get("client_id") or ""), "FAILED",
+                    dict(recovered.get("result") or {"reason":"web_transport_missing_dialog_limit"}),
+                )
+        self.v2_ext.sync_field_slots()
+
     async def doctor_dispatch_loop(self) -> None:
         while True:
             try:
                 async with self.journal_gate:
-                    self.journal.reap_stale_sessions(
+                    stale_actions = self.journal.reap_stale_sessions(
                         max_requeues=int(self.config.get("stale_session_max_requeues", 2)),
                         dispatch_timeout_seconds=int(self.config.get("dispatch_stale_seconds", 300)),
                         assigned_timeout_seconds=int(self.config.get("assigned_stale_seconds", 1800)),
                     )
+                for action in stale_actions:
+                    if action.get("action") != "FAILED":
+                        continue
+                    try:
+                        async with self.journal_gate:
+                            case = self.journal.get_case(int(action["case_id"]))
+                        await self.v2_ext.field_finished(
+                            int(action["case_id"]), str(case.get("client_id") or ""), "FAILED",
+                            dict(action.get("result") or {"reason":"doctor_session_stale_limit"}),
+                        )
+                    except Exception as exc:
+                        self.db.event("stale_case_resolution_sync_error",None,{"case_id":action.get("case_id"),"error":f"{type(exc).__name__}: {exc}"})
                 await self._reconcile_starting_dialogs()
+                await self._reconcile_missing_web_dialogs()
                 if bool(self.config.get("web_dispatch_enabled", False)):
                     while True:
                         async with self.journal_gate:
