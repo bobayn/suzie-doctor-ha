@@ -216,6 +216,41 @@ class V2Extension:
                     text="Active Home Assistant Repair requires DISPATCH_SUZIE or HUMAN_ACTION_REQUIRED until verified absent"
                 )
             result["active_repair"]=active_repair
+            result["resolution_fingerprint"]=str(active_repair.get("problem_key") or "")
+        elif decision=="DISPATCH_SUZIE":
+            related_candidates=[]
+            result_problem_key=str(result.get("problem_key") or "").strip()
+            if result_problem_key.startswith("repair:"):
+                related_candidates.append(result_problem_key)
+            result_evidence=result.get("evidence") if isinstance(result.get("evidence"),dict) else {}
+            rd=str(result_evidence.get("repair_domain") or "").strip()
+            ri=str(result_evidence.get("repair_issue_id") or "").strip()
+            if rd and ri:
+                related_candidates.append(f"repair:{rd}:{ri}")
+            related=trigger_evidence.get("related_findings")
+            if isinstance(related,list):
+                for item in related:
+                    if isinstance(item,dict) and str(item.get("kind") or "")=="repair":
+                        fp=str(item.get("problem_key") or "").strip()
+                        if fp:
+                            related_candidates.append(fp)
+            for fp in dict.fromkeys(related_candidates):
+                existing_resolution=self.runtime._resolution(str(job["patient_id"]),fp)
+                if not existing_resolution or str(existing_resolution.get("state") or "")=="RESOLVED":
+                    continue
+                active_repair={
+                    "domain":str(existing_resolution.get("domain") or ""),
+                    "issue_id":str(existing_resolution.get("issue_id") or ""),
+                    "problem_key":fp,
+                    "resolution_criterion":{
+                        "type":"ha_repair_absent",
+                        "domain":str(existing_resolution.get("domain") or ""),
+                        "issue_id":str(existing_resolution.get("issue_id") or ""),
+                    },
+                }
+                result["active_repair"]=active_repair
+                result["resolution_fingerprint"]=fp
+                break
         if decision=="HUMAN_ACTION_REQUIRED":
             human=result.get("human_requirement") if isinstance(result.get("human_requirement"),dict) else {}
             human_type=str(human.get("type") or "").upper().strip()
@@ -291,40 +326,62 @@ class V2Extension:
                     do_not_repeat.append({"action":item["action"],"exact_target":item["exact_target"],"reason":"previous_verified_fail"})
             problem_key=str((active_repair or {}).get("problem_key") or trigger_evidence.get("problem_key") or trigger_event.get("fingerprint") or "")
             original_criterion=(active_repair or {}).get("resolution_criterion") or trigger_evidence.get("resolution_criterion")
+            case_problem={
+                "patient_card_version":int(job.get("card_version") or 0),
+                "trigger_event_id":int(job.get("trigger_event_id") or 0),
+                "problem_key":problem_key,
+                "domain":str((active_repair or {}).get("domain") or trigger_evidence.get("domain") or ""),
+                "issue_id":str((active_repair or {}).get("issue_id") or trigger_evidence.get("issue_id") or ""),
+                "terminal_resolution_required":bool(active_repair),
+                "original_functional_criterion":original_criterion,
+                "house_job_id":job_id,
+                "house_decision_id":decided["decision_id"],
+                "house_decision":{"decision":decision,"finding_class":finding_class,"significance":significance,"field_priority":field_priority,"summary":result.get("summary"),"rationale":result.get("rationale")},
+                "house_result":result,
+                "house_directive":result.get("house_directive"),
+                "experimental_protocol_id":result.get("experimental_protocol_id"),
+                "validation_stage":result.get("validation_stage"),
+                "experimental_candidate":result.get("experimental_candidate"),
+                "experimental_protocol_candidates":candidates,
+                "active_repair":result.get("active_repair"),
+                "field_action_capabilities":list(trigger_evidence.get("field_action_capabilities") or []),
+                "previous_attempts":previous_attempts,
+                "do_not_repeat":do_not_repeat,
+            }
+            existing_field=self.runtime.active_field_case_for_house(
+                job_id,str(result.get("resolution_fingerprint") or "") or None
+            ) if bool(active_repair) else None
             async with self.server.journal_gate:
-                case,created=self.server.journal.escalate(
-                    client_id=str(job["patient_id"]),
-                    source_key=f"v2-house-decision:{decided['decision_id']}",
-                    source_request_id=None,
-                    summary=str(result.get("summary") or f"House dispatched patient {job['patient_id']}"),
-                    problem={
-                        "patient_card_version":int(job.get("card_version") or 0),
-                        "trigger_event_id":int(job.get("trigger_event_id") or 0),
-                        "problem_key":problem_key,
-                        "domain":str((active_repair or {}).get("domain") or trigger_evidence.get("domain") or ""),
-                        "issue_id":str((active_repair or {}).get("issue_id") or trigger_evidence.get("issue_id") or ""),
-                        "terminal_resolution_required":bool(active_repair),
-                        "original_functional_criterion":original_criterion,
-                        "house_job_id":job_id,
-                        "house_decision_id":decided["decision_id"],
-                        "house_decision":{"decision":decision,"finding_class":finding_class,"significance":significance,"field_priority":field_priority,"summary":result.get("summary"),"rationale":result.get("rationale")},
-                        "house_result":result,
-                        "house_directive":result.get("house_directive"),
-                        "experimental_protocol_id":result.get("experimental_protocol_id"),
-                        "validation_stage":result.get("validation_stage"),
-                        "experimental_candidate":result.get("experimental_candidate"),
-                        "experimental_protocol_candidates":candidates,
-                        "active_repair":result.get("active_repair"),
-                        "field_action_capabilities":list(trigger_evidence.get("field_action_capabilities") or []),
-                        "previous_attempts":previous_attempts,
-                        "do_not_repeat":do_not_repeat,
-                    },
-                    disease_id=str(result.get("disease_id") or "") or None,
-                    priority=int(fq.get("priority") or 50),
-                    actor="doctor_house",
-                )
+                if existing_field:
+                    case=self.server.journal.merge_house_evidence(
+                        int(existing_field["case_id"]),
+                        {
+                            "house_job_id":job_id,
+                            "house_decision_id":decided["decision_id"],
+                            "patient_card_version":case_problem["patient_card_version"],
+                            "trigger_event_id":case_problem["trigger_event_id"],
+                            "summary":result.get("summary"),
+                            "house_result":result,
+                            "active_repair":case_problem.get("active_repair"),
+                            "original_functional_criterion":original_criterion,
+                            "field_action_capabilities":case_problem["field_action_capabilities"],
+                            "do_not_repeat":do_not_repeat,
+                        },
+                    )
+                    created=False
+                else:
+                    case,created=self.server.journal.escalate(
+                        client_id=str(job["patient_id"]),
+                        source_key=f"v2-house-decision:{decided['decision_id']}",
+                        source_request_id=None,
+                        summary=str(result.get("summary") or f"House dispatched patient {job['patient_id']}"),
+                        problem=case_problem,
+                        disease_id=str(result.get("disease_id") or "") or None,
+                        priority=int(fq.get("priority") or 50),
+                        actor="doctor_house",
+                    )
             self.runtime.set_field_legacy_case(int(fq["queue_id"]),int(case["case_id"]))
-            legacy={"case_id":case["case_id"],"case_ref":case["case_ref"],"created":created}
+            legacy={"case_id":case["case_id"],"case_ref":case["case_ref"],"created":created,"deduplicated":bool(existing_field)}
         await self._finish_assignment("HOUSE",f"house:{job_id}")
         return web.json_response({"ok":True,**decided,"legacy_field_case":legacy})
 

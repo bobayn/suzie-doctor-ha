@@ -285,6 +285,49 @@ class CaseJournal:
     def get_case(self, case_id: int) -> dict[str, Any]:
         return self._case_public(self._case_row(case_id))
 
+    def merge_house_evidence(
+        self, case_id: int, update: dict[str, Any], *, actor: str = "doctor_house"
+    ) -> dict[str, Any]:
+        row = self._case_row(case_id)
+        if str(row["state"]) in {"RESOLVED","HUMAN_REQUIRED","FAILED","CANCELLED"}:
+            raise JournalConflict(f"case {case_id} is terminal")
+        problem = _loads(row["problem_json"], {})
+        if not isinstance(problem, dict):
+            problem = {}
+        updates = problem.get("related_house_updates")
+        if not isinstance(updates, list):
+            updates = []
+        item = dict(update or {})
+        item["merged_at"] = iso()
+        updates.append(item)
+        problem["related_house_updates"] = updates[-20:]
+        incoming_caps = item.get("field_action_capabilities")
+        if isinstance(incoming_caps, list):
+            existing_caps = problem.get("field_action_capabilities")
+            merged = {str(x) for x in (existing_caps if isinstance(existing_caps, list) else []) if str(x)}
+            merged.update(str(x) for x in incoming_caps if str(x))
+            problem["field_action_capabilities"] = sorted(merged)
+        incoming_no_repeat = item.get("do_not_repeat")
+        if isinstance(incoming_no_repeat, list):
+            existing = problem.get("do_not_repeat")
+            values = list(existing if isinstance(existing, list) else [])
+            seen = {_json(x) for x in values if isinstance(x, dict)}
+            for x in incoming_no_repeat:
+                if isinstance(x, dict) and _json(x) not in seen:
+                    values.append(x); seen.add(_json(x))
+            problem["do_not_repeat"] = values[-50:]
+        if not problem.get("active_repair") and isinstance(item.get("active_repair"), dict):
+            problem["active_repair"] = item["active_repair"]
+        if not problem.get("original_functional_criterion") and isinstance(item.get("original_functional_criterion"), dict):
+            problem["original_functional_criterion"] = item["original_functional_criterion"]
+        with self.conn:
+            self.conn.execute(
+                "UPDATE doctor_cases SET problem_json=?,updated_at=? WHERE case_id=?",
+                (_json(problem), iso(), int(case_id)),
+            )
+            self._event(actor,"HOUSE_EVIDENCE_MERGED",case_id=int(case_id),detail={"house_job_id":item.get("house_job_id"),"house_decision_id":item.get("house_decision_id")})
+        return self.get_case(case_id)
+
     def active_sessions(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """

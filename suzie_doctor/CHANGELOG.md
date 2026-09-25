@@ -1,3 +1,10 @@
+## Doctor terminal Repair Field dedup — 2026-09-25
+
+- One unresolved terminal Repair resolution now owns at most one open Field Case.
+- Related House findings (`ha_error`, mount evidence, etc.) that structurally reference an existing Repair are merged into the canonical Field Case instead of spawning parallel Field doctors.
+- Fresh House evidence, capabilities and do-not-repeat facts are appended to `related_house_updates[]` while the primary Case identity stays stable.
+- Resolution pointers preserve a live Field Case across repeated House `DISPATCH_SUZIE` decisions.
+
 ## Doctor disruptive verify hardening and mount reload — 2026-09-25
 
 - `core.restart` and `host.reboot` now treat clean POST acceptance and transport loss as non-terminal disruptive execution and enter persisted deferred functional verification.

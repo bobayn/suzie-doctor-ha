@@ -83,6 +83,9 @@ def main():
     assert 'journal_fingerprint = (' in server
     assert 'The primary evidence owns the journal fingerprint' in server
     assert 'fingerprint=journal_fingerprint' in server
+    assert 'active_field_case_for_house' in extension
+    assert 'merge_house_evidence' in extension
+    assert 'resolution_fingerprint' in extension
     assert 'FIELD_CASE_DIAGNOSTIC' in doctor_mcp
     assert 'evidence["field_case_id"] = int(state["case_id"])' in doctor_mcp
     assert 'field_case_route = routing_intent == "FIELD_CASE_DIAGNOSTIC"' in server
@@ -169,6 +172,26 @@ def main():
         assert not changed['deduplicated'] and changed['house_job_id']!=a['house_job_id']
         current=rt.conn.execute("select current_field_case_id from doctor_v2_resolutions where patient_id='patient-123456' and fingerprint='repair:hacs:x'").fetchone()[0]
         assert current is None
+    with TemporaryDirectory() as td:
+        db=Path(td)/'repair-field-dedup.db'
+        j=CaseJournal(db); rt=DoctorV2Runtime(db,LIVE/'doctor_v2_schema.sql')
+        payload=repair_payload(['mount.reload'])
+        first=rt.journal_to_house('patient-dedup','repair',payload,fingerprint='repair:hassio:x',priority=85)
+        jid=int(first['house_job_id']); rt.role_acquire('HOUSE',f'house:{jid}'); rt.dialog_open('dd1','HOUSE',f'house:{jid}','house',1); assert rt.claim_house(jid,'dd1')
+        dec=rt.house_decide(jid,{'finding_class':'INCIDENT','significance':'HIGH','decision':'DISPATCH_SUZIE','field_priority':'HIGH'})
+        rt.mark_resolution_house_decision(jid,{'decision':'DISPATCH_SUZIE'})
+        case,_=j.escalate(client_id='patient-dedup',source_key=f"v2-house-decision:{dec['decision_id']}",source_request_id=None,summary='repair field',problem={'problem_key':'repair:hassio:x','field_action_capabilities':['mount.reload']},priority=75)
+        rt.set_field_legacy_case(int(dec['field_queue']['queue_id']),int(case['case_id']))
+        related={'evidence':{'kind':'ha_runtime_error','problem_key':'ha_error:y','related_findings':[{'kind':'repair','problem_key':'repair:hassio:x','domain':'hassio','issue_id':'x'}]}}
+        second=rt.journal_to_house('patient-dedup','runtime',related,fingerprint='ha_error:y',priority=75)
+        jid2=int(second['house_job_id']); rt.role_acquire('HOUSE',f'house:{jid2}'); rt.dialog_open('dd2','HOUSE',f'house:{jid2}','house',1); assert rt.claim_house(jid2,'dd2')
+        dec2=rt.house_decide(jid2,{'finding_class':'INCIDENT','significance':'HIGH','decision':'DISPATCH_SUZIE','field_priority':'HIGH','problem_key':'repair:hassio:x'})
+        rt.mark_resolution_house_decision(jid2,{'decision':'DISPATCH_SUZIE','resolution_fingerprint':'repair:hassio:x'})
+        found=rt.active_field_case_for_house(jid2,'repair:hassio:x'); assert found and found['case_id']==case['case_id']
+        merged=j.merge_house_evidence(case['case_id'],{'house_job_id':jid2,'house_decision_id':dec2['decision_id'],'field_action_capabilities':['mount.reload','core.restart']})
+        rt.set_field_legacy_case(int(dec2['field_queue']['queue_id']),int(case['case_id']))
+        assert merged['case_id']==case['case_id'] and len(merged['problem']['related_house_updates'])==1
+        assert rt.conn.execute("select count(*) from doctor_cases where state not in ('RESOLVED','FAILED','HUMAN_REQUIRED','CANCELLED')").fetchone()[0]==1
     with TemporaryDirectory() as td:
         rt=DoctorV2Runtime(Path(td)/'priority.db',LIVE/'doctor_v2_schema.sql')
         low=rt.journal_to_house('patient-priority','test',{'evidence':{'kind':'runtime','problem_key':'low'}},fingerprint='low',priority=50)
