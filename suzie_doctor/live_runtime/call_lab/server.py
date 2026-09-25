@@ -557,8 +557,7 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
   if (!visible || !enabled) {
     return {ok:false, reason:'send_button_not_ready_at_click', visible, enabled};
   }
-  b.click();
-  return {ok:true};
+  return {ok:true, x:r.left + r.width/2, y:r.top + r.height/2};
 })()
 """
         submit_res = call("Runtime.evaluate", {
@@ -573,6 +572,15 @@ def cdp_fill(job_id: str, target: str, text: str, apps: list[str] | None = None)
         )
         if not isinstance(submit_value, dict) or not submit_value.get("ok"):
             raise RuntimeError(f"send click failed: {submit_value}")
+        x = float(submit_value.get("x") or 0)
+        y = float(submit_value.get("y") or 0)
+        if x <= 0 or y <= 0:
+            raise RuntimeError(f"invalid send button coordinates: {submit_value}")
+        # CDP-dispatched mouse input is browser-native/trusted input; DOM .click()
+        # may clear the React composer without actually creating a conversation.
+        call("Input.dispatchMouseEvent", {"type":"mouseMoved","x":x,"y":y})
+        call("Input.dispatchMouseEvent", {"type":"mousePressed","x":x,"y":y,"button":"left","clickCount":1})
+        call("Input.dispatchMouseEvent", {"type":"mouseReleased","x":x,"y":y,"button":"left","clickCount":1})
 
         verify_expression = f"""
 (() => {{
@@ -1094,7 +1102,7 @@ c.addEventListener("keydown",e=>{
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SuzieDoctorCallLab/0.2"
+    server_version = "SuzieDoctorCallLab/0.3"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return

@@ -1,3 +1,8 @@
+## Doctor Call Lab trusted send input — 2026-09-25
+
+- Send now uses browser-native CDP `Input.dispatchMouseEvent` on the resolved Send-button coordinates instead of DOM `.click()`.
+- This prevents React composer text from being cleared without an actual ChatGPT submission on project-root Doctor tabs.
+
 ## Doctor stale STARTING dispatch recovery — 2026-09-25
 
 - A Field Web session stuck in `STARTING/DISPATCHING` without `ui_sent` is now recovered after a bounded 45-second start timeout.
