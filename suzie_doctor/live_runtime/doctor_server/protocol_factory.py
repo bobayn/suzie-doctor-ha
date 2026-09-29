@@ -1057,6 +1057,31 @@ def map_treatment(
     }
 
 
+def _validate_generated_card_invariants(card: dict[str, Any]) -> None:
+    factory = card.get("factory") or {}
+    status = str((card.get("protocol") or {}).get("status") or "")
+    blocker = factory.get("blocker_class")
+    if status == "SUSPENDED" and not blocker:
+        raise RuntimeError("SUSPENDED protocol has no blocker classification")
+    if status in {"ACTIVE", "WATCH"} and blocker:
+        raise RuntimeError("machine-publishable protocol unexpectedly has a blocker")
+    if status == "MANUAL" and not card.get("manual"):
+        raise RuntimeError("MANUAL protocol has no manual guidance")
+    if status == "ACTIVE" and not factory.get("complete_mapping"):
+        raise RuntimeError("incomplete protocol may not be ACTIVE")
+    if (
+        str(card.get("automation_class")) == "AUTO_SAFE"
+        and str(factory.get("source_risk")) != "LOW"
+    ):
+        raise RuntimeError("AUTO_SAFE generated protocol must be LOW risk")
+    if (
+        factory.get("complete_mapping")
+        and str(factory.get("source_assessment")) == "CONFIRM_REQUIRED_HIGH_RISK"
+        and str(card.get("automation_class")) != "CONFIRM_REQUIRED"
+    ):
+        raise RuntimeError("high-risk executable protocol lost confirmation gate")
+
+
 def build_card(
     disease: dict[str, Any],
     candidate: dict[str, Any],
@@ -1161,13 +1186,25 @@ def build_card(
     )
     deferred_treatment_blocker_class = None
     deferred_treatment_blocker_detail = None
-    if assessment == "DIAGNOSTIC_ONLY" and blocker_class:
+    if protocol_status == "WATCH" and blocker_class:
         # WATCH is publishable without treatment. Preserve why treatment
         # is unavailable, but do not treat that as a publication blocker.
         deferred_treatment_blocker_class = blocker_class
         deferred_treatment_blocker_detail = blocker_detail
         blocker_class = None
         blocker_detail = None
+    elif protocol_status == "SUSPENDED":
+        # SUSPENDED is a governance state: the candidate has not passed the
+        # separate publication review. Preserve any machine-treatment blocker
+        # independently instead of erasing the suspension classification.
+        if blocker_class:
+            deferred_treatment_blocker_class = blocker_class
+            deferred_treatment_blocker_detail = blocker_detail
+        blocker_class = "AWAITING_PROTOCOL_REVIEW"
+        blocker_detail = (
+            "Protocol candidate has not passed the separate protocol-publication "
+            "review and is not executable."
+        )
 
     manual = None
     if protocol_status == "MANUAL":
@@ -1267,6 +1304,7 @@ def build_card(
             ),
         },
     }
+    _validate_generated_card_invariants(card)
     return card
 
 
