@@ -15,7 +15,7 @@ from aiohttp import web
 
 from . import APP_VERSION, BRIDGE_VERSION, PROTOCOL_PACK_VERSION
 from .audit import Auditor, _bridge_trigger_events
-from .bootstrap import bootstrap_bridge
+from .bootstrap import bootstrap_bridge, reconcile_bridge_restart_notification
 from .connector import ConnectorCore, ConnectorError
 from .connector_registry import registry_selftest
 from .db import Database
@@ -331,8 +331,14 @@ class Runtime:
             self.record_background_ok("notification:first_run")
 
     async def bridge_watch_loop(self) -> None:
+        restart_notice_checked = False
         while True:
             try:
+                # A Core restart does not necessarily restart the App.
+                # Clear the old notice once the expected Bridge is active.
+                if not restart_notice_checked:
+                    bridge_state = await reconcile_bridge_restart_notification(self.ha)
+                    restart_notice_checked = bridge_state is False
                 if not self.db.get_meta("bridge_attached_audit"):
                     snapshot = await self.ha.bridge_snapshot()
                     if isinstance(snapshot, dict):
