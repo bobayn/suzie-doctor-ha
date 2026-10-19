@@ -317,6 +317,13 @@ class HomeAssistantClient:
             {"title": title, "message": message, "notification_id": notification_id},
         )
 
+    async def dismiss_persistent_notification(self, notification_id: str) -> None:
+        await self.call_service(
+            "persistent_notification",
+            "dismiss",
+            {"notification_id": notification_id},
+        )
+
     def simulate_entry_state_reads(self, entry_id: str, state: str, reads: int = 1) -> None:
         """Developer-only bounded overlay used by controlled treatment tests."""
         self._simulated_entry_states_once[str(entry_id)] = (str(state), max(1, int(reads)))
