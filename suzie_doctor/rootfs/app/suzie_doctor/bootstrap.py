@@ -14,6 +14,7 @@ from .supervisor import SupervisorClient
 BUNDLED = Path("/app/bridge_payload/suzie_doctor")
 TARGET = Path("/homeassistant/custom_components/suzie_doctor")
 STATE = Path("/data/bridge_bootstrap.json")
+RESTART_NOTIFICATION_ID = "suzie_doctor_bridge_restart_required"
 
 
 def _tree_hash(path: Path) -> str:
@@ -77,6 +78,50 @@ async def ensure_discovery(supervisor: SupervisorClient, state: dict[str, Any]) 
         return False, None
 
 
+async def reconcile_bridge_restart_notification(
+    ha: HomeAssistantClient, *, announce: bool = False
+) -> bool | None:
+    """Reconcile Doctor's restart notice against the loaded Core Bridge version.
+
+    False: expected Bridge is active; True: older Bridge is active;
+    None: Core Bridge status is not yet known.
+    """
+    try:
+        snapshot = await ha.bridge_snapshot()
+    except Exception:
+        snapshot = None
+
+    loaded_version = (
+        str(snapshot.get("bridge_version") or "")
+        if isinstance(snapshot, dict)
+        else ""
+    )
+    if loaded_version == BRIDGE_VERSION:
+        # Persistent notifications survive a Core restart and must be cleared.
+        try:
+            await ha.dismiss_persistent_notification(RESTART_NOTIFICATION_ID)
+        except Exception:
+            pass
+        return False
+
+    if not loaded_version:
+        # A failed probe is NOT proof that a Core restart is required.
+        return None
+
+    if announce:
+        try:
+            await ha.persistent_notification(
+                "Suzie Doctor",
+                "Новая версия Bridge установлена, но Home Assistant Core ещё "
+                "использует старую. Нужен один обычный перезапуск Core в удобное "
+                "время. Suzie Doctor сам перезапуск не выполняет.",
+                RESTART_NOTIFICATION_ID,
+            )
+        except Exception:
+            pass
+    return True
+
+
 async def bootstrap_bridge(
     supervisor: SupervisorClient,
     ha: HomeAssistantClient,
@@ -104,19 +149,6 @@ async def bootstrap_bridge(
     state["bridge_hash"] = digest
     write_state(state)
 
-    if changed:
-        result["restart_required"] = True
-        try:
-            await ha.persistent_notification(
-                "Suzie Doctor",
-                "Bridge обновлён. Для загрузки новой версии bridge потребуется один обычный перезапуск Home Assistant Core в удобное время. Suzie Doctor сам перезапуск не выполняет.",
-                "suzie_doctor_bridge_restart_required",
-            )
-        except Exception:
-            pass
-    else:
-        result["restart_required"] = False
-
     core_ready = False
     discovery_ready = False
     for _ in range(12):
@@ -130,6 +162,10 @@ async def bootstrap_bridge(
         except Exception:
             core_ready = False
         await asyncio.sleep(5)
+
+    restart_state = await reconcile_bridge_restart_notification(ha, announce=True)
+    result["restart_required"] = restart_state is True
+    result["bridge_active"] = restart_state is False
 
     result["core_ready"] = core_ready
     result["discovery_registered"] = discovery_ready
