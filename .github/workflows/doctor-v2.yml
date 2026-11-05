@@ -41,9 +41,20 @@ jobs:
           meta = json.loads(Path("suzie_doctor/rootfs/app/suzie_doctor_skill/metadata.json").read_text())
           actual = hashlib.sha256(skill.read_bytes()).hexdigest()
           assert actual == meta["sha256"], (actual, meta["sha256"])
-          assert meta["version"] == "0.1.7-dev"
+          assert meta["version"] == "0.1.11-dev"
           print("SKILL_HASH_PASS", actual)
           PY
+
+      - name: Compile TLS Field action and server
+        run: |
+          python -m py_compile \
+            suzie_doctor/rootfs/app/suzie_doctor/http_ssl_profile_repair.py \
+            suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py \
+            suzie_doctor/live_runtime/doctor_server/server.py \
+            suzie_doctor/server_migration_v2/test_http_ssl_profile_action.py
+
+      - name: Native TLS staged transaction regression (mock only)
+        run: python suzie_doctor/server_migration_v2/test_http_ssl_profile_action.py
 
       - name: Doctor v2 policy regression
         working-directory: suzie_doctor/server_migration_v2
