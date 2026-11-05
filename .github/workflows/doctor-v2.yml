@@ -56,6 +56,11 @@ jobs:
       - name: Native TLS staged transaction regression (mock only)
         run: python suzie_doctor/server_migration_v2/test_http_ssl_profile_action.py
 
+      - name: Signed Field engine TLS transaction regression
+        run: |
+          python -m pip install "PyYAML>=6.0,<7"
+          python suzie_doctor/server_migration_v2/test_http_ssl_field_engine.py
+
       - name: Doctor v2 policy regression
         working-directory: suzie_doctor/server_migration_v2
         run: python test_policy.py
