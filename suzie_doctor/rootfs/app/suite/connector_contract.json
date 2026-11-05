@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.7-dev",
+  "version": "0.1.8-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose|doctor.action.request -> signed_execution_package -> ProtocolEngine",
