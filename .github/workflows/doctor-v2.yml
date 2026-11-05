@@ -41,7 +41,7 @@ jobs:
           meta = json.loads(Path("suzie_doctor/rootfs/app/suzie_doctor_skill/metadata.json").read_text())
           actual = hashlib.sha256(skill.read_bytes()).hexdigest()
           assert actual == meta["sha256"], (actual, meta["sha256"])
-          assert meta["version"] == "0.1.11-dev"
+          assert meta["version"] == "0.1.15-dev"
           print("SKILL_HASH_PASS", actual)
           PY
 
