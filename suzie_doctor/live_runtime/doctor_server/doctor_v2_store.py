@@ -20,6 +20,20 @@ HOUSE_PROJECT_URL = "https://chatgpt.com/g/g-p-6ab184e457cc819182e5230e09fdfc18-
 WILSON_PROJECT_ID = "g-p-6ab1850655508191afad64d3cc104b3a"
 WILSON_PROJECT_URL = "https://chatgpt.com/g/g-p-6ab1850655508191afad64d3cc104b3a-doktor-vilson"
 
+PROTOCOL_SUSPENSION_BLOCKER_CLASSES = frozenset({
+    "AWAITING_PROTOCOL_REVIEW",
+    "INSUFFICIENT_EVIDENCE",
+    "NO_SUCCESSFUL_TREATMENT",
+    "NOT_APPLICABLE",
+    "UNSAFE",
+    "NOT_MACHINE_ACTIONABLE",
+    "NO_DIAGNOSTIC_CRITERIA",
+    "NO_VERIFY_CRITERION",
+    "UNSUPPORTED_CAPABILITY",
+    "DUPLICATE",
+    "SUPERSEDED_BY_REVISION",
+})
+
 
 class DoctorV2StateError(RuntimeError):
     pass
@@ -311,6 +325,14 @@ class DoctorV2Store:
 
     def open_dialog(self, *, dialog_id: str, role: str, assignment_id: str, project_id: str | None, generation: int = 1) -> None:
         with self.conn:
+            existing = self.conn.execute(
+                "SELECT dialog_id,generation FROM doctor_v2_web_dialogs WHERE role=? AND assignment_id=? AND state='OPEN' ORDER BY generation DESC LIMIT 1",
+                (role,assignment_id),
+            ).fetchone()
+            if existing is not None and str(existing["dialog_id"]) != str(dialog_id):
+                raise DoctorV2StateError(
+                    f"assignment already has OPEN dialog: {role}:{assignment_id}:g{existing['generation']}"
+                )
             self.conn.execute(
                 """
                 INSERT INTO doctor_v2_web_dialogs(
@@ -396,6 +418,60 @@ class DoctorV2Store:
             )
             return version
 
+    @staticmethod
+    def validate_protocol_suspension(
+        blocker_class: str, reason: str, evidence: Any = None,
+    ) -> tuple[str, str, Any]:
+        blocker = str(blocker_class or "").upper().strip()
+        detail = str(reason or "").strip()
+        if blocker not in PROTOCOL_SUSPENSION_BLOCKER_CLASSES:
+            raise DoctorV2StateError("SUSPENDED protocol requires valid blocker_class")
+        if not detail:
+            raise DoctorV2StateError("SUSPENDED protocol requires blocker reason")
+        bounded_evidence = evidence if isinstance(evidence, (dict, list)) else {}
+        return blocker, detail[:2000], bounded_evidence
+
+    def suspend_protocol_candidate(
+        self, *, protocol_id: str, blocker_class: str, reason: str,
+        evidence: Any = None, manage_transaction: bool = True,
+    ) -> dict[str, Any]:
+        blocker, detail, bounded_evidence = self.validate_protocol_suspension(
+            blocker_class, reason, evidence
+        )
+        current = self.protocol_candidate(str(protocol_id))
+        if current is None:
+            raise DoctorV2StateError("protocol candidate not found")
+        candidate = dict(current.get("candidate") or {})
+        candidate["blocker_class"] = blocker
+        candidate["blocker_reason"] = detail
+        candidate["blocker_evidence"] = bounded_evidence
+        candidate["suspension"] = {
+            "blocker_class": blocker,
+            "reason": detail,
+            "evidence": bounded_evidence,
+        }
+
+        def apply() -> None:
+            self.conn.execute(
+                """UPDATE doctor_v2_protocol_candidates
+                   SET state='SUSPENDED',candidate_json=?,updated_at=CURRENT_TIMESTAMP
+                   WHERE protocol_id=?""",
+                (self._json(candidate), str(protocol_id)),
+            )
+
+        if manage_transaction:
+            with self.conn:
+                apply()
+        else:
+            apply()
+        item = self.protocol_candidate(str(protocol_id))
+        if item is None or str(item.get("state") or "") != "SUSPENDED":
+            raise DoctorV2StateError("protocol suspension failed")
+        stored = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+        if str(stored.get("blocker_class") or "") != blocker:
+            raise DoctorV2StateError("SUSPENDED protocol lost blocker classification")
+        return item
+
     def record_protocol_validation(
         self,
         *,
@@ -407,8 +483,12 @@ class DoctorV2Store:
         installation_id_hash: str | None = None,
         patient_id: str | None = None,
         field_case_id: str | None = None,
+        manage_transaction: bool = True,
     ) -> dict[str, Any]:
-        with self.conn:
+        def apply() -> dict[str, Any]:
+            current = self.protocol_candidate(str(protocol_id))
+            if current is not None and str(current.get("state") or "") == "SUSPENDED":
+                raise DoctorV2StateError("SUSPENDED protocol cannot receive validation credit")
             self.conn.execute(
                 """
                 INSERT INTO doctor_v2_protocol_validation_episodes(
@@ -425,7 +505,13 @@ class DoctorV2Store:
             row = self.conn.execute(
                 """
                 SELECT
-                    SUM(CASE WHEN success=1 AND verified=1 THEN 1 ELSE 0 END) AS successes,
+                    COUNT(DISTINCT CASE WHEN success=1 AND verified=1 THEN
+                        CASE
+                            WHEN COALESCE(patient_id,'')<>'' THEN 'patient:'||patient_id
+                            WHEN COALESCE(installation_id_hash,'')<>'' THEN 'installation:'||installation_id_hash
+                            ELSE 'episode:'||episode_key
+                        END
+                    END) AS successes,
                     SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS negatives
                 FROM doctor_v2_protocol_validation_episodes
                 WHERE protocol_id=?
@@ -449,6 +535,10 @@ class DoctorV2Store:
                 "validation_stage": f"{min(n,3)}/3",
                 "publication_ready": state == "VALIDATED_3_3",
             }
+        if manage_transaction:
+            with self.conn:
+                return apply()
+        return apply()
 
     def upsert_protocol_candidate(
         self,
@@ -457,12 +547,28 @@ class DoctorV2Store:
         origin: str,
         disease_id: str | None,
         candidate: dict[str, Any],
+        manage_transaction: bool = True,
     ) -> dict[str, Any]:
         origin=str(origin or "INTERNAL_FIELD").upper()
         if origin not in {"INTERNAL_FIELD","EXTERNAL_WILSON","LEGACY"}:
             raise DoctorV2StateError("invalid candidate origin")
         initial_state="CANDIDATE" if origin in {"EXTERNAL_WILSON","LEGACY"} else "FIELD_TESTING"
-        with self.conn:
+        stored_candidate = dict(candidate or {})
+        existing = self.protocol_candidate(str(protocol_id))
+        if existing is not None and str(existing.get("state") or "") == "SUSPENDED":
+            previous = existing.get("candidate") if isinstance(existing.get("candidate"), dict) else {}
+            blocker, detail, evidence = self.validate_protocol_suspension(
+                str(previous.get("blocker_class") or ""),
+                str(previous.get("blocker_reason") or ""),
+                previous.get("blocker_evidence"),
+            )
+            stored_candidate["blocker_class"] = blocker
+            stored_candidate["blocker_reason"] = detail
+            stored_candidate["blocker_evidence"] = evidence
+            stored_candidate["suspension"] = dict(previous.get("suspension") or {
+                "blocker_class": blocker, "reason": detail, "evidence": evidence,
+            })
+        def apply() -> None:
             self.conn.execute(
                 """INSERT INTO doctor_v2_protocol_candidates(
                        protocol_id,origin,state,disease_id,candidate_json
@@ -474,9 +580,14 @@ class DoctorV2Store:
                 (
                     str(protocol_id),origin,initial_state,
                     str(disease_id) if disease_id else None,
-                    self._json(candidate),
+                    self._json(stored_candidate),
                 ),
             )
+        if manage_transaction:
+            with self.conn:
+                apply()
+        else:
+            apply()
         item=self.protocol_candidate(str(protocol_id))
         if item is None:
             raise DoctorV2StateError("candidate upsert failed")
@@ -497,7 +608,13 @@ class DoctorV2Store:
             item.pop("candidate_json", None)
         counts = self.conn.execute(
             """SELECT
-                   SUM(CASE WHEN success=1 AND verified=1 THEN 1 ELSE 0 END) AS successes,
+                   COUNT(DISTINCT CASE WHEN success=1 AND verified=1 THEN
+                       CASE
+                           WHEN COALESCE(patient_id,'')<>'' THEN 'patient:'||patient_id
+                           WHEN COALESCE(installation_id_hash,'')<>'' THEN 'installation:'||installation_id_hash
+                           ELSE 'episode:'||episode_key
+                       END
+                   END) AS successes,
                    SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS negatives
                FROM doctor_v2_protocol_validation_episodes WHERE protocol_id=?""",
             (str(protocol_id),),
@@ -509,12 +626,13 @@ class DoctorV2Store:
         return item
 
     def enqueue_publication_review(
-        self, protocol_id: str, wilson_job_id: int, snapshot: dict[str, Any]
+        self, protocol_id: str, wilson_job_id: int, snapshot: dict[str, Any],
+        manage_transaction: bool = True,
     ) -> dict[str, Any]:
         candidate = self.protocol_candidate(protocol_id)
         if not candidate or str(candidate.get("state")) != "VALIDATED_3_3":
             raise DoctorV2StateError("publication requires VALIDATED_3_3")
-        with self.conn:
+        def apply() -> None:
             self.conn.execute(
                 """INSERT INTO doctor_v2_protocol_publication_queue(
                        protocol_id,status,requested_by_wilson_job_id,snapshot_json
@@ -526,6 +644,11 @@ class DoctorV2Store:
                 """,
                 (str(protocol_id), int(wilson_job_id), self._json(snapshot)),
             )
+        if manage_transaction:
+            with self.conn:
+                apply()
+        else:
+            apply()
         row = self.conn.execute(
             "SELECT * FROM doctor_v2_protocol_publication_queue WHERE protocol_id=?",
             (str(protocol_id),),

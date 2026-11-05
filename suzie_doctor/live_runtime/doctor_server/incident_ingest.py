@@ -190,6 +190,9 @@ def duplicate_check(
     title_t = tokens(incident["title"])
     root_t = tokens(incident["root_cause"])
     symptom_t = tokens(incident["symptoms"])
+    fingerprint_t = set().union(
+        *(tokens(x) for x in (incident.get("fingerprint") or []))
+    )
     for old in existing:
         if str(old.get("id")) == incident["id"]:
             return {
@@ -201,13 +204,33 @@ def duplicate_check(
         title_score = jaccard(title_t, tokens(old.get("title")))
         root_score = jaccard(root_t, tokens(old.get("root_cause")))
         symptom_score = jaccard(symptom_t, tokens(old.get("symptoms")))
-        if title_score >= 0.70 and max(root_score, symptom_score) >= 0.45:
+        old_fingerprint_t = set().union(
+            *(tokens(x) for x in (old.get("fingerprint") or []))
+        )
+        fingerprint_overlap = len(fingerprint_t & old_fingerprint_t)
+        fingerprint_score = jaccard(fingerprint_t, old_fingerprint_t)
+        text_duplicate = (
+            title_score >= 0.70
+            and max(root_score, symptom_score) >= 0.45
+        )
+        fingerprint_duplicate = (
+            fingerprint_overlap >= 4
+            and fingerprint_score >= 0.30
+            and title_score >= 0.25
+        )
+        if text_duplicate or fingerprint_duplicate:
             return {
-                "kind": "same_source_probable_duplicate",
+                "kind": (
+                    "same_source_fingerprint_duplicate"
+                    if fingerprint_duplicate and not text_duplicate
+                    else "same_source_probable_duplicate"
+                ),
                 "incident_id": old.get("id"),
                 "title_similarity": round(title_score, 3),
                 "root_similarity": round(root_score, 3),
                 "symptom_similarity": round(symptom_score, 3),
+                "fingerprint_similarity": round(fingerprint_score, 3),
+                "fingerprint_overlap": fingerprint_overlap,
             }
     return None
 

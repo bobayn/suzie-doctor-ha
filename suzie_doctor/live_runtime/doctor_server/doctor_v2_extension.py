@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from aiohttp import web
 from doctor_v2_live import DoctorV2Runtime
+from case_journal import FINAL_CASE_STATES
 from knowledge_candidate_backfill import audit as audit_legacy_candidates
 
 HOUSE_PROJECT_URL="https://chatgpt.com/g/g-p-6ab184e457cc819182e5230e09fdfc18-doktor-khaus"
@@ -57,6 +58,11 @@ class V2Extension:
             })
 
     def _spawn(self,coro,name:str)->None:
+        if any((not t.done()) and t.get_name()==name for t in self.tasks):
+            closer=getattr(coro,"close",None)
+            if callable(closer):
+                closer()
+            return
         t=asyncio.create_task(coro,name=name);self.tasks.add(t);t.add_done_callback(self.tasks.discard)
 
     def _project_url(self, role:str)->str:
@@ -91,14 +97,66 @@ class V2Extension:
 
     def bind_field_dialog(self,case_id:int,dialog_id:str)->dict[str,Any]|None:
         assignment=f"case:{int(case_id)}"
+        dialog_id=str(dialog_id)
         current=self.runtime.current_dialog("FIELD_SUZIE",assignment)
-        if current and str(current.get("dialog_id"))==str(dialog_id):
-            return current
+        previous_id=str(current.get("dialog_id") or "") if current else ""
         generation=int(current.get("generation") or 0)+1 if current else 1
-        return self.runtime.dialog_open(
-            str(dialog_id),"FIELD_SUZIE",assignment,
-            self._project_id("FIELD_SUZIE"),generation,
-        )
+
+        if current and previous_id==dialog_id:
+            opened=current
+        else:
+            # FIELD has two bookkeeping layers: the canonical Case Journal and
+            # the V2 10x10 dialog lifecycle.  When either layer advances to a
+            # new browser dialog, retire/close the previous physical tab so an
+            # active Case never accumulates stale Chromium generations.
+            if current and previous_id:
+                if str(current.get("state") or "")=="OPEN":
+                    with self.runtime.conn:
+                        self.runtime.conn.execute(
+                            "update doctor_v2_web_sessions set ended_at=CURRENT_TIMESTAMP,end_reason='ERROR' "
+                            "where dialog_id=? and ended_at is null",
+                            (previous_id,),
+                        )
+                        self.runtime.conn.execute(
+                            "update doctor_v2_web_dialogs set state='CLOSED_LIMIT',closed_at=CURRENT_TIMESTAMP "
+                            "where dialog_id=? and state='OPEN'",
+                            (previous_id,),
+                        )
+                self._spawn(
+                    self.server._close_web_dialog_later(previous_id,1.0),
+                    f"v2_close_rebound_field_{int(case_id)}_{previous_id}",
+                )
+            opened=self.runtime.dialog_open(
+                dialog_id,"FIELD_SUZIE",assignment,
+                self._project_id("FIELD_SUZIE"),generation,
+            )
+
+        # Keep the legacy Case Journal bound to the same current Web dialog as
+        # Doctor V2.  This is required for liveness/recovery and prevents the
+        # two dispatchers from treating different tabs as the active Case.
+        with self.runtime.conn:
+            row=self.runtime.conn.execute(
+                "select state,doctor_session_id from doctor_cases where case_id=?",
+                (int(case_id),),
+            ).fetchone()
+            if row and str(row["state"] or "") not in FINAL_CASE_STATES:
+                session_id=str(row["doctor_session_id"] or "")
+                self.runtime.conn.execute(
+                    "update doctor_cases set dialog_id=?,dialog_ref=?,updated_at=CURRENT_TIMESTAMP where case_id=?",
+                    (dialog_id,dialog_id,int(case_id)),
+                )
+                if session_id:
+                    self.runtime.conn.execute(
+                        "update doctor_sessions set dialog_id=?,updated_at=CURRENT_TIMESTAMP,last_seen=CURRENT_TIMESTAMP "
+                        "where session_id=? and current_case_id=?",
+                        (dialog_id,session_id,int(case_id)),
+                    )
+        if previous_id and previous_id!=dialog_id:
+            self.server.db.event(
+                "doctor_v2_field_dialog_rebound",None,
+                {"case_id":int(case_id),"previous_dialog_id":previous_id,"dialog_id":dialog_id,"generation":generation},
+            )
+        return opened
 
     async def field_finished(self,case_id:int,client_id:str,outcome:str,result:dict[str,Any])->dict[str,Any]:
         assignment=f"case:{int(case_id)}"
@@ -132,7 +190,7 @@ class V2Extension:
             existing=self.runtime.conn.execute("select wilson_job_id from doctor_v2_wilson_jobs where input_cursor=? limit 1",(cursor,)).fetchone()
             if not existing:
                 wilson_job_id=self.runtime.enqueue_wilson("HOURLY_REVIEW",{
-                    "knowledge_loop_contract_version":2,
+                    "knowledge_loop_contract_version":3,
                     "reason":"FIELD_ONE_SHOT_EVIDENCE",
                     "case_id":int(case_id),
                     "patient_id":str(client_id),
@@ -479,7 +537,10 @@ class V2Extension:
             batch=existing.get("batch") or {}
             if batch.get("cursor_to") is not None:
                 out=str(batch["cursor_to"])
-        done=self.runtime.wilson_complete(job_id,result,out,failed=bool(body.get("failed",False)))
+        try:
+            done=self.runtime.wilson_complete(job_id,result,out,failed=bool(body.get("failed",False)))
+        except RuntimeError as exc:
+            raise web.HTTPBadRequest(text=f"WILSON_RESULT_INVALID: {exc}") from exc
         await self._finish_assignment("WILSON",f"wilson:{job_id}")
         return web.json_response({"ok":True,**done})
 
@@ -512,6 +573,9 @@ class V2Extension:
                     f"case_id={compat_id}. Analyze returned House job. Finish exactly once "
                     f"with doctor.case.complete_next doctor_handle=HOUSE:{job_id}; put "
                     "finding_class, significance, decision, field_priority in result. "
+                    "Allowed enums: finding_class=EVENT|OBSERVATION|INCIDENT|CASE; significance=LOW|MEDIUM|HIGH|CRITICAL; "
+                    "decision=OBSERVE|RECHECK_LATER|IGNORE_AS_NOISE|HUMAN_ACTION_REQUIRED|DISPATCH_SUZIE; "
+                    "field_priority=LOW|NORMAL|HIGH|URGENT. "
                     "You MUST review experimental_protocol_candidates in the returned House job. "
                     "A matching 0/3-2/3 candidate never forces dispatch by itself. If the Patient Card "
                     "already merits Field investigation and one candidate has reasonable real-world "
@@ -520,7 +584,7 @@ class V2Extension:
                     "If the trigger evidence is an active Home Assistant Repair with "
                     "terminal_resolution_required=true, it is an unresolved Doctor task: "
                     "do NOT OBSERVE, RECHECK_LATER or IGNORE_AS_NOISE. Either DISPATCH_SUZIE "
-                    "for real resolution or HUMAN_ACTION_REQUIRED only for a genuine physical/credential/OAuth/missing-capability step. HUMAN_ACTION_REQUIRED MUST include result.human_requirement with type PHYSICAL_ACTION, CREDENTIAL, OAUTH or MISSING_CAPABILITY and a concrete reason; absence of Disease/Protocol is never a human reason."
+                    "for real resolution or HUMAN_ACTION_REQUIRED only for a genuine physical/credential/OAuth/missing-capability step. HUMAN_ACTION_REQUIRED MUST include result.human_requirement with type PHYSICAL_ACTION, CREDENTIAL, OAUTH or MISSING_CAPABILITY and a concrete reason; for MISSING_CAPABILITY it MUST also include the exact missing human_requirement.capability string. Absence of Disease/Protocol is never a human reason."
                 )
             elif role=="WILSON":
                 compat_id=9_000_000_000+job_id
@@ -532,13 +596,22 @@ class V2Extension:
                     "required_validations, return each in result.validations with the exact "
                     "protocol_id, episode_key, success and verified facts. Analyze positive "
                     "and negative evidence; do not rewrite Field facts. Your primary job is to "
-                    "manufacture reusable treatment knowledge, not summarize news. For NIGHTLY_RESEARCH, "
+                    "manufacture reusable treatment knowledge, not summarize news. Every Wilson scientific conclusion from external research or internal Field/server evidence MUST be persisted through result.library_updates with update_key, knowledge_type, title, source_scope, payload and provenance. Useful knowledge does not have to become a Protocol. Every incident_review and every explicit case_review MUST reference the corresponding library_update_keys; one generic update cannot substitute for multiple reviewed findings. For NIGHTLY_RESEARCH, "
                     "mine real technical incidents from issues/discussions/forums/docs, identify treatments "
                     "that actually restored function, and return search_coverage plus incident_reviews. "
-                    "Every relevant successful treatment must become a structured EXPERIMENTAL protocol_candidate "
-                    "0/3 or be explicitly REJECTED with a concrete safety/applicability/evidence reason. "
-                    "Each candidate must include protocol_id, disease_id, embedded disease draft with diagnostic_criteria, "
-                    "symptoms/checks/action/verify/risk/automation_class and external_evidence URLs. External evidence "
+                    "Before completing each incident_review, persist the structured incident through "
+                    "doctor.ingest_incident with dry_run=false; record ingest_result=ADDED|DUPLICATE and "
+                    "master_incident_id (for DUPLICATE use duplicate.incident_id). A protocol rejection must "
+                    "never discard the persistent incident. Every relevant successful treatment must become a "
+                    "structured EXPERIMENTAL protocol_candidate 0/3 or be explicitly REJECTED with a concrete "
+                    "safety/applicability/evidence reason. Missing current deterministic capability/mapping is "
+                    "NOT a rejection reason by itself: create the 0/3 candidate and let Server mark "
+                    "execution_mapping=UNAVAILABLE. Set treatment_outcome and applicability explicitly; a "
+                    "candidate requires observed functional recovery, while advice without verified recovery "
+                    "must stay REJECTED as evidence only. "
+                    "Each candidate MUST use this top-level contract: protocol_id, disease_id, title, component, action, "
+                    "non-empty symptoms[], checks[], verify[], risk=LOW|MEDIUM|HIGH, automation_class=AUTO_SAFE|CONFIRM_REQUIRED|DIAGNOSTIC_ONLY, "
+                    "embedded disease draft with matching disease_id/title/component and diagnostic_criteria.must[], plus external_evidence URLs. External evidence "
                     "never earns validation credit. For internal new_protocol_evidence, create/update a candidate or "
                     "explicitly reject with reason. 3/3 goes to publication review, never directly ACTIVE."
                 )
@@ -549,7 +622,7 @@ class V2Extension:
                     "for this case; the canonical MCP will resume the existing claim when valid. "
                     "Continue from server-backed Case state and do not repeat completed actions."
                 )
-            job=await self.server._call_lab_run(method="cdp",text=text,target=target)
+            job=await self.server._call_lab_run(method="cdp",text=text,target=target,logical_key=f"{role}:{job_id}:g{generation}")
             jid=str(job.get("job_id") or "")
             if not jid:raise RuntimeError("Call Lab returned no job_id")
             deadline=time.monotonic()+100
@@ -593,6 +666,51 @@ class V2Extension:
 
     async def _continue_dialog(self,item:dict[str,Any])->None:
         role=str(item["role"]); assignment=str(item["assignment_id"]); dialog_id=str(item["dialog_id"]); ordinal=int(item["ordinal"])
+        terminal=False
+        job_status=""
+        try:
+            job_id=int(assignment.split(":",1)[1])
+        except Exception:
+            job_id=0
+        if role=="WILSON" and job_id:
+            row=self.runtime.conn.execute("select status from doctor_v2_wilson_jobs where wilson_job_id=?",(job_id,)).fetchone()
+            job_status=str(row[0]) if row else "MISSING"
+            terminal=job_status in {"DONE","FAILED","MISSING"}
+        elif role=="HOUSE" and job_id:
+            row=self.runtime.conn.execute("select status from doctor_v2_house_jobs where house_job_id=?",(job_id,)).fetchone()
+            job_status=str(row[0]) if row else "MISSING"
+            terminal=job_status in {"DONE","CANCELLED","MISSING"}
+        elif role=="FIELD_SUZIE" and job_id:
+            row=self.runtime.conn.execute("select state from doctor_cases where case_id=?",(job_id,)).fetchone()
+            job_status=str(row[0]) if row else "MISSING"
+            terminal=job_status in {*FINAL_CASE_STATES,"MISSING"}
+        if terminal:
+            with self.runtime.conn:
+                self.runtime.conn.execute(
+                    "update doctor_v2_web_sessions set ended_at=CURRENT_TIMESTAMP,end_reason='NATURAL' where dialog_id=? and ended_at is null",
+                    (dialog_id,),
+                )
+                self.runtime.conn.execute(
+                    "update doctor_v2_web_dialogs set state='CLOSED_NATURAL',closed_at=CURRENT_TIMESTAMP where dialog_id=? and state='OPEN'",
+                    (dialog_id,),
+                )
+            self.server.db.event("doctor_v2_terminal_dialog_retired",None,{"role":role,"assignment_id":assignment,"dialog_id":dialog_id,"job_status":job_status})
+            self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_terminal_{dialog_id}")
+            return
+        latest=self.runtime.current_dialog(role,assignment) or {}
+        if latest and str(latest.get("dialog_id") or "") != dialog_id:
+            with self.runtime.conn:
+                self.runtime.conn.execute(
+                    "update doctor_v2_web_sessions set ended_at=CURRENT_TIMESTAMP,end_reason='ERROR' where dialog_id=? and ended_at is null",
+                    (dialog_id,),
+                )
+                self.runtime.conn.execute(
+                    "update doctor_v2_web_dialogs set state='CLOSED_LIMIT',closed_at=CURRENT_TIMESTAMP where dialog_id=? and state='OPEN'",
+                    (dialog_id,),
+                )
+            self.server.db.event("doctor_v2_stale_duplicate_dialog_retired",None,{"role":role,"assignment_id":assignment,"dialog_id":dialog_id,"latest_dialog_id":latest.get("dialog_id")})
+            self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_stale_{dialog_id}")
+            return
         try:
             result=self.runtime.dialog_end(dialog_id,ordinal,"WATCHDOG_10M")
         except Exception:return
@@ -624,7 +742,7 @@ class V2Extension:
             else:
                 text=f"CONTINUE CASE #{job_id}. Same Field Case and dialog; use the existing doctor_handle if present, otherwise call doctor.case.claim case_id={job_id} to resume it. Do not repeat completed actions."
             try:
-                await self.server._call_lab_run(method="cdp",text=text,target="dialog",target_url=url)
+                await self.server._call_lab_run(method="cdp",text=text,target="dialog",target_url=url,logical_key=f"CONT:{dialog_id}:{nxt['ordinal']}")
                 self.server.db.event("doctor_v2_session_continued",None,{"role":role,"assignment_id":assignment,"dialog_id":dialog_id,"ordinal":nxt["ordinal"]})
             except Exception as exc:
                 self.server.db.event("doctor_v2_continue_error",None,{"role":role,"assignment_id":assignment,"error":f"{type(exc).__name__}: {exc}"})
@@ -632,8 +750,10 @@ class V2Extension:
         if result.get("rotate") and role in {"HOUSE","WILSON","FIELD_SUZIE"}:
             try:job_id=int(assignment.split(":",1)[1])
             except Exception:return
-            old=self.runtime.current_dialog(role,assignment) or {}
-            gen=int(old.get("generation") or 1)+1
+            latest=self.runtime.current_dialog(role,assignment) or {}
+            if str(latest.get("state") or "")=="OPEN":
+                return
+            gen=int(item.get("generation") or 1)+1
             self._spawn(self._dispatch_new(role,job_id,generation=gen,already_claimed=True),f"v2_rotate_{role}_{job_id}_{gen}")
 
     def _nightly_due(self)->tuple[bool,str]:
@@ -654,11 +774,11 @@ class V2Extension:
             exists=self.runtime.conn.execute("select 1 from doctor_v2_wilson_jobs where mode='NIGHTLY_RESEARCH' and input_cursor=? limit 1",(date,)).fetchone()
             if not exists:
                 self.runtime.enqueue_wilson("NIGHTLY_RESEARCH",{
-                    "knowledge_loop_contract_version":2,
+                    "knowledge_loop_contract_version":3,
                     "research_date":date,
                     "purpose":"TREATMENT_INCIDENT_MINING",
                     "scope":"external technical incidents/issues/discussions/forums with observed treatment outcomes; not general news",
-                    "required_output":"search_coverage + incident_reviews + protocol_candidates",
+                    "required_output":"search_coverage + incident_reviews + protocol_candidates + library_updates",
                     "external_evidence_internal_confirmations":0,
                 },date)
 
@@ -668,6 +788,13 @@ class V2Extension:
                 if not bool(self.server.config.get("doctor_v2_dispatch_enabled", False)):
                     await asyncio.sleep(2)
                     continue
+                retired=self.runtime.recover_stale_compat_dialogs()
+                if retired:
+                    self.server.db.event("doctor_v2_stale_compat_dialogs_recovered",None,{"items":retired})
+                    for item in retired:
+                        dialog_id=str(item.get("dialog_id") or "")
+                        if dialog_id:
+                            self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_recovered_{dialog_id}")
                 recovered=self.runtime.recover_stranded_house_wilson()
                 if recovered:
                     self.server.db.event("doctor_v2_stranded_assignment_recovered",None,{"items":recovered})
@@ -679,14 +806,16 @@ class V2Extension:
                         self._spawn(self.server._close_web_dialog_later(dialog_id),f"v2_close_overbudget_house_{overbudget['job_id']}")
                 self._schedule_wilson()
                 self.sync_field_slots()
-                for item in self.runtime.expired_sessions():
-                    if item["role"] in {"HOUSE","WILSON","FIELD_SUZIE"}:self._spawn(self._continue_dialog(item),f"v2_watchdog_{item['dialog_id']}_{item['ordinal']}")
-                h=self.runtime.next_house_waiting()
-                if h and not self.runtime.conn.execute("select 1 from doctor_v2_role_slots where role='HOUSE' and state='BUSY'").fetchone():
-                    self._spawn(self._dispatch_new("HOUSE",int(h["house_job_id"])),f"v2_house_{h['house_job_id']}")
-                w=self.runtime.next_wilson_waiting()
-                if w and not self.runtime.conn.execute("select 1 from doctor_v2_role_slots where role='WILSON' and state='BUSY'").fetchone():
-                    self._spawn(self._dispatch_new("WILSON",int(w["wilson_job_id"])),f"v2_wilson_{w['wilson_job_id']}")
+                web_ready=await self.server._web_transport_ready()
+                if web_ready:
+                    for item in self.runtime.expired_sessions():
+                        if item["role"] in {"HOUSE","WILSON","FIELD_SUZIE"}:self._spawn(self._continue_dialog(item),f"v2_watchdog_{item['dialog_id']}_{item['ordinal']}")
+                    h=self.runtime.next_house_waiting()
+                    if h and not self.runtime.conn.execute("select 1 from doctor_v2_role_slots where role='HOUSE' and state='BUSY'").fetchone():
+                        self._spawn(self._dispatch_new("HOUSE",int(h["house_job_id"])),f"v2_house_{h['house_job_id']}")
+                    w=self.runtime.next_wilson_waiting()
+                    if w and not self.runtime.conn.execute("select 1 from doctor_v2_role_slots where role='WILSON' and state='BUSY'").fetchone():
+                        self._spawn(self._dispatch_new("WILSON",int(w["wilson_job_id"])),f"v2_wilson_{w['wilson_job_id']}")
                 await asyncio.sleep(1)
             except asyncio.CancelledError:raise
             except Exception as exc:
