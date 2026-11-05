@@ -49,6 +49,7 @@ FIELD_ACTION_POLICIES = {
     "addon.restart": {"primitive":"restart_addon","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"TARGET_ADDON","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["slug"],"attempt_limit":1,"cooldown_seconds":120,"disconnect_expected":False},
     "core.restart": {"primitive":"restart_core","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HOME_ASSISTANT_CORE","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["component"],"attempt_limit":1,"cooldown_seconds":300,"disconnect_expected":True},
     "host.reboot": {"primitive":"reboot_host","reversibility":"REVERSIBLE_RUNTIME","blast_radius":"HAOS_HOST","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["host"],"attempt_limit":1,"cooldown_seconds":600,"disconnect_expected":True},
+    "http.ssl_profile.update": {"primitive":"http_ssl_profile_upgrade","reversibility":"HA_NATIVE_AUTO_ROLLBACK","blast_radius":"HA_HTTPS_CLIENTS","checkpoint_required":False,"rollback_available":False,"exact_target_fields":["domain","issue_id"],"attempt_limit":1,"cooldown_seconds":900,"disconnect_expected":True,"verify_grace_seconds":480},
 }
 FIELD_ACTION_PRIMITIVE_ALIASES = {v["primitive"]: k for k,v in FIELD_ACTION_POLICIES.items()}
 FIELD_VERIFY_PRIMITIVES = {"addon_info", "config_entry_info", "config_entry_state", "core_memory_stability", "mqtt_probe", "network_primary_info", "read_host_metrics", "verify_recorder_write", "ha_repair_absent"}
@@ -2214,6 +2215,15 @@ class DoctorServer:
                 raise web.HTTPBadRequest(text=f"Field action target mismatch for {field}")
             if field not in action_args:
                 action_args[field]=exact_target.get(field)
+        if action_name == "http.ssl_profile.update":
+            # This is not a generic HTTP config editor. Only the diagnosed,
+            # exact native Repair and the conservative profile are allowlisted.
+            if exact_target.get("domain") != "http" or exact_target.get("issue_id") != "ssl_profile_outdated":
+                raise web.HTTPBadRequest(text="SSL action requires the exact active HTTP Repair")
+            if action_args.get("ssl_profile") != "intermediate_v6":
+                raise web.HTTPBadRequest(text="Only intermediate_v6 is supported")
+            if set(action_args) - {"domain", "issue_id", "ssl_profile"}:
+                raise web.HTTPBadRequest(text="Unexpected HTTP SSL action arguments")
         if action_name == "core.restart" and str(exact_target.get("component") or "").lower() not in {"core","homeassistant_core","home assistant core"}:
             raise web.HTTPBadRequest(text="core.restart exact_target.component must identify Home Assistant Core")
         if action_name == "host.reboot" and str(exact_target.get("host") or "").lower() not in {"haos","home_assistant_host","home assistant host","local_haos"}:
@@ -2230,6 +2240,14 @@ class DoctorServer:
             original_name = FIELD_ACTION_PRIMITIVE_ALIASES.get(original_primitive, "")
         if original_name != action_name:
             raise web.HTTPForbidden(text="Field action differs from claimed command")
+        if action_name == "http.ssl_profile.update":
+            # Lock the chosen profile to the original claimed command, too.
+            # Server-side signature must not authorize changed action args.
+            original_action_args = original_action.get("args") if isinstance(original_action.get("args"), dict) else {}
+            if original_action_args.get("ssl_profile") != "intermediate_v6":
+                raise web.HTTPForbidden(text="Signed TLS target was not claimed")
+            if set(original_action_args) - {"ssl_profile", "domain", "issue_id"}:
+                raise web.HTTPForbidden(text="Unclaimed TLS arguments")
 
         reason = clean_text(body.get("reason"), 2000)
         expected_result = clean_text(body.get("expected_result"), 2000)
