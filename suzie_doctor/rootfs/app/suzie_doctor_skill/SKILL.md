@@ -1,6 +1,6 @@
 # Suzie Doctor Skill Core
 
-Version: 0.1.11-dev
+Version: 0.1.15-dev
 Schema: 1
 
 ## Purpose
@@ -195,7 +195,12 @@ so repeated scans reinforce one task instead of creating duplicate House jobs.
 
 For a trigger with `terminal_resolution_required=true`, House MUST NOT choose `OBSERVE`,
 `RECHECK_LATER`, or `IGNORE_AS_NOISE`. House must either `DISPATCH_SUZIE` for smart Field
-resolution or use `HUMAN_ACTION_REQUIRED` when owner action is genuinely necessary.
+resolution or use `HUMAN_ACTION_REQUIRED` when owner action is genuinely necessary. House
+completion fields use only these canonical enums: `finding_class=EVENT|OBSERVATION|INCIDENT|CASE`,
+`significance=LOW|MEDIUM|HIGH|CRITICAL`,
+`decision=OBSERVE|RECHECK_LATER|IGNORE_AS_NOISE|HUMAN_ACTION_REQUIRED|DISPATCH_SUZIE`, and
+`field_priority=LOW|NORMAL|HIGH|URGENT`. For `MISSING_CAPABILITY`, `human_requirement.capability`
+MUST contain the exact missing capability string.
 
 A Field Case for an active Repair may close SUCCESS/RESOLVED only after the original
 functional Repair criterion is absent in fresh `ha.repairs.list` evidence. `issue_id` is
@@ -269,6 +274,84 @@ Doctor Server attests attempted Experimental treatment against the exact-client 
 journal. A self-reported attempt without a completed signed `doctor.diagnose execute=true`
 for the same Case/candidate is not accepted as validation evidence.
 
+
+## Doctor Knowledge Library
+
+The Doctor Knowledge Library is the unified read-only research layer over accumulated
+Doctor knowledge. Protocol is only one knowledge type. The Library also contains Disease
+knowledge, Manual Treatment, Reference-only knowledge, Negative Evidence, unresolved
+hypotheses and External Evidence with provenance.
+
+For a claimed Field Case, `doctor.knowledge.search` is a normal first-class diagnostic
+tool. Field Suzie accesses it directly through the canonical Connector; House permission
+is not required for each search and Field never receives direct filesystem/SQLite access.
+
+### Field knowledge-source priority
+
+When an ACTIVE/assigned Protocol is absent, does not fit, fails treatment, fails verify,
+or material symptoms/context change:
+
+1. search the Doctor Knowledge Library first;
+2. then use external web research when internal knowledge is insufficient or current
+   version/regression/vendor evidence is required.
+
+External recommendations are evidence, not executable treatment. Field must independently
+confirm applicability, contraindications, risk, checkpoint/rollback needs and functional
+verify before treatment.
+
+Field MUST re-search the Library when any of these materially change:
+- symptom set;
+- Disease hypothesis;
+- component or environment/version;
+- a treatment step fails;
+- verify fails or differs from expectation;
+- a contraindication appears;
+- the treatment plan must change.
+
+Negative Evidence is first-class. If Library says an action failed repeatedly, caused a
+regression, only masked the symptom, belongs to another Disease, or was already tried in
+the current episode, Field must treat that as a warning and must not blindly repeat it.
+
+A House-selected Disease/ACTIVE/Experimental Protocol is a starting hypothesis, not a
+constraint on the rest of the Case. If new evidence disproves it, Field may choose another
+Disease/Protocol, use Manual/Reference knowledge, or construct a safe structured Field
+treatment. The deviation and evidence must be recorded in the Case Report.
+
+Library failure is fail-safe: `KNOWLEDGE_UNAVAILABLE` does not break the existing Doctor
+pipeline and must not be converted into false knowledge.
+
+## Wilson Library stewardship
+
+Wilson is the primary scientific curator and populator of the Doctor Knowledge Library.
+All Wilson scientific work must leave structured Library knowledge, whether it comes from
+external internet research or internal server/Field evidence.
+
+For new Wilson contract jobs, `result.library_updates` is mandatory. Each update has a
+stable `update_key`, `knowledge_type`, `title`, `source_scope=EXTERNAL|INTERNAL`, structured
+payload and provenance. Candidate rejection never means knowledge deletion. Every external incident_review and every explicit internal case_review produced by Wilson must cite its corresponding `library_update_keys`, so one summary update cannot stand in for multiple scientific findings.
+
+Wilson may update:
+- Disease knowledge;
+- positive evidence;
+- Negative Evidence and do-not-repeat findings;
+- treatment knowledge and contraindications;
+- version/environment constraints;
+- failure modes;
+- unresolved hypotheses;
+- Reference/Manual knowledge;
+- External Evidence;
+- an Experimental Protocol Candidate only when the evidence really qualifies.
+
+The governing rule is:
+
+`useful knowledge != Protocol`
+
+Missing deterministic execution mapping means the treatment may be Manual/Reference
+knowledge today; it does not make the scientific result useless. Conversely unreliable,
+contradicted, disproven, unsafe or invalid-applicability evidence must be classified as
+such and must never gain executable authority.
+
+
 ## Wilson Treatment Knowledge Factory
 
 Wilson is a treatment-knowledge producer, not a news summarizer.
@@ -282,14 +365,34 @@ forums and technical postmortems. The objective is to recover reusable chains:
 `symptom -> diagnosis/root cause -> treatment -> evidence that function recovered`.
 
 General news, product announcements and unverified anecdotes are not sufficient work.
-Every reviewed external incident MUST end in one of two governed outcomes:
+
+Before Wilson completes any reviewed external incident, it MUST persist that incident through
+`doctor.ingest_incident` with `dry_run=false`. The review records `ingest_result`
+(`ADDED` or `DUPLICATE`) and a real `master_incident_id`; for a duplicate, use
+`duplicate.incident_id`. Protocol rejection never deletes or replaces the persistent External
+Incident. Useful incidents remain in Master KB with the protocol disposition/reason.
+
+Every reviewed external incident MUST then end in one of two governed protocol outcomes:
 
 - `CANDIDATE_CREATED` / `CANDIDATE_UPDATED`: Wilson emits a structured EXPERIMENTAL
-  Protocol Candidate at 0/3, including an embedded draft Disease with diagnostic criteria,
-  treatment, functional verify, risk/automation class and source evidence URLs; or
-- `REJECTED`: Wilson records a concrete reason such as insufficient evidence, no successful
-  treatment, not applicable, unsafe, not machine-actionable, no diagnostic/verify criterion,
-  unsupported capability or duplicate knowledge.
+  Protocol Candidate at 0/3 only when the incident contains observed functional recovery after
+  a concrete treatment and applicability is at least possible. Every Candidate uses the
+  canonical top-level contract: `protocol_id`, `disease_id`, `title`, `component`,
+  `action`, non-empty `symptoms[]`, `checks[]`, `verify[]`, `risk`
+  (`LOW|MEDIUM|HIGH`), `automation_class`
+  (`AUTO_SAFE|CONFIRM_REQUIRED|DIAGNOSTIC_ONLY`), an embedded draft `disease` whose
+  `disease_id/title/component` match the Candidate and whose `diagnostic_criteria.must[]`
+  is non-empty, plus source `external_evidence` URLs; or
+- `REJECTED`: Wilson records a concrete evidence/safety/applicability reason such as
+  insufficient evidence, no successful treatment, not applicable, unsafe, genuinely
+  not-machine-actionable treatment, no diagnostic criterion, no verify criterion, or duplicate
+  knowledge.
+
+Current execution capability is a separate fact from treatment evidence. Missing deterministic
+primitive/mapping MUST NOT reject an otherwise qualified Candidate. Server stores the Candidate
+at 0/3 with `execution_mapping=UNAVAILABLE` plus a reason; Field later reports
+`MISSING_CAPABILITY`/UNAVAILABLE if the capability is still absent. Advice without observed
+functional recovery does not qualify for a Candidate.
 
 External evidence is allowed to create or strengthen a 0/3 Candidate but NEVER counts as
 1/3, 2/3 or 3/3. Only independent internal Field treatment episodes may advance validation.
@@ -332,8 +435,11 @@ FAILED, inapplicable, unsafe, blocked, unavailable and verify-failed attempts re
 as negative evidence. External/forum/GitHub evidence is useful research evidence but adds
 zero to the 3/3 counter.
 
-Wilson may suspend a candidate or revise it. Revision creates a new Experimental candidate
-and starts its validation at 0/3; validation credit is not inherited silently.
+Wilson may suspend a candidate or revise it. Every `candidate_actions` SUSPEND MUST carry a
+server-supported classified `blocker_class`, a non-empty concrete `reason`, and bounded evidence
+when available. `SUSPENDED` is never a generic unresolved state and MUST NOT be persisted without
+that classification. Revision suspends the predecessor as `SUPERSEDED_BY_REVISION`, creates a new
+Experimental candidate, and starts its validation at 0/3; validation credit is not inherited silently.
 
 At 3/3 the candidate is still NOT ACTIVE. Doctor Server places it in the publication review
 queue after Wilson review. Publication is a separate governed step. Only a published ACTIVE
@@ -352,7 +458,7 @@ rules.
   reusable Family Doctor authority by itself.
 - WATCH: diagnostic knowledge only; no treatment permission.
 - MANUAL: curated guidance only; ProtocolEngine must not execute treatment.
-- SUSPENDED: not executable.
+- SUSPENDED: not executable; it must carry a valid classified blocker and concrete reason.
 - CONFIRM_REQUIRED: automation class. For Family Doctor it requires full_trust; otherwise
   Field review. It is not human confirmation.
 - HUMAN_ACTION_REQUIRED: runtime outcome only for physical work, credentials/OAuth, or an
