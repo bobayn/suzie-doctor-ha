@@ -64,6 +64,11 @@ jobs:
           python -m pip install "PyYAML>=6.0,<7"
           python suzie_doctor/server_migration_v2/test_http_ssl_field_engine.py
 
+      - name: Marketplace consent recovery (mock, no live HA writes)
+        run: |
+          python -m pip install "aiohttp>=3.10,<4"
+          python suzie_doctor/server_migration_v2/test_marketplace_consent.py
+
       - name: Doctor v2 policy regression
         working-directory: suzie_doctor/server_migration_v2
         run: python test_policy.py
