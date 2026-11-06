@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 from doctor_v2_store import DoctorV2Store
 from protocol_factory import build_card as build_generated_protocol_card
+from knowledge_library import DoctorKnowledgeLibrary
 
+MASTER_KB_PATH = Path("/var/lib/suzie-doctor-server/knowledge/forum_knowledge_base.json")
 TERMINAL_CASE_STATES = {"RESOLVED","FAILED","HUMAN_REQUIRED","CANCELLED"}
 
 class DoctorV2Runtime:
@@ -15,6 +17,13 @@ class DoctorV2Runtime:
         self.db_path=Path(db_path)
         self.store=DoctorV2Store(self.db_path, schema_path)
         self.store.install_schema()
+        self.knowledge_library=DoctorKnowledgeLibrary(self.store.conn, MASTER_KB_PATH.parent)
+        self.knowledge_library_error=""
+        try:
+            self.knowledge_library_status=self.knowledge_library.rebuild()
+        except Exception as exc:
+            self.knowledge_library_status={"ok":False,"error":"KNOWLEDGE_UNAVAILABLE"}
+            self.knowledge_library_error=f"{type(exc).__name__}: {exc}"[:500]
 
     @property
     def conn(self): return self.store.conn
@@ -29,6 +38,44 @@ class DoctorV2Runtime:
         try: return json.loads(v)
         except Exception: return {}
 
+    def rebuild_knowledge_library(self)->dict[str,Any]:
+        try:
+            self.knowledge_library_status=self.knowledge_library.rebuild()
+            self.knowledge_library_error=""
+            return dict(self.knowledge_library_status)
+        except Exception as exc:
+            self.knowledge_library_error=f"{type(exc).__name__}: {exc}"[:500]
+            return {"ok":False,"error":"KNOWLEDGE_UNAVAILABLE"}
+
+    def knowledge_search(self, context:dict[str,Any], limit_per_type:int=5)->dict[str,Any]:
+        if self.knowledge_library_error:
+            retry=self.rebuild_knowledge_library()
+            if not retry.get("ok"):
+                return {"ok":False,"error":"KNOWLEDGE_UNAVAILABLE","detail":self.knowledge_library_error}
+        try:
+            return self.knowledge_library.search(dict(context or {}),limit_per_type)
+        except Exception as exc:
+            self.knowledge_library_error=f"{type(exc).__name__}: {exc}"[:500]
+            return {"ok":False,"error":"KNOWLEDGE_UNAVAILABLE","detail":self.knowledge_library_error}
+
+    @staticmethod
+    def _master_incident_present(incident_id:str, source_urls:list[str]) -> bool:
+        incident_id=str(incident_id or "").strip()
+        if not incident_id or not MASTER_KB_PATH.exists():
+            return False
+        try:
+            master=json.loads(MASTER_KB_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        allowed_sources={str(x).strip() for x in (source_urls or []) if str(x).strip()}
+        for item in master.get("incidents") or []:
+            if not isinstance(item,dict) or str(item.get("id") or "")!=incident_id:
+                continue
+            if allowed_sources and str(item.get("source") or "") not in allowed_sources:
+                return False
+            return True
+        return False
+
     def snapshot(self) -> dict[str,Any]:
         c=self.conn
         return {
@@ -40,6 +87,7 @@ class DoctorV2Runtime:
             "waiting_wilson": c.execute("select count(*) from doctor_v2_wilson_jobs where status='WAITING'").fetchone()[0],
             "open_dialogs": c.execute("select count(*) from doctor_v2_web_dialogs where state='OPEN'").fetchone()[0],
             "resolution_states": {str(r[0]):int(r[1]) for r in c.execute("select state,count(*) from doctor_v2_resolutions group by state")},
+            "knowledge_library": dict(self.knowledge_library_status or {}),
             "quick_check": c.execute("pragma quick_check").fetchone()[0],
         }
 
@@ -669,6 +717,12 @@ class DoctorV2Runtime:
             raw=dict(row)
             if str(raw.get("state")) not in eligible:
                 continue
+            classification=self.conn.execute(
+                "select eligibility from doctor_v2_protocol_candidate_classification where protocol_id=?",
+                (str(raw.get("protocol_id") or ""),),
+            ).fetchone()
+            if classification and str(classification["eligibility"])!="EXPERIMENTAL":
+                continue
             try: candidate=json.loads(str(raw.get("candidate_json") or "{}"))
             except Exception: candidate={}
             disease_id=str(raw.get("disease_id") or candidate.get("disease_id") or "").strip()
@@ -723,6 +777,8 @@ class DoctorV2Runtime:
                     "verify":candidate.get("verify"),
                     "risk":candidate.get("risk"),
                     "automation_class":candidate.get("automation_class"),
+                    "execution_mapping":candidate.get("execution_mapping"),
+                    "execution_mapping_reason":candidate.get("execution_mapping_reason"),
                 },
             })
         matched.sort(key=lambda x:(int(x["match_score"]),-int(x["verified_successes"])),reverse=True)
@@ -848,7 +904,7 @@ class DoctorV2Runtime:
         if existing:
             return int(existing[0])
         batch={
-            "knowledge_loop_contract_version":2,
+            "knowledge_loop_contract_version":3,
             "reason":"EXPERIMENTAL_FIELD_VALIDATION",
             "case_id":int(case_id),
             "required_validations":[dict(validation)],
@@ -956,6 +1012,21 @@ class DoctorV2Runtime:
         version=int(batch.get("knowledge_loop_contract_version") or 1)
         if version<2:
             return
+        seen_updates=set()
+        if version>=3:
+            updates=[x for x in (result.get("library_updates") or []) if isinstance(x,dict)]
+            if not updates:
+                raise RuntimeError("Wilson knowledge contract v3 requires non-empty library_updates")
+            seen_updates=set()
+            allowed_types={"DISEASE_KNOWLEDGE","EXPERIMENTAL_PROTOCOL","MANUAL_TREATMENT","REFERENCE_ONLY","NEGATIVE_EVIDENCE","UNRESOLVED_HYPOTHESIS","EXTERNAL_EVIDENCE"}
+            for update in updates:
+                key=str(update.get("update_key") or "").strip()
+                ktype=str(update.get("knowledge_type") or "").upper().strip()
+                title=str(update.get("title") or "").strip()
+                scope=str(update.get("source_scope") or "").upper().strip()
+                if not key or key in seen_updates or ktype not in allowed_types or not title or scope not in {"EXTERNAL","INTERNAL"}:
+                    raise RuntimeError("Wilson library_update requires unique update_key, valid knowledge_type, title and EXTERNAL|INTERNAL source_scope")
+                seen_updates.add(key)
         candidates=[x for x in (result.get("protocol_candidates") or []) if isinstance(x,dict)]
         candidate_ids=set()
         for item in candidates:
@@ -976,11 +1047,20 @@ class DoctorV2Runtime:
             except Exception as exc:
                 raise RuntimeError(f"Wilson candidate {pid} cannot compile: {type(exc).__name__}: {exc}") from exc
             factory=generated.get("factory") if isinstance(generated.get("factory"),dict) else {}
-            if not bool(factory.get("mapped")) or not bool(factory.get("complete_mapping")) or not (generated.get("treatment") or []):
-                raise RuntimeError(
-                    f"Wilson candidate {pid} is not machine-executable: "
-                    f"{factory.get('mapping_reason') or factory.get('blocker_class') or 'no complete treatment mapping'}"
-                )
+            execution_available=(
+                bool(factory.get("mapped"))
+                and bool(factory.get("complete_mapping"))
+                and bool(generated.get("treatment") or [])
+            )
+            item["execution_mapping"]="AVAILABLE" if execution_available else "UNAVAILABLE"
+            if execution_available:
+                item.pop("execution_mapping_reason",None)
+            else:
+                item["execution_mapping_reason"]=str(
+                    factory.get("mapping_reason")
+                    or factory.get("blocker_class")
+                    or "no_complete_treatment_mapping"
+                )[:300]
             origin=str(item.get("origin") or ("EXTERNAL_WILSON" if mode=="NIGHTLY_RESEARCH" else "INTERNAL_FIELD")).upper()
             if mode=="NIGHTLY_RESEARCH" and origin!="EXTERNAL_WILSON":
                 raise RuntimeError("nightly research candidate origin must be EXTERNAL_WILSON")
@@ -988,6 +1068,23 @@ class DoctorV2Runtime:
                 evidence=[x for x in (item.get("external_evidence") or []) if isinstance(x,dict)]
                 if not evidence or not any(str(x.get("url") or "").startswith(("https://","http://")) for x in evidence):
                     raise RuntimeError("external Experimental candidate requires external_evidence URL")
+
+        for action in [x for x in (result.get("candidate_actions") or []) if isinstance(x,dict)]:
+            op=str(action.get("action") or "").upper().strip()
+            if op=="SUSPEND":
+                self.store.validate_protocol_suspension(
+                    str(action.get("blocker_class") or ""),
+                    str(action.get("reason") or ""),
+                    action.get("evidence"),
+                )
+            elif op=="REVISE":
+                replacement=action.get("replacement_candidate")
+                if not isinstance(replacement,dict):
+                    raise RuntimeError("REVISE requires replacement_candidate")
+                old_pid=str(action.get("protocol_id") or "").strip()
+                new_pid=str(replacement.get("protocol_id") or "").strip()
+                if not old_pid or not new_pid or new_pid==old_pid:
+                    raise RuntimeError("REVISE requires distinct protocol_id and replacement protocol_id")
 
         if mode=="NIGHTLY_RESEARCH":
             reviews=result.get("incident_reviews")
@@ -1001,13 +1098,23 @@ class DoctorV2Runtime:
                 if not key or key in seen:
                     raise RuntimeError("each incident_review needs unique incident_key")
                 seen.add(key)
+                if version>=3:
+                    refs=[str(x).strip() for x in (raw.get("library_update_keys") or []) if str(x).strip()]
+                    if not refs or any(x not in seen_updates for x in refs):
+                        raise RuntimeError(f"incident_review {key} must reference persisted result.library_updates through library_update_keys")
                 urls=[str(x) for x in (raw.get("source_urls") or []) if str(x).startswith(("https://","http://"))]
                 if not urls:
                     raise RuntimeError(f"incident_review {key} requires source_urls")
-                outcome=str(raw.get("treatment_outcome") or "UNKNOWN").upper()
+                master_incident_id=str(raw.get("master_incident_id") or "").strip()
+                ingest_result=str(raw.get("ingest_result") or "").upper().strip()
+                if ingest_result not in {"ADDED","DUPLICATE"}:
+                    raise RuntimeError(f"incident_review {key} must be persisted through doctor.ingest_incident dry_run=false")
+                if not self._master_incident_present(master_incident_id,urls):
+                    raise RuntimeError(f"incident_review {key} master_incident_id is not present in persistent Master KB")
+                outcome=str(raw.get("treatment_outcome") or "").upper()
                 if outcome not in {"SUCCESS","FAILED","MIXED","UNKNOWN","NOT_TREATED"}:
                     raise RuntimeError(f"incident_review {key} treatment_outcome invalid")
-                applicability=str(raw.get("applicability") or "UNKNOWN").upper()
+                applicability=str(raw.get("applicability") or "").upper()
                 if applicability not in {"APPLICABLE","POSSIBLE","NOT_APPLICABLE","UNKNOWN"}:
                     raise RuntimeError(f"incident_review {key} applicability invalid")
                 disposition=str(raw.get("disposition") or "").upper()
@@ -1017,10 +1124,19 @@ class DoctorV2Runtime:
                     pid=str(raw.get("protocol_id") or "").strip()
                     if not pid or pid not in candidate_ids:
                         raise RuntimeError(f"incident_review {key} candidate disposition must reference result.protocol_candidates")
+                    if outcome!="SUCCESS":
+                        raise RuntimeError(f"incident_review {key} Experimental candidate requires observed successful functional recovery")
+                    if applicability not in {"APPLICABLE","POSSIBLE"}:
+                        raise RuntimeError(f"incident_review {key} Experimental candidate requires applicable/possible environment")
                 else:
                     reason=str(raw.get("rejection_reason") or "").strip()
                     klass=str(raw.get("rejection_class") or "").upper().strip()
-                    allowed={"INSUFFICIENT_EVIDENCE","NO_SUCCESSFUL_TREATMENT","NOT_APPLICABLE","UNSAFE","NOT_MACHINE_ACTIONABLE","NO_DIAGNOSTIC_CRITERIA","NO_VERIFY_CRITERION","UNSUPPORTED_CAPABILITY","DUPLICATE"}
+                    allowed={"INSUFFICIENT_EVIDENCE","NO_SUCCESSFUL_TREATMENT","NOT_APPLICABLE","UNSAFE","NOT_MACHINE_ACTIONABLE","NO_DIAGNOSTIC_CRITERIA","NO_VERIFY_CRITERION","DUPLICATE"}
+                    if klass=="UNSUPPORTED_CAPABILITY":
+                        raise RuntimeError(
+                            f"incident_review {key} cannot reject solely for unsupported capability; "
+                            "create the 0/3 candidate and mark execution_mapping=UNAVAILABLE when evidence is otherwise sufficient"
+                        )
                     if not reason or klass not in allowed:
                         raise RuntimeError(f"incident_review {key} REJECTED requires rejection_class/rejection_reason")
                 if outcome=="SUCCESS" and applicability in {"APPLICABLE","POSSIBLE"} and disposition=="REJECTED":
@@ -1032,6 +1148,12 @@ class DoctorV2Runtime:
                 raise RuntimeError("NIGHTLY_RESEARCH requires search_coverage")
 
         if mode=="HOURLY_REVIEW":
+            if version>=3:
+                for review in [x for x in (result.get("case_reviews") or []) if isinstance(x,dict)]:
+                    cid=str(review.get("case_id") or "").strip()
+                    refs=[str(x).strip() for x in (review.get("library_update_keys") or []) if str(x).strip()]
+                    if not refs or any(x not in seen_updates for x in refs):
+                        raise RuntimeError(f"case_review {cid or 'unknown'} must reference persisted result.library_updates through library_update_keys")
             reports=[]
             if isinstance(batch.get("case_reports"),list):
                 reports.extend(x for x in batch.get("case_reports") if isinstance(x,dict))
@@ -1083,13 +1205,22 @@ class DoctorV2Runtime:
                 got.setdefault("patient_id",req.get("patient_id"))
                 got.setdefault("field_case_id",req.get("field_case_id"))
                 got.setdefault("evidence",req.get("evidence") or {})
+
         validation_results=[]
         governance_results=[]
         publication_queue=[]
-        if not failed:
-            candidates=result.get("protocol_candidates")
-            if isinstance(candidates,list):
-                with self.conn:
+        persisted_cursor=None
+
+        # All knowledge mutations and Wilson job/cursor completion are one SQLite
+        # transaction. A late failure must leave both knowledge and job state unchanged.
+        wilson_library_updates=0
+        with self.conn:
+            if not failed:
+                wilson_library_updates=self.knowledge_library.persist_wilson_updates(
+                    int(job_id), [x for x in (result.get("library_updates") or []) if isinstance(x,dict)]
+                )
+                candidates=result.get("protocol_candidates")
+                if isinstance(candidates,list):
                     for item in candidates:
                         if not isinstance(item,dict):continue
                         pid=str(item.get("protocol_id") or "").strip()
@@ -1102,58 +1233,71 @@ class DoctorV2Runtime:
                             origin=origin,
                             disease_id=str(item.get("disease_id") or "") or None,
                             candidate=item,
+                            manage_transaction=False,
                         )
-            for item in validations:
-                source=str(item.get("source") or "").upper()
-                internal=bool(item.get("internal_verified")) or source in {"INTERNAL","INTERNAL_FIELD","FIELD_CASE"}
-                if not internal:
-                    continue
-                pid=str(item.get("protocol_id") or "").strip()
-                episode=str(item.get("episode_key") or "").strip()
-                if not pid or not episode:continue
-                exists=self.conn.execute("select 1 from doctor_v2_protocol_candidates where protocol_id=?",(pid,)).fetchone()
-                if not exists:continue
-                vr=self.store.record_protocol_validation(
-                    protocol_id=pid,
-                    episode_key=episode,
-                    success=bool(item.get("success")),
-                    verified=bool(item.get("verified")),
-                    evidence=dict(item.get("evidence") or {}),
-                    installation_id_hash=item.get("installation_id_hash"),
-                    patient_id=item.get("patient_id"),
-                    field_case_id=item.get("field_case_id"),
-                )
-                validation_results.append({"protocol_id":pid,"episode_key":episode,**vr})
-            actions=[x for x in (result.get("candidate_actions") or []) if isinstance(x,dict)]
-            governed:set[str]=set()
-            for action in actions:
-                pid=str(action.get("protocol_id") or "").strip()
-                op=str(action.get("action") or "").upper()
-                if not pid or op not in {"SUSPEND","REVISE"}:
-                    continue
-                current=self.store.protocol_candidate(pid)
-                if not current:
-                    continue
-                governed.add(pid)
-                if op=="SUSPEND":
-                    with self.conn:
-                        self.conn.execute(
-                            "update doctor_v2_protocol_candidates set state='SUSPENDED',updated_at=CURRENT_TIMESTAMP where protocol_id=?",
-                            (pid,),
+                for item in validations:
+                    source=str(item.get("source") or "").upper()
+                    internal=bool(item.get("internal_verified")) or source in {"INTERNAL","INTERNAL_FIELD","FIELD_CASE"}
+                    if not internal:
+                        continue
+                    pid=str(item.get("protocol_id") or "").strip()
+                    episode=str(item.get("episode_key") or "").strip()
+                    if not pid or not episode:continue
+                    exists=self.conn.execute("select 1 from doctor_v2_protocol_candidates where protocol_id=?",(pid,)).fetchone()
+                    if not exists:continue
+                    vr=self.store.record_protocol_validation(
+                        protocol_id=pid,
+                        episode_key=episode,
+                        success=bool(item.get("success")),
+                        verified=bool(item.get("verified")),
+                        evidence=dict(item.get("evidence") or {}),
+                        installation_id_hash=item.get("installation_id_hash"),
+                        patient_id=item.get("patient_id"),
+                        field_case_id=item.get("field_case_id"),
+                        manage_transaction=False,
+                    )
+                    validation_results.append({"protocol_id":pid,"episode_key":episode,**vr})
+                actions=[x for x in (result.get("candidate_actions") or []) if isinstance(x,dict)]
+                governed:set[str]=set()
+                for action in actions:
+                    pid=str(action.get("protocol_id") or "").strip()
+                    op=str(action.get("action") or "").upper()
+                    if not pid or op not in {"SUSPEND","REVISE"}:
+                        continue
+                    current=self.store.protocol_candidate(pid)
+                    if not current:
+                        continue
+                    governed.add(pid)
+                    if op=="SUSPEND":
+                        blocker_class=str(action.get("blocker_class") or "").upper().strip()
+                        reason=str(action.get("reason") or "").strip()
+                        self.store.suspend_protocol_candidate(
+                            protocol_id=pid, blocker_class=blocker_class, reason=reason,
+                            evidence=action.get("evidence"), manage_transaction=False,
                         )
-                    governance_results.append({"protocol_id":pid,"action":"SUSPEND","reason":str(action.get("reason") or "")[:1000]})
-                else:
-                    replacement=action.get("replacement_candidate")
-                    if not isinstance(replacement,dict):
-                        raise RuntimeError("REVISE requires replacement_candidate")
-                    new_pid=str(replacement.get("protocol_id") or "").strip()
-                    if not new_pid or new_pid==pid:
-                        raise RuntimeError("REVISE requires a new protocol_id")
-                    disease_id=str(replacement.get("disease_id") or current.get("disease_id") or "") or None
-                    with self.conn:
-                        self.conn.execute(
-                            "update doctor_v2_protocol_candidates set state='SUSPENDED',updated_at=CURRENT_TIMESTAMP where protocol_id=?",
-                            (pid,),
+                        governance_results.append({
+                            "protocol_id":pid,"action":"SUSPEND",
+                            "blocker_class":blocker_class,"reason":reason[:1000],
+                        })
+                    else:
+                        replacement=action.get("replacement_candidate")
+                        if not isinstance(replacement,dict):
+                            raise RuntimeError("REVISE requires replacement_candidate")
+                        new_pid=str(replacement.get("protocol_id") or "").strip()
+                        if not new_pid or new_pid==pid:
+                            raise RuntimeError("REVISE requires a new protocol_id")
+                        disease_id=str(replacement.get("disease_id") or current.get("disease_id") or "") or None
+                        revise_reason=str(action.get("reason") or "").strip() or f"Superseded by Wilson revision {new_pid}"
+                        self.store.suspend_protocol_candidate(
+                            protocol_id=pid,
+                            blocker_class="SUPERSEDED_BY_REVISION",
+                            reason=revise_reason,
+                            evidence={
+                                "replacement_protocol_id":new_pid,
+                                "wilson_job_id":int(job_id),
+                                "source_evidence":action.get("evidence") if isinstance(action.get("evidence"),(dict,list)) else {},
+                            },
+                            manage_transaction=False,
                         )
                         self.conn.execute(
                             """insert into doctor_v2_protocol_candidates(protocol_id,origin,state,disease_id,candidate_json)
@@ -1161,15 +1305,15 @@ class DoctorV2Runtime:
                                on conflict(protocol_id) do nothing""",
                             (new_pid,disease_id,self._j(replacement)),
                         )
-                    governance_results.append({"protocol_id":pid,"action":"REVISE","replacement_protocol_id":new_pid})
-            for vr in validation_results:
-                pid=str(vr.get("protocol_id") or "")
-                if bool(vr.get("publication_ready")) and pid not in governed:
-                    publication_queue.append(self.store.enqueue_publication_review(
-                        pid,int(job_id),{"validation":vr,"wilson_result":dict(result or {})}
-                    ))
-        persisted_cursor=None
-        with self.conn:
+                        governance_results.append({"protocol_id":pid,"action":"REVISE","replacement_protocol_id":new_pid})
+                for vr in validation_results:
+                    pid=str(vr.get("protocol_id") or "")
+                    if bool(vr.get("publication_ready")) and pid not in governed:
+                        publication_queue.append(self.store.enqueue_publication_review(
+                            pid,int(job_id),{"validation":vr,"wilson_result":dict(result or {})},
+                            manage_transaction=False,
+                        ))
+
             status="FAILED" if failed else "DONE"
             self.conn.execute("update doctor_v2_wilson_jobs set status=?,result_json=?,output_cursor=?,completed_at=CURRENT_TIMESTAMP where wilson_job_id=?",(status,self._j(result),output_cursor,int(job_id)))
             cursor_to=batch.get("cursor_to") if isinstance(batch,dict) else None
@@ -1180,9 +1324,14 @@ class DoctorV2Runtime:
                     persisted_cursor=None
                 if persisted_cursor is not None:
                     self.conn.execute("insert into doctor_v2_wilson_cursors(stream,cursor_value) values('FIELD_CASE_REPORTS',?) on conflict(stream) do update set cursor_value=excluded.cursor_value,updated_at=CURRENT_TIMESTAMP",(persisted_cursor,))
+        library_rebuild={"ok":True,"skipped":True}
+        if not failed:
+            library_rebuild=self.rebuild_knowledge_library()
         return {
             "wilson_job_id":int(job_id),
             "status":status,
+            "wilson_library_updates":int(wilson_library_updates),
+            "knowledge_library":library_rebuild,
             "output_cursor":output_cursor,
             "persisted_field_case_cursor":persisted_cursor,
             "validation_results":validation_results,
@@ -1220,12 +1369,58 @@ class DoctorV2Runtime:
         if not rows:return None
         for r in rows:r["result"]=self._loads(r.pop("result_json",None))
         return {
-            "knowledge_loop_contract_version":2,
+            "knowledge_loop_contract_version":3,
             "reason":"FIELD_CASE_REPORT_REVIEW",
             "cursor_from":cursor,
             "cursor_to":max(r["case_id"] for r in rows),
             "case_reports":rows,
         }
+
+    def recover_stale_compat_dialogs(self)->list[dict[str,Any]]:
+        retired=[]
+        rows=[dict(r) for r in self.conn.execute(
+            "select dialog_id,role,assignment_id,generation from doctor_v2_web_dialogs where state='OPEN' and role in ('HOUSE','WILSON') order by role,assignment_id,generation desc"
+        )]
+        latest_by_assignment={}
+        for row in rows:
+            key=(str(row.get("role") or ""),str(row.get("assignment_id") or ""))
+            latest_by_assignment.setdefault(key,row)
+        for row in rows:
+            role=str(row.get("role") or "")
+            assignment=str(row.get("assignment_id") or "")
+            dialog_id=str(row.get("dialog_id") or "")
+            try: job_id=int(assignment.split(":",1)[1])
+            except Exception: job_id=0
+            status="MISSING"
+            if role=="WILSON" and job_id:
+                j=self.conn.execute("select status from doctor_v2_wilson_jobs where wilson_job_id=?",(job_id,)).fetchone()
+                status=str(j[0]) if j else "MISSING"
+                terminal=status in {"DONE","FAILED","MISSING"}
+            elif role=="HOUSE" and job_id:
+                j=self.conn.execute("select status from doctor_v2_house_jobs where house_job_id=?",(job_id,)).fetchone()
+                status=str(j[0]) if j else "MISSING"
+                terminal=status in {"DONE","CANCELLED","MISSING"}
+            else:
+                terminal=False
+            latest=latest_by_assignment.get((role,assignment)) or {}
+            duplicate=(not terminal and str(latest.get("dialog_id") or "")!=dialog_id)
+            if not terminal and not duplicate:
+                continue
+            with self.conn:
+                self.conn.execute(
+                    "update doctor_v2_web_sessions set ended_at=CURRENT_TIMESTAMP,end_reason=? where dialog_id=? and ended_at is null",
+                    ("NATURAL" if terminal else "ERROR",dialog_id),
+                )
+                self.conn.execute(
+                    "update doctor_v2_web_dialogs set state=?,closed_at=CURRENT_TIMESTAMP where dialog_id=? and state='OPEN'",
+                    ("CLOSED_NATURAL" if terminal else "CLOSED_LIMIT",dialog_id),
+                )
+            retired.append({
+                "role":role,"assignment_id":assignment,"dialog_id":dialog_id,
+                "generation":int(row.get("generation") or 0),"job_status":status,
+                "reason":"TERMINAL_JOB" if terminal else "DUPLICATE_OPEN_DIALOG",
+            })
+        return retired
 
     def recover_stranded_house_wilson(self)->list[dict[str,Any]]:
         recovered=[]

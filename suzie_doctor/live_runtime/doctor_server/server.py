@@ -880,16 +880,40 @@ class DoctorServer:
                 },
             )
 
+    async def _web_transport_state(self) -> dict[str, Any]:
+        if not self._http:
+            return {"state":"WEB_DEGRADED","reason":"dispatcher_http_unavailable"}
+        url = str(self.config["call_lab_url"]).rstrip("/") + "/api/transport-state"
+        try:
+            async with self._http.get(url, timeout=ClientTimeout(total=3)) as response:
+                data = await response.json()
+                if response.status == 200 and data.get("ok"):
+                    return dict(data)
+        except Exception as exc:
+            return {"state":"WEB_DEGRADED","reason":f"call_lab_unreachable:{type(exc).__name__}"}
+        return {"state":"WEB_DEGRADED","reason":"transport_state_unavailable"}
+
+    async def _web_transport_ready(self) -> bool:
+        state = await self._web_transport_state()
+        return str(state.get("state") or "") == "WEB_READY"
+
     async def _call_lab_run(
         self, *, method: str, text: str, target: str = "project",
-        target_url: str = ""
+        target_url: str = "", logical_key: str = ""
     ) -> dict[str, Any]:
         if not self._http:
             raise RuntimeError("dispatcher HTTP session unavailable")
+        transport = await self._web_transport_state()
+        if target != "mock" and str(transport.get("state") or "") != "WEB_READY":
+            raise RuntimeError(
+                f"web transport paused: {transport.get('state')}:{transport.get('reason')}"
+            )
         url = str(self.config["call_lab_url"]).rstrip("/") + "/api/run"
         body = {"method": method, "target": target, "text": text}
         if target_url:
             body["target_url"] = target_url
+        if logical_key:
+            body["logical_key"] = logical_key
         async with self._http.post(
             url,
             json=body,
@@ -977,6 +1001,7 @@ class DoctorServer:
             job = await self._call_lab_run(
                 method="cdp",
                 text=prompt,
+                logical_key=f"CASE:{case_id}:initial",
             )
             job_id = str(job.get("job_id") or "")
             if not job_id:
@@ -1279,7 +1304,7 @@ class DoctorServer:
                         self.db.event("stale_case_resolution_sync_error",None,{"case_id":action.get("case_id"),"error":f"{type(exc).__name__}: {exc}"})
                 await self._reconcile_starting_dialogs()
                 await self._reconcile_missing_web_dialogs()
-                if bool(self.config.get("web_dispatch_enabled", False)):
+                if bool(self.config.get("web_dispatch_enabled", False)) and await self._web_transport_ready():
                     while True:
                         async with self.journal_gate:
                             reservation = self.journal.reserve_web_dispatch(
@@ -1308,6 +1333,7 @@ class DoctorServer:
 
     async def doctor_capabilities(self, request: web.Request) -> web.Response:
         await self.require_doctor_operator(request)
+        transport_state = await self._web_transport_state()
         return web.json_response(
             {
                 "ok": True,
@@ -1319,6 +1345,7 @@ class DoctorServer:
                     "primary": True,
                     "method": "cdp",
                     "project_dispatch": True,
+                    "transport_state": transport_state,
                 },
                 "api": {
                     "enabled": bool(self.config.get("api_transport_enabled", False)),
@@ -1351,6 +1378,27 @@ class DoctorServer:
                 },
             }
         )
+
+    async def doctor_knowledge_search(self, request: web.Request) -> web.Response:
+        await self.require_doctor_operator(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        case_id = body.get("case_id")
+        if case_id is not None:
+            try:
+                async with self.journal_gate:
+                    self.journal.get_case(int(case_id))
+            except Exception as exc:
+                raise self._journal_http_error(exc)
+        context = body.get("context") if isinstance(body.get("context"), dict) else dict(body)
+        context.pop("case_id", None)
+        limit = body.get("limit_per_type", context.pop("limit_per_type", 5))
+        result = self.v2_ext.runtime.knowledge_search(context, int(limit or 5))
+        return web.json_response(result)
 
     async def doctor_queue(self, request: web.Request) -> web.Response:
         await self.require_doctor_operator(request)
@@ -2422,6 +2470,8 @@ class DoctorServer:
                     "validation_stage": candidate.get("validation_stage"),
                     "state": candidate.get("state"),
                     "negative_episodes": candidate.get("negative_episodes", 0),
+                    "execution_mapping": candidate_body.get("execution_mapping"),
+                    "execution_mapping_reason": candidate_body.get("execution_mapping_reason"),
                     "blocker": None,
                 },
             }
@@ -2446,11 +2496,28 @@ class DoctorServer:
                     })
                 payload["experimental_protocol"]["blocker"] = blocker
                 if card is None:
-                    payload["result"] = "EXPERIMENTAL_PROTOCOL_NOT_EXECUTABLE"
-                    payload["message"] = (
-                        "Experimental candidate cannot enter the signed machine-treatment "
-                        "path; continue Field diagnosis."
+                    mapping_unavailable=(
+                        str(candidate_body.get("execution_mapping") or "").upper()=="UNAVAILABLE"
+                        or blocker in {"candidate_not_machine_mapped","candidate_has_no_machine_treatment"}
                     )
+                    if mapping_unavailable:
+                        payload["result"]="EXPERIMENTAL_PROTOCOL_MISSING_CAPABILITY"
+                        payload["experimental_protocol"]["missing_capability"]=(
+                            candidate_body.get("execution_mapping_reason")
+                            or blocker
+                            or "deterministic_treatment_mapping"
+                        )
+                        payload["message"]=(
+                            "Experimental candidate remains valid knowledge, but the exact "
+                            "treatment capability is unavailable on this Doctor surface; "
+                            "record UNAVAILABLE and continue Field diagnosis."
+                        )
+                    else:
+                        payload["result"] = "EXPERIMENTAL_PROTOCOL_NOT_EXECUTABLE"
+                        payload["message"] = (
+                            "Experimental candidate cannot enter the signed machine-treatment "
+                            "path; continue Field diagnosis."
+                        )
                 elif not bool(license_state["active"]):
                     payload["result"] = "EXPERIMENTAL_PROTOCOL_LICENSE_BLOCKED"
                 else:
@@ -2777,6 +2844,7 @@ class DoctorServer:
                     "update doctor_v2_resolutions set current_field_case_id=NULL,updated_at=CURRENT_TIMESTAMP where patient_id=? and fingerprint=? and current_field_case_id=?",
                     (client_id,str(row["fingerprint"] or ""),case_id),
                 )
+            await self.v2_ext._finish_assignment("FIELD_SUZIE",f"case:{case_id}")
             retired.append({"case_id":case_id,"fingerprint":str(row["fingerprint"] or "")})
             dialog_id=str(retired_case.get("dialog_id") or "")
             if dialog_id:
@@ -2796,9 +2864,11 @@ class DoctorServer:
         if str(client.get("status")) != "licensed":
             raise web.HTTPForbidden(text="licensed client required")
         self.knowledge.reload()
+        library_status=self.v2_ext.runtime.rebuild_knowledge_library()
         return self.signed({
             "result": "RELOADED",
             "stats": self.knowledge.data.get("stats") or {},
+            "knowledge_library": library_status,
         })
 
     async def knowledge_watch_loop(self) -> None:
@@ -2808,11 +2878,12 @@ class DoctorServer:
                 mtime = path.stat().st_mtime_ns
                 if mtime != self._knowledge_mtime_ns:
                     self.knowledge.reload()
+                    library_status=self.v2_ext.runtime.rebuild_knowledge_library()
                     self._knowledge_mtime_ns = mtime
                     self.db.event(
                         "knowledge_reloaded",
                         None,
-                        {"stats": self.knowledge.data.get("stats") or {}},
+                        {"stats": self.knowledge.data.get("stats") or {}, "knowledge_library": library_status},
                     )
             except asyncio.CancelledError:
                 raise
@@ -2874,6 +2945,7 @@ class DoctorServer:
         # Suzie Doctor Connector-facing journal contract.
         app.router.add_get("/v1/doctor/capabilities", self.doctor_capabilities)
         app.router.add_get("/v1/doctor/queue", self.doctor_queue)
+        app.router.add_post("/v1/doctor/knowledge/search", self.doctor_knowledge_search)
         app.router.add_post("/v1/doctor/case/escalate", self.doctor_case_escalate)
         app.router.add_get(
             "/v1/doctor/case/{case_id:\\d+}",

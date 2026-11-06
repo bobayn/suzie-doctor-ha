@@ -87,6 +87,7 @@ async def _api(
     path: str,
     *,
     body: dict[str, Any] | None = None,
+    return_rejection: bool = False,
 ) -> dict[str, Any]:
     token = TOKEN_PATH.read_text(encoding="utf-8").strip()
     headers = {"Authorization": f"Bearer {token}"}
@@ -103,6 +104,15 @@ async def _api(
             json=body,
         )
     if response.status_code not in (200, 202):
+        if return_rejection and response.status_code in (400, 409, 422):
+            return {
+                "ok": False,
+                "completed": False,
+                "error": "DOCTOR_SERVER_REJECTED",
+                "http_status": int(response.status_code),
+                "path": path,
+                "detail": response.text[:1000],
+            }
         raise RuntimeError(
             f"Doctor Server {path} HTTP {response.status_code}: "
             f"{response.text[:500]}"
@@ -220,6 +230,38 @@ async def doctor_capabilities() -> dict[str, Any]:
         "contains_claim_token": False,
     }
     return base
+
+
+@mcp.tool(
+    name="doctor.knowledge.search",
+    description=(
+        "Field/Wilson read-only search of the bounded Doctor Knowledge Library. "
+        "Use internal accumulated knowledge before external web research and re-search "
+        "when symptoms, Disease hypothesis, treatment or verify result materially change."
+    ),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def doctor_knowledge_search(
+    doctor_handle: str,
+    context: dict[str, Any],
+    limit_per_type: int = 5,
+) -> dict[str, Any]:
+    state = await _active_handle(doctor_handle)
+    await _heartbeat_state(state)
+    return await _api(
+        "POST",
+        "/v1/doctor/knowledge/search",
+        body={
+            "case_id": int(state["case_id"]),
+            "context": dict(context or {}),
+            "limit_per_type": max(1, min(int(limit_per_type or 5), 10)),
+        },
+    )
 
 
 @mcp.tool(
@@ -403,6 +445,7 @@ async def doctor_case_complete_next(
                 "output_cursor": output_cursor,
                 "failed": upper_outcome == "FAILED",
             },
+            return_rejection=True,
         )
     if handle.startswith("HOUSE:"):
         job_id = int(handle.split(":", 1)[1])
@@ -410,7 +453,12 @@ async def doctor_case_complete_next(
         required = {"finding_class", "significance", "decision"}
         missing = sorted(required - set(payload))
         if missing:
-            raise RuntimeError("HOUSE_COMPAT_RESULT_MISSING:" + ",".join(missing))
+            return {
+                "ok": False,
+                "completed": False,
+                "error": "HOUSE_COMPAT_RESULT_MISSING",
+                "missing": missing,
+            }
         raw_finding_class = str(payload.pop("finding_class")).upper()
         finding_class = raw_finding_class
         significance = str(payload.pop("significance")).upper()
@@ -440,6 +488,7 @@ async def doctor_case_complete_next(
                 "field_priority": field_priority,
                 "result": payload,
             },
+            return_rejection=True,
         )
     state = await _active_handle(handle)
     data = await _api(

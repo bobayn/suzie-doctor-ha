@@ -223,3 +223,73 @@ CREATE TABLE IF NOT EXISTS doctor_v2_resolutions (
 );
 CREATE INDEX IF NOT EXISTS doctor_v2_resolutions_state_idx
     ON doctor_v2_resolutions(state, updated_at);
+
+
+-- DOCTOR KNOWLEDGE LIBRARY V1
+-- Derived retrieval/index layer. Existing knowledge sources remain canonical.
+CREATE TABLE IF NOT EXISTS doctor_v2_protocol_candidate_classification (
+    protocol_id TEXT PRIMARY KEY,
+    eligibility TEXT NOT NULL CHECK(eligibility IN ('EXPERIMENTAL','NOT_ELIGIBLE_FOR_V2_EXECUTION')),
+    knowledge_type TEXT NOT NULL CHECK(knowledge_type IN ('EXPERIMENTAL_PROTOCOL','MANUAL_TREATMENT','REFERENCE_ONLY')),
+    reason_class TEXT,
+    reason TEXT,
+    source_audit TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(protocol_id) REFERENCES doctor_v2_protocol_candidates(protocol_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS doctor_v2_candidate_classification_elig_idx
+    ON doctor_v2_protocol_candidate_classification(eligibility, knowledge_type);
+
+CREATE TABLE IF NOT EXISTS doctor_knowledge_items (
+    item_id TEXT PRIMARY KEY,
+    knowledge_type TEXT NOT NULL CHECK(knowledge_type IN (
+        'DISEASE_KNOWLEDGE','ACTIVE_PROTOCOL','EXPERIMENTAL_PROTOCOL',
+        'MANUAL_TREATMENT','REFERENCE_ONLY','NEGATIVE_EVIDENCE',
+        'UNRESOLVED_HYPOTHESIS','EXTERNAL_EVIDENCE'
+    )),
+    title TEXT NOT NULL DEFAULT '',
+    disease_id TEXT,
+    component TEXT,
+    applicability_json TEXT NOT NULL DEFAULT '{}',
+    confidence REAL,
+    supporting_cases_json TEXT NOT NULL DEFAULT '[]',
+    external_sources_json TEXT NOT NULL DEFAULT '[]',
+    positive_evidence_json TEXT NOT NULL DEFAULT '[]',
+    negative_evidence_json TEXT NOT NULL DEFAULT '[]',
+    version_constraints_json TEXT NOT NULL DEFAULT '[]',
+    environment_constraints_json TEXT NOT NULL DEFAULT '[]',
+    treatment_status TEXT,
+    safety_json TEXT NOT NULL DEFAULT '{}',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    search_text TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS doctor_knowledge_type_idx
+    ON doctor_knowledge_items(knowledge_type, updated_at);
+CREATE INDEX IF NOT EXISTS doctor_knowledge_disease_idx
+    ON doctor_knowledge_items(disease_id, knowledge_type);
+CREATE INDEX IF NOT EXISTS doctor_knowledge_component_idx
+    ON doctor_knowledge_items(component, knowledge_type);
+
+CREATE TABLE IF NOT EXISTS doctor_wilson_knowledge_updates (
+    wilson_job_id INTEGER NOT NULL,
+    update_key TEXT NOT NULL,
+    knowledge_type TEXT NOT NULL CHECK(knowledge_type IN (
+        'DISEASE_KNOWLEDGE','EXPERIMENTAL_PROTOCOL','MANUAL_TREATMENT',
+        'REFERENCE_ONLY','NEGATIVE_EVIDENCE','UNRESOLVED_HYPOTHESIS','EXTERNAL_EVIDENCE'
+    )),
+    title TEXT NOT NULL,
+    disease_id TEXT,
+    component TEXT,
+    source_scope TEXT NOT NULL CHECK(source_scope IN ('EXTERNAL','INTERNAL')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(wilson_job_id, update_key),
+    FOREIGN KEY(wilson_job_id) REFERENCES doctor_v2_wilson_jobs(wilson_job_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS doctor_wilson_knowledge_type_idx
+    ON doctor_wilson_knowledge_updates(knowledge_type, created_at);
