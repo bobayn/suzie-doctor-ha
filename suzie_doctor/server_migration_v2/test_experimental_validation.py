@@ -1,10 +1,12 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import sys
+import json
 
 ROOT=Path(__file__).resolve().parents[2]
 LIVE=ROOT/'suzie_doctor/live_runtime/doctor_server'
 sys.path.insert(0,str(LIVE))
+import doctor_v2_live
 from doctor_v2_live import DoctorV2Runtime
 from protocol_factory import build_card
 
@@ -86,10 +88,17 @@ def main():
                 },
                 'external_evidence':[{'url':'https://github.com/example/project/issues/123','treatment_outcome':'SUCCESS'}],
             }
+            # Represent the durable result of a successful doctor.ingest_incident
+            # on an isolated Master KB test fixture, never on the production KB.
+            master_incident_id='INC-EXAMPLE-123'
+            test_master=Path(td)/'master_knowledge_fixture.json'
+            test_master.write_text(json.dumps({'incidents':[{'id':master_incident_id,'source':'https://github.com/example/project/issues/123'}]}),encoding='utf-8')
+            doctor_v2_live.MASTER_KB_PATH=test_master
             ext_result={
                 'search_coverage':[{'source_type':'issue_tracker','queries':['mqtt restart recovery'],'sources_reviewed':1}],
                 'incident_reviews':[{
                     'incident_key':'github-example-123','source_urls':['https://github.com/example/project/issues/123'],
+                    'master_incident_id':master_incident_id,'ingest_result':'ADDED',
                     'treatment_outcome':'SUCCESS','applicability':'POSSIBLE',
                     'disposition':'CANDIDATE_CREATED','protocol_id':ext_pid,
                 }],
