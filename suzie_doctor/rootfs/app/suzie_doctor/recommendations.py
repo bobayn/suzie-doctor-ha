@@ -19,6 +19,8 @@ DEFER_HOURS = 6
 # App does not depend on Home Assistant's Python package inside the add-on.
 _UPDATE_FEATURE_INSTALL = 1
 _UPDATE_FEATURE_BACKUP = 8
+_MARKETPLACE_CONSENT_REASON = "marketplace_consent_required"
+_MARKETPLACE_CONSENT_RETRY_MINUTES = 5
 
 _SYSTEM_UPDATE_TOKENS = (
     "home_assistant_core",
@@ -132,6 +134,18 @@ def _is_update_actionable(state: dict[str, Any]) -> bool:
     return _supports_native_install(state)
 
 
+def _marketplace_consent_required(error: Exception) -> bool:
+    """Recognize Home Assistant's official one-time Marketplace trust gate."""
+    message = str(error).lower()
+    return (
+        "marketplace" in message
+        and (
+            "read the warning first" in message
+            or "installing and updating work once it is accepted" in message
+        )
+    )
+
+
 class RecommendationExecutor:
     """Execute actionable Home Assistant recommendations through native APIs.
 
@@ -197,11 +211,18 @@ class RecommendationExecutor:
         except ValueError:
             return False
 
-    def _defer(self, key: str, reason: str, hours: int = DEFER_HOURS) -> None:
+    def _defer(
+        self, key: str, reason: str, hours: int = DEFER_HOURS,
+        *, minutes: int | None = None,
+    ) -> None:
         data = self._load_deferred()
+        retry_delay = (
+            timedelta(minutes=max(1, int(minutes)))
+            if minutes is not None else timedelta(hours=max(1, hours))
+        )
         data[key] = {
             "reason": str(reason)[:500],
-            "until": (_utcnow() + timedelta(hours=max(1, hours))).isoformat(),
+            "until": (_utcnow() + retry_delay).isoformat(),
         }
         self._save_deferred(data)
 
@@ -457,11 +478,32 @@ class RecommendationExecutor:
         if not entity_id:
             return {**base, "result": "INVALID"}
         if self._deferred_active(key):
+            deferred = self._load_deferred().get(key) or {}
+            if deferred.get("reason") == _MARKETPLACE_CONSENT_REASON:
+                return {
+                    **base,
+                    "result": "NEEDS_MARKETPLACE_CONSENT",
+                    "required_action": "Settings > Marketplace: I understand the risks and agree",
+                    "retry_automatically": True,
+                }
             return {**base, "result": "DEFERRED_AFTER_FAILURE"}
 
         try:
             await self.ha.install_update(entity_id, backup=backup)
         except Exception as exc:
+            if _marketplace_consent_required(exc):
+                # Owner trust consent is never fabricated. Once the admin
+                # accepts it in Marketplace, the normal update scan retries.
+                self._defer(
+                    key, _MARKETPLACE_CONSENT_REASON,
+                    minutes=_MARKETPLACE_CONSENT_RETRY_MINUTES,
+                )
+                return {
+                    **base,
+                    "result": "NEEDS_MARKETPLACE_CONSENT",
+                    "required_action": "Settings > Marketplace: I understand the risks and agree",
+                    "retry_automatically": True,
+                }
             self._defer(key, f"update_install_failed:{type(exc).__name__}", hours=1)
             return {
                 **base,
@@ -607,6 +649,7 @@ class _FakeHA:
         self.notifications: list[dict[str, Any]] = []
         self.states: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.update_errors: dict[str, str] = {}
         self.active_update_calls = 0
         self.max_concurrent_update_calls = 0
         self.config_entries: list[dict[str, Any]] = [
@@ -653,6 +696,8 @@ class _FakeHA:
         )
         try:
             self.update_calls.append({"entity_id": entity_id, "backup": backup})
+            if entity_id in self.update_errors:
+                raise RuntimeError(self.update_errors[entity_id])
             await asyncio.sleep(0)
             for state in self.states:
                 if state.get("entity_id") == entity_id:
@@ -812,6 +857,52 @@ async def recommendation_selftest(db: Database) -> dict[str, Any]:
         and fake.update_calls[0].get("backup") is False
         and action.get("result") == "UPDATED",
         action,
+    )
+
+    # Marketplace's one-time risk notice is a user trust decision, never
+    # a treatment failure or a reason to block unrelated native updates.
+    fake.update_calls.clear()
+    blocked_entity = "update.home_hacs_ha_mcp_custom_component"
+    fake.update_errors[blocked_entity] = (
+        "API error: 500 - Open the Marketplace and read the warning first, "
+        "installing and updating work once it is accepted"
+    )
+    fake.states = [
+        _fake_update(blocked_entity, supported_features=_UPDATE_FEATURE_INSTALL),
+        _fake_update("update.unrelated_working", supported_features=_UPDATE_FEATURE_INSTALL),
+    ]
+    result = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    blocked_actions = result.get("actions") or []
+    add(
+        "marketplace_consent_is_visible_and_other_updates_continue",
+        len(blocked_actions) == 2
+        and blocked_actions[0].get("result") == "NEEDS_MARKETPLACE_CONSENT"
+        and blocked_actions[0].get("retry_automatically") is True
+        and blocked_actions[1].get("result") == "UPDATED"
+        and fake.states[0]["state"] == "on",
+        blocked_actions,
+    )
+    previous_call_count = len(fake.update_calls)
+    deferred = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "marketplace_consent_wait_does_not_retry_every_minute",
+        (deferred.get("actions") or [{}])[0].get("result") == "NEEDS_MARKETPLACE_CONSENT"
+        and len(fake.update_calls) == previous_call_count,
+        deferred,
+    )
+    del fake.update_errors[blocked_entity]
+    defer_data = executor._load_deferred()
+    defer_data["update:" + blocked_entity]["until"] = (
+        _utcnow() - timedelta(seconds=1)
+    ).isoformat()
+    executor._save_deferred(defer_data)
+    resumed = await executor.scan_once(repairs=[], notifications=[], states=fake.states, execute=True)
+    add(
+        "marketplace_consent_auto_resumes_after_admin_acceptance",
+        (resumed.get("actions") or [{}])[0].get("result") == "UPDATED"
+        and fake.states[0]["state"] == "off"
+        and "update:" + blocked_entity not in executor._load_deferred(),
+        resumed,
     )
 
     fake.update_calls.clear()
