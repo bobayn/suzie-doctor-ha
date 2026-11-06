@@ -176,7 +176,19 @@ def main():
             assert neg and not neg['success'] and neg['verified']
             w1=rt.enqueue_field_validation_wilson(101,neg,result)
             assert rt.claim_wilson(w1)
-            out=rt.wilson_complete(w1,{'validations':[dict(neg)]},output_cursor='EXP:101')
+            out=rt.wilson_complete(w1,{
+                'validations':[dict(neg)],
+                'library_updates':[{
+                    'update_key':'field-negative-101',
+                    'knowledge_type':'NEGATIVE_EVIDENCE',
+                    'title':'Controlled Field validation failed its functional criterion',
+                    'source_scope':'INTERNAL',
+                    'disease_id':disease,
+                    'component':'test',
+                    'payload':{'case_id':101,'protocol_id':pid,'treatment_result':'FAILED'},
+                    'provenance':{'field_case_id':101},
+                }],
+            },output_cursor='EXP:101')
             assert out['validation_results'][0]['validation_stage']=='0/3'
             assert out['validation_results'][0]['negative_episodes']==1
             cur=rt.conn.execute(
