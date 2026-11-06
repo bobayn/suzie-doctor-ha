@@ -1,6 +1,6 @@
 {
   "name": "suzie-doctor-connector",
-  "version": "0.1.7-dev",
+  "version": "0.1.8-dev",
   "interface_version": 1,
   "canonical_core": true,
   "treatment_path": "doctor.diagnose|doctor.action.request -> signed_execution_package -> ProtocolEngine",
@@ -869,6 +869,23 @@
       "attempt_limit": 1,
       "cooldown_seconds": 60,
       "disconnect_expected": false
+    },
+    {
+      "name": "http.ssl_profile.update",
+      "primitive": "http_ssl_profile_upgrade",
+      "reversibility": "HA_NATIVE_AUTO_ROLLBACK",
+      "blast_radius": "HA_HTTPS_CLIENTS",
+      "checkpoint_required": false,
+      "rollback_available": false,
+      "exact_target_fields": [
+        "domain",
+        "issue_id"
+      ],
+      "attempt_limit": 1,
+      "cooldown_seconds": 900,
+      "disconnect_expected": true,
+      "verify_grace_seconds": 480,
+      "description": "Only signed Field Suzie; exact http/ssl_profile_outdated; only intermediate_v6; native HA pending, rollback and verified promote"
     }
   ]
 }

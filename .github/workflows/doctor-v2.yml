@@ -47,6 +47,23 @@ jobs:
           print("SKILL_HASH_PASS", actual)
           PY
 
+      - name: Compile bounded TLS Field modules and restored server
+        run: |
+          python -m py_compile \
+            suzie_doctor/rootfs/app/suzie_doctor/http_ssl_profile_repair.py \
+            suzie_doctor/rootfs/app/suzie_doctor/protocol_engine.py \
+            suzie_doctor/live_runtime/doctor_server/server.py \
+            suzie_doctor/server_migration_v2/test_http_ssl_profile_action.py \
+            suzie_doctor/server_migration_v2/test_http_ssl_field_engine.py
+
+      - name: HA native TLS transaction regression (no live writes)
+        run: python suzie_doctor/server_migration_v2/test_http_ssl_profile_action.py
+
+      - name: Field one-shot TLS engine regression (mock only)
+        run: |
+          python -m pip install "PyYAML>=6.0,<7"
+          python suzie_doctor/server_migration_v2/test_http_ssl_field_engine.py
+
       - name: Doctor v2 policy regression
         working-directory: suzie_doctor/server_migration_v2
         run: python test_policy.py

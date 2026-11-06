@@ -11,6 +11,10 @@ import yaml
 
 from .db import Database
 from .repair_identity import repair_matches_identity
+from .http_ssl_profile_repair import (
+    stage_http_ssl_profile,
+    verify_and_promote_http_ssl_profile,
+)
 if TYPE_CHECKING:
     from .ha_api import HomeAssistantClient
     from .supervisor import SupervisorClient
@@ -60,6 +64,7 @@ class ProtocolEngine:
         "update_state",
         "verify_recorder_write",
         "ha_repair_absent",
+        "http_ssl_profile_upgrade",
         "wait",
     }
     SUPPORTED_TRIGGER_TYPES = {
@@ -1416,6 +1421,13 @@ class ProtocolEngine:
                 raise ProtocolError(f"mount reload failed: {result}")
             return result
 
+        if name == "http_ssl_profile_upgrade":
+            if env.get("field_action_authorized") is not True:
+                raise ProtocolError("HTTP SSL upgrade requires signed Field authorization")
+            if str(resolved.get("domain") or "") != "http" or str(resolved.get("issue_id") or "") != "ssl_profile_outdated":
+                raise ProtocolError("HTTP SSL upgrade requires exact Repair identity")
+            return await stage_http_ssl_profile(self.ha, str(resolved.get("ssl_profile") or ""))
+
         if name == "restart_core":
             disruptive = await self.supervisor.restart_core()
             if bool(env.get("field_action_authorized") is True):
@@ -2212,6 +2224,29 @@ class ProtocolEngine:
         verify = card.get("verify") or {}
         if not isinstance(verify, dict) or not verify.get("rerun_diagnostics"):
             raise ProtocolError("FIELD_ONE_SHOT requires functional verify diagnostics")
+        # A TLS change is a two-phase HA native transaction. Promote only
+        # after reconnect and independent verification of the original Repair.
+        tls_result = None
+        treatment = card.get("treatment") or []
+        if len(treatment) == 1 and isinstance(treatment[0], dict) and treatment[0].get("primitive") == "http_ssl_profile_upgrade":
+            field_binding = (card.get("field_action") or {}).get("binding") or {}
+            if not field_binding.get("command_id") or not field_binding.get("client_id") or not field_binding.get("field_case_id"):
+                raise ProtocolError("HTTP SSL promotion requires signed Field Case binding")
+            args = treatment[0].get("args") or {}
+            if args.get("domain") != "http" or args.get("issue_id") != "ssl_profile_outdated":
+                raise ProtocolError("HTTP SSL promotion requires exact Repair identity")
+            tls_result = await verify_and_promote_http_ssl_profile(
+                self.ha, str(args.get("ssl_profile") or "")
+            )
+            if not tls_result.get("verified"):
+                return {
+                    "result": "VERIFIED_FAIL",
+                    "verify": [],
+                    "verify_performed": True,
+                    "verify_passed": False,
+                    "new_protocol_evidence": False,
+                    "tls_transaction": tls_result,
+                }
         env = dict(context or {})
         results = await self._run_diagnostics(card, env)
         success_when = str(verify.get("success_when") or "")
@@ -2224,6 +2259,7 @@ class ProtocolEngine:
             "verify_performed": True,
             "verify_passed": bool(passed),
             "new_protocol_evidence": bool(passed),
+            **({"tls_transaction": tls_result} if tls_result is not None else {}),
         }
 
     async def _versions(self) -> dict[str, Any]:
