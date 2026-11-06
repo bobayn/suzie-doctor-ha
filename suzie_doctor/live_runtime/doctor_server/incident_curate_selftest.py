@@ -20,6 +20,24 @@ def main():
     add('strong_duplicate_accepts_exact',m.strong_duplicate(a,b)['ok'])
     c=dict(b);c['source']='https://example.com/other'
     add('strong_duplicate_requires_same_source',not m.strong_duplicate(a,c)['ok'])
+    fp_old=dict(a)
+    fp_old.update({
+        'source':'https://github.com/esphome/esphome/issues/18614',
+        'title':'ESPHome Active BLE failure after 2026.8.0 update',
+        'root_cause':'Bluetooth stack regression in ESPHome 2026.8.0',
+        'symptoms':'Active BLE fails while API remains healthy',
+        'fingerprint':['ESPHome 2026.8.0','ESP32-WROOM','active BLE','rollback'],
+    })
+    fp_new=dict(b)
+    fp_new.update({
+        'source':fp_old['source'],
+        'title':'ESPHome 2026.8.0 ESP32-WROOM active BLE regression restored by rollback',
+        'root_cause':'Probable version regression; exact commit unknown',
+        'symptoms':'BLE stopped after upgrade on unchanged hardware',
+        'fingerprint':['ESPHome 2026.8.0','ESP32-WROOM','active BLE','2026.7.2'],
+    })
+    fp_proof=m.strong_duplicate(fp_old,fp_new)
+    add('strong_duplicate_accepts_same_source_fingerprint',fp_proof['ok'],fp_proof)
     add('disease_id_stable',m.generated_disease_id(a)==m.generated_disease_id(a))
 
     with tempfile.TemporaryDirectory(prefix='doctor-curate-test-') as td:

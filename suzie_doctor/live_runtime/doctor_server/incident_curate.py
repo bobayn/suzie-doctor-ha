@@ -50,8 +50,20 @@ def strong_duplicate(a,b)->dict[str,Any]:
     title=jac(toks(a.get('title')),toks(b.get('title')))
     root=jac(toks(a.get('root_cause')),toks(b.get('root_cause')))
     symptom=jac(toks(a.get('symptoms')),toks(b.get('symptoms')))
-    ok=same_source and title>=.85 and max(root,symptom)>=.70
-    return {'ok':ok,'same_source':same_source,'title_similarity':round(title,3),'root_similarity':round(root,3),'symptom_similarity':round(symptom,3)}
+    afp=set().union(*(toks(x) for x in (a.get('fingerprint') or [])))
+    bfp=set().union(*(toks(x) for x in (b.get('fingerprint') or [])))
+    fp_overlap=len(afp & bfp)
+    fp_similarity=jac(afp,bfp)
+    text_match=title>=.85 and max(root,symptom)>=.70
+    fingerprint_match=fp_overlap>=4 and fp_similarity>=.30 and title>=.25
+    ok=same_source and (text_match or fingerprint_match)
+    return {
+        'ok':ok,'same_source':same_source,
+        'title_similarity':round(title,3),'root_similarity':round(root,3),
+        'symptom_similarity':round(symptom,3),
+        'fingerprint_similarity':round(fp_similarity,3),
+        'fingerprint_overlap':fp_overlap,
+    }
 def referenced_elsewhere(master:dict[str,Any],iid:str)->list[str]:
     refs=[]
     for key,value in master.items():

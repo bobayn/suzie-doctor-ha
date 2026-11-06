@@ -71,6 +71,29 @@ def main():
         )
         add("exact_duplicate_detected",bool(dup))
 
+        same_source_existing={
+            "id":"INC-OLD-SAME-SOURCE",
+            "source":"https://github.com/esphome/esphome/issues/18614",
+            "title":"ESPHome Active BLE failure after 2026.8.0 update",
+            "root_cause":"Bluetooth stack regression in ESPHome 2026.8.0",
+            "symptoms":"Active BLE fails while API remains healthy",
+            "fingerprint":["ESPHome 2026.8.0","ESP32-WROOM","active BLE","rollback"],
+        }
+        same_source_new={
+            "id":"INC-NEW-SAME-SOURCE",
+            "source":"https://github.com/esphome/esphome/issues/18614",
+            "title":"ESPHome 2026.8.0 ESP32-WROOM active BLE regression restored by rollback",
+            "root_cause":"Probable version regression; exact commit unknown",
+            "symptoms":"BLE stopped after upgrade on unchanged hardware",
+            "fingerprint":["ESPHome 2026.8.0","ESP32-WROOM","active BLE","2026.7.2"],
+        }
+        fp_dup=m.duplicate_check(same_source_new,[same_source_existing])
+        add(
+            "same_source_fingerprint_duplicate_detected",
+            bool(fp_dup) and int(fp_dup.get("fingerprint_overlap") or 0)>=2,
+            fp_dup,
+        )
+
         try:
             m.build_incident({"title":"x","source":"file:///etc/passwd","symptoms":"x","evidence":"x"})
             valid=False

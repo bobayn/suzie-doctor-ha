@@ -1,10 +1,12 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import sys
+import json
 
 ROOT=Path(__file__).resolve().parents[2]
 LIVE=ROOT/'suzie_doctor/live_runtime/doctor_server'
 sys.path.insert(0,str(LIVE))
+import doctor_v2_live
 from doctor_v2_live import DoctorV2Runtime
 from protocol_factory import build_card
 
@@ -86,10 +88,17 @@ def main():
                 },
                 'external_evidence':[{'url':'https://github.com/example/project/issues/123','treatment_outcome':'SUCCESS'}],
             }
+            # Represent the durable result of a successful doctor.ingest_incident
+            # on an isolated Master KB test fixture, never on the production KB.
+            master_incident_id='INC-EXAMPLE-123'
+            test_master=Path(td)/'master_knowledge_fixture.json'
+            test_master.write_text(json.dumps({'incidents':[{'id':master_incident_id,'source':'https://github.com/example/project/issues/123'}]}),encoding='utf-8')
+            doctor_v2_live.MASTER_KB_PATH=test_master
             ext_result={
                 'search_coverage':[{'source_type':'issue_tracker','queries':['mqtt restart recovery'],'sources_reviewed':1}],
                 'incident_reviews':[{
                     'incident_key':'github-example-123','source_urls':['https://github.com/example/project/issues/123'],
+                    'master_incident_id':master_incident_id,'ingest_result':'ADDED',
                     'treatment_outcome':'SUCCESS','applicability':'POSSIBLE',
                     'disposition':'CANDIDATE_CREATED','protocol_id':ext_pid,
                 }],
@@ -167,7 +176,19 @@ def main():
             assert neg and not neg['success'] and neg['verified']
             w1=rt.enqueue_field_validation_wilson(101,neg,result)
             assert rt.claim_wilson(w1)
-            out=rt.wilson_complete(w1,{'validations':[dict(neg)]},output_cursor='EXP:101')
+            out=rt.wilson_complete(w1,{
+                'validations':[dict(neg)],
+                'library_updates':[{
+                    'update_key':'field-negative-101',
+                    'knowledge_type':'NEGATIVE_EVIDENCE',
+                    'title':'Controlled Field validation failed its functional criterion',
+                    'source_scope':'INTERNAL',
+                    'disease_id':disease,
+                    'component':'test',
+                    'payload':{'case_id':101,'protocol_id':pid,'treatment_result':'FAILED'},
+                    'provenance':{'field_case_id':101},
+                }],
+            },output_cursor='EXP:101')
             assert out['validation_results'][0]['validation_stage']=='0/3'
             assert out['validation_results'][0]['negative_episodes']==1
             cur=rt.conn.execute(
@@ -177,7 +198,7 @@ def main():
             for n in range(1,4):
                 val={
                     'protocol_id':pid,'episode_key':f'field:{101+n}','source':'FIELD_CASE','internal_verified':True,
-                    'patient_id':patient,'field_case_id':str(101+n),'success':True,'verified':True,
+                    'patient_id':f'{patient}-independent-{n}','field_case_id':str(101+n),'success':True,'verified':True,
                     'evidence':{'verify':'PASS','n':n},
                 }
                 wid=rt.enqueue_wilson('HOURLY_REVIEW',{'required_validations':[val]},f'FIELD_VALIDATION:{101+n}')
