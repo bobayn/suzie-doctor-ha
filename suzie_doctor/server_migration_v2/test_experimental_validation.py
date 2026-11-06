@@ -198,7 +198,7 @@ def main():
             for n in range(1,4):
                 val={
                     'protocol_id':pid,'episode_key':f'field:{101+n}','source':'FIELD_CASE','internal_verified':True,
-                    'patient_id':patient,'field_case_id':str(101+n),'success':True,'verified':True,
+                    'patient_id':f'{patient}-independent-{n}','field_case_id':str(101+n),'success':True,'verified':True,
                     'evidence':{'verify':'PASS','n':n},
                 }
                 wid=rt.enqueue_wilson('HOURLY_REVIEW',{'required_validations':[val]},f'FIELD_VALIDATION:{101+n}')
