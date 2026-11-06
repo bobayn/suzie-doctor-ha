@@ -41,7 +41,9 @@ jobs:
           meta = json.loads(Path("suzie_doctor/rootfs/app/suzie_doctor_skill/metadata.json").read_text())
           actual = hashlib.sha256(skill.read_bytes()).hexdigest()
           assert actual == meta["sha256"], (actual, meta["sha256"])
-          assert meta["version"] == "0.1.7-dev"
+          declared_version = next((line.split(":", 1)[1].strip() for line in skill.read_text(encoding="utf-8").splitlines() if line.startswith("Version: ")), None)
+          assert declared_version, "Skill declares no version"
+          assert meta["version"] == declared_version, (meta["version"], declared_version)
           print("SKILL_HASH_PASS", actual)
           PY
 
